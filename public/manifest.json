@@ -1,0 +1,10 @@
+{
+  "name": "실시간 통합 수불관리 시스템",
+  "short_name": "수불관리",
+  "description": "제조·유통 재고 자산 및 입출고 관리",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "orientation": "any"
+}

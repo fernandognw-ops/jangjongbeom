@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0a0a0b;
+  --bg-elevated: #121214;
+  --bg-card: #18181b;
+  --border: #27272a;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --accent-cyan: #22d3ee;
+  --accent-green: #22c55e;
+  --accent-red: #ef4444;
+  --accent-amber: #f59e0b;
+}
+
+html {
+  background-color: #0a0a0b !important;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #0a0a0b !important;
+  color: #fafafa !important;
+  min-height: 100vh;
+  min-height: 100dvh;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* 카드/섹션 - 다크 테마 (Tailwind 미적용 시에도 유지) */
+.bg-surface-card,
+section.rounded-xl,
+[class*="bg-surface-card"] {
+  background-color: #18181b !important;
+}
+
+.bg-surface-elevated,
+[class*="bg-surface-elevated"] {
+  background-color: #121214 !important;
+}
+
+.border-surface-border,
+[class*="border-surface-border"] {
+  border-color: #27272a !important;
+}
+
+/* 그라데이션 카드 (총 재고 자산) */
+.bg-gradient-to-br {
+  background: linear-gradient(to bottom right, rgba(34, 211, 238, 0.1), transparent) !important;
+  border-color: rgba(34, 211, 238, 0.3) !important;
+}
+
+
+/* 입력 필드 */
+input,
+select,
+button,
+textarea {
+  color: #fafafa !important;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="date"],
+select {
+  background-color: #121214 !important;
+  border-color: #27272a !important;
+}
+
+/* 파일 업로드 */
+input[type="file"] {
+  cursor: pointer !important;
+}
+
+input::placeholder {
+  color: #71717a !important;
+}
+
+/* 버튼 스타일 */
+button.rounded-lg {
+  border-radius: 0.5rem;
+}
+
+/* 기본 레이아웃 */
+main {
+  min-height: 50vh;
+}
+
+/* Touch-friendly (mobile) */
+@media (max-width: 768px) {
+  button,
+  input,
+  select,
+  [role="button"] {
+    min-height: 44px;
+  }
+}
+
+/* Focus ring */
+input:focus,
+select:focus,
+button:focus-visible,
+textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px #0a0a0b, 0 0 0 4px rgba(34, 211, 238, 0.5);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-elevated);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
