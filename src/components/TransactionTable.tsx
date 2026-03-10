@@ -27,7 +27,9 @@ export function TransactionTable() {
       <h2 className="border-b border-surface-border bg-surface-elevated px-4 py-3 text-sm font-semibold uppercase tracking-wider text-zinc-400 md:px-6" style={{ backgroundColor: "#121214", borderColor: "#27272a" }}>
         입출고 내역 (최근 {MAX_ROWS}건)
       </h2>
-      <div className="overflow-x-auto">
+
+      {/* PC: 테이블 */}
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[640px] text-left text-sm">
           <thead>
             <tr className="border-b border-surface-border text-zinc-400">
@@ -70,6 +72,36 @@ export function TransactionTable() {
           </tbody>
         </table>
       </div>
+
+      {/* 모바일: 카드형 */}
+      <div className="space-y-3 p-4 md:hidden">
+        {displayRows.map((tx) => (
+          <div
+            key={tx.id}
+            className="rounded-xl border border-zinc-700 bg-zinc-900/50 p-4"
+          >
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-semibold text-white">{getItemName(tx.itemId)}</span>
+              <span
+                className={`rounded-full px-3 py-1 text-sm font-bold ${
+                  tx.type === "in" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                }`}
+              >
+                {tx.type === "in" ? "입고" : "출고"}
+              </span>
+            </div>
+            <div className="text-2xl font-bold tabular-nums text-white">
+              {tx.quantity.toLocaleString()}개
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-400">
+              <span>{tx.date}</span>
+              <span>{tx.person}</span>
+              {tx.note && <span className="text-zinc-500">{tx.note}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
       {transactions.length > MAX_ROWS && (
         <p className="border-t border-surface-border px-4 py-2 text-center text-xs text-zinc-500 md:px-6">
           외 {transactions.length - MAX_ROWS}건 (총 {transactions.length}건)

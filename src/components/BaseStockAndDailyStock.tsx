@@ -81,9 +81,9 @@ export function BaseStockAndDailyStock() {
         기초 재고 + 입고 - 출고 = 재고 (계산값). 당일 재고(실사)는 데이터 관리 5번에서 입력 후 비교합니다.
       </p>
 
-      {/* 계산식 요약 테이블 */}
-      <div className="mb-6 overflow-x-auto rounded-lg border border-surface-border" style={{ borderColor: "#27272a" }}>
-        <table className="w-full min-w-[520px] text-left text-sm">
+      {/* PC: 테이블 / 모바일: 카드 */}
+      <div className="mb-6 overflow-x-auto rounded-lg border border-surface-border md:min-w-0" style={{ borderColor: "#27272a" }}>
+        <table className="hidden w-full min-w-[520px] text-left text-sm md:table">
           <thead>
             <tr className="border-b border-surface-border bg-surface-elevated text-zinc-400" style={{ backgroundColor: "#121214", borderColor: "#27272a" }}>
               <th className="px-4 py-3 font-medium">품목</th>
@@ -145,30 +145,91 @@ export function BaseStockAndDailyStock() {
             })}
           </tbody>
         </table>
+
+        {/* 모바일: 카드형 레이아웃 */}
+        <div className="space-y-3 p-4 md:hidden">
+          {ITEMS.map((item) => {
+            const base = baseStock[item.id] ?? 0;
+            const inQty = inByItem[item.id] ?? 0;
+            const outQty = outByItem[item.id] ?? 0;
+            const calc = stock[item.id] ?? 0;
+            const daily = dailyStock[item.id] ?? 0;
+            const diff = calc - daily;
+            const isMismatch = daily > 0 && diff !== 0;
+            return (
+              <div
+                key={item.id}
+                className={`rounded-xl border p-4 ${
+                  isMismatch ? "border-amber-500/50 bg-amber-500/10" : "border-zinc-700 bg-zinc-900/50"
+                }`}
+              >
+                <div className="mb-3 text-sm font-semibold text-white">{item.name}</div>
+                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
+                  <div>
+                    <span className="text-zinc-500">기초</span>
+                    <div className="mobile-number-large text-white">{base.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">+입고</span>
+                    <div className="mobile-number-large text-green-400">+{inQty.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">-출고</span>
+                    <div className="mobile-number-large text-red-400">-{outQty.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">계산</span>
+                    <div className="mobile-number-large font-bold text-white">{calc.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">당일</span>
+                    <div className="mobile-number-large text-white">
+                      {daily > 0 ? daily.toLocaleString() : "-"}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500">차이</span>
+                    <div
+                      className={`mobile-number-large font-bold ${
+                        diff > 0 ? "text-amber-400" : diff < 0 ? "text-red-400" : "text-zinc-500"
+                      }`}
+                    >
+                      {daily > 0
+                        ? diff > 0
+                          ? `+${diff.toLocaleString()}`
+                          : diff < 0
+                            ? diff.toLocaleString()
+                            : "일치"
+                        : "-"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* 불일치 항목 따로 표기 */}
       {discrepancies.length > 0 && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
-          <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-amber-400">
+          <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-amber-400 md:text-xs">
             ⚠ 재고 불일치 (계산값 ≠ 당일 재고)
           </h3>
-          <ul className="space-y-2 text-sm">
+          <ul className="space-y-3 text-sm">
             {discrepancies.map((d) => (
               <li
                 key={d.itemId}
-                className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/20 bg-amber-500/5 px-3 py-2"
+                className="flex flex-col gap-1 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-2"
               >
-                <span className="font-medium text-white">{d.name}</span>
-                <span className="text-zinc-400">
-                  계산: {d.calculated.toLocaleString()}개 · 당일: {d.daily.toLocaleString()}개
+                <span className="font-semibold text-white md:text-base">{d.name}</span>
+                <span className="text-zinc-300 md:text-zinc-400">
+                  계산: <span className="font-medium text-white">{d.calculated.toLocaleString()}</span>개 · 당일: <span className="font-medium text-white">{d.daily.toLocaleString()}</span>개
                 </span>
                 <span
-                  className={
-                    d.diff > 0
-                      ? "font-medium text-amber-400"
-                      : "font-medium text-red-400"
-                  }
+                  className={`text-lg font-bold md:text-base ${
+                    d.diff > 0 ? "text-amber-400" : "text-red-400"
+                  }`}
                 >
                   {d.diff > 0 ? "+" : ""}
                   {d.diff.toLocaleString()}개 차이

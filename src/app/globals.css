@@ -53,7 +53,7 @@ section.rounded-xl,
 }
 
 
-/* 입력 필드 */
+/* 입력 필드 - 다크 테마에서 가시성 확보 */
 input,
 select,
 button,
@@ -65,8 +65,8 @@ input[type="text"],
 input[type="number"],
 input[type="date"],
 select {
-  background-color: #121214 !important;
-  border-color: #27272a !important;
+  background-color: #18181b !important;
+  border: 1px solid #3f3f46 !important;
 }
 
 /* 파일 업로드 */
@@ -94,8 +94,30 @@ main {
   input,
   select,
   [role="button"] {
-    min-height: 44px;
+    min-height: 48px;
   }
+}
+
+/* 현장 작업자용 모바일 최적화 (768px 이하) */
+@media (max-width: 768px) {
+  /* 가독성: 자간·행간 조정, 공장 조명 대비 강화 */
+  body {
+    letter-spacing: 0.02em;
+    line-height: 1.5;
+  }
+
+  /* 숫자·텍스트 대비 강화 (공장 조명) */
+  .mobile-high-contrast {
+    color: #ffffff !important;
+    text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+  }
+
+  .mobile-number-large {
+    font-size: 1.5rem !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.05em;
+  }
+
 }
 
 /* Focus ring */

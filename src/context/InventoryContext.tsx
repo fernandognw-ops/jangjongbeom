@@ -15,6 +15,7 @@ import {
   storage,
   STORAGE_KEYS,
 } from "@/lib/store";
+import { getStoredSyncCode, pushToCloud } from "@/lib/sync";
 import type { ProductMasterRow } from "@/lib/types";
 import { mapGroupToItemId } from "@/lib/unifiedImport";
 
@@ -127,11 +128,12 @@ function computeProductCostMap(products: ProductMasterRow[]): Record<string, num
 }
 
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
-  const [baseStock, setBaseStockState] = useState<StockMap>(() => storage.loadBaseStock());
+  // Hydration 방지: 서버/클라이언트 초기값을 동일하게 (localStorage는 useEffect에서만 로드)
+  const [baseStock, setBaseStockState] = useState<StockMap>(() => DEFAULT_STOCK);
   const [baseStockByProduct, setBaseStockByProductState] = useState<Record<string, number>>(
-    () => storage.loadBaseStockByProduct()
+    () => ({})
   );
-  const [dailyStock, setDailyStockState] = useState<StockMap>(() => storage.loadDailyStock());
+  const [dailyStock, setDailyStockState] = useState<StockMap>(() => DEFAULT_STOCK);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [products, setProductsState] = useState<ProductMasterRow[]>([]);
 
@@ -147,9 +149,38 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     setProductsState(storage.loadProducts() as ProductMasterRow[]);
   }, []);
 
+  // 앱 로드 시: 연동코드가 있으면 클라우드에서 먼저 가져온 뒤 refresh
   useEffect(() => {
-    refresh();
+    const code = getStoredSyncCode();
+    if (code) {
+      import("@/lib/sync").then(({ fetchFromCloud }) => {
+        fetchFromCloud(code)
+          .then((r) => {
+            if (r.ok && r.data) storage.restoreFromBackup(r.data);
+          })
+          .catch(() => {})
+          .finally(() => refresh());
+      });
+    } else {
+      refresh();
+    }
   }, [refresh]);
+
+  // 연동코드가 있을 때 데이터 변경 시 클라우드에 자동 저장 (디바운스)
+  useEffect(() => {
+    const code = getStoredSyncCode();
+    if (!code) return;
+    const hasData =
+      transactions.length > 0 ||
+      products.length > 0 ||
+      Object.values(baseStock).some((v) => v > 0) ||
+      Object.values(dailyStock).some((v) => v > 0);
+    if (!hasData) return; // 빈 데이터로 클라우드 덮어쓰기 방지
+    const t = setTimeout(() => {
+      pushToCloud(code, storage.exportBackup()).catch(() => {});
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [transactions, baseStock, baseStockByProduct, dailyStock, products]);
 
   // 다른 탭에서 localStorage 수정 시 브라우저에 반영
   useEffect(() => {
