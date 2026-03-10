@@ -17,6 +17,7 @@
 
 html {
   background-color: #0a0a0b !important;
+  overflow-x: hidden;
 }
 
 body {
@@ -27,6 +28,7 @@ body {
   min-height: 100vh;
   min-height: 100dvh;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-x: hidden;
 }
 
 /* 카드/섹션 - 다크 테마 (Tailwind 미적용 시에도 유지) */
@@ -113,11 +115,30 @@ main {
   }
 
   .mobile-number-large {
-    font-size: 1.5rem !important;
+    font-size: 1.25rem !important;
     font-weight: 700 !important;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.02em;
   }
 
+  /* 7자리 이상 숫자: 폰트 축소 */
+  .mobile-number-compact {
+    font-size: 0.9rem !important;
+  }
+
+  /* 가로 스크롤 방지 */
+  .mobile-no-overflow {
+    min-width: 0;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+}
+
+/* 입고/출고 강조 색상 (공장 조명 대비 강화) */
+.text-inbound {
+  color: #4ade80 !important;
+}
+.text-outbound {
+  color: #f87171 !important;
 }
 
 /* Focus ring */

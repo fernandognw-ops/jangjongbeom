@@ -5,6 +5,7 @@ import { useInventory } from "@/context/InventoryContext";
 import { storage } from "@/lib/store";
 import {
   isSyncAvailable,
+  getDefaultWorkspaceId,
   generateSyncCode,
   getStoredSyncCode,
   setStoredSyncCode,
@@ -20,6 +21,7 @@ export function SyncSettings() {
   const [loading, setLoading] = useState(false);
 
   const storedCode = getStoredSyncCode();
+  const defaultWorkspace = getDefaultWorkspaceId();
 
   const showMsg = useCallback((type: "ok" | "err", text: string) => {
     setMsg({ type, text });
@@ -98,6 +100,20 @@ export function SyncSettings() {
     setInputCode("");
     showMsg("ok", "연동이 해제되었습니다.");
   }, [showMsg]);
+
+  // Supabase 기본 워크스페이스: 전 직원 자동 공유 (연동코드 불필요)
+  if (defaultWorkspace) {
+    return (
+      <div className="rounded-xl border border-green-500/30 bg-green-500/5 p-4">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-green-400">
+          ✓ 전 직원 실시간 데이터 공유
+        </h3>
+        <p className="mt-2 text-sm text-zinc-300">
+          Supabase에 연결되어 있습니다. 모든 직원이 동일한 재고 데이터를 실시간으로 공유합니다.
+        </p>
+      </div>
+    );
+  }
 
   if (!isSyncAvailable()) {
     return (

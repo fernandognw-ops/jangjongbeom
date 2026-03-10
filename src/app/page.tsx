@@ -31,7 +31,7 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-4 sm:py-6 md:px-6 md:py-8 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+      <main className="mx-auto max-w-6xl min-w-0 px-4 py-4 sm:py-6 md:px-6 md:py-8 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
         {/* PC·모바일 연동 */}
         <div className="mb-6">
           <SyncSettings />
@@ -39,7 +39,7 @@ export default function DashboardPage() {
 
         {/* 총 재고 자산 가치 */}
         <div
-          className="mb-6 rounded-xl border p-5 md:p-6"
+          className="mb-6 min-w-0 overflow-hidden rounded-xl border p-5 md:p-6"
           style={{
             background: "linear-gradient(to bottom right, rgba(34, 211, 238, 0.15), #0a0a0b)",
             borderColor: "rgba(34, 211, 238, 0.4)",
@@ -48,7 +48,12 @@ export default function DashboardPage() {
           <div className="text-xs font-medium uppercase tracking-wider text-cyan-400 md:text-cyan-400/90">
             현재 총 재고 자산 가치 (원가 기준)
           </div>
-          <div className="mt-2 text-4xl font-bold tabular-nums text-white md:mt-1 md:text-4xl">
+          <div
+            className={`mt-2 min-w-0 overflow-hidden font-bold tabular-nums text-white md:mt-1 ${
+              totalValue >= 1000000000 ? "text-2xl md:text-3xl" : totalValue >= 1000000 ? "text-3xl md:text-4xl" : "text-4xl md:text-4xl"
+            }`}
+            style={{ wordBreak: "break-word" }}
+          >
             {totalValue.toLocaleString()}원
           </div>
         </div>

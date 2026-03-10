@@ -1,17 +1,25 @@
 /**
- * PC·모바일 클라우드 동기화 (Supabase)
- * 동일한 연동코드를 PC와 모바일에서 입력하면 데이터가 연동됩니다.
+ * Supabase 클라우드 저장소
+ * - 전 직원 실시간 데이터 공유 (workspace "MAIN" 사용)
+ * - 연동코드 방식 (선택): 동일 코드 입력 시 추가 기기 연동
  */
 
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 const SYNC_CODE_KEY = "inventory-sync-code";
+const DEFAULT_WORKSPACE = "MAIN";
 
 function getSupabase(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) return null;
   return createClient(url, key);
+}
+
+/** Supabase가 설정되어 있으면 기본 워크스페이스 ID 반환 */
+export function getDefaultWorkspaceId(): string | null {
+  if (!isSyncAvailable()) return null;
+  return process.env.NEXT_PUBLIC_SUPABASE_WORKSPACE_ID ?? DEFAULT_WORKSPACE;
 }
 
 /** 12자리 연동코드 생성 */
@@ -65,6 +73,20 @@ export async function fetchFromCloud(syncCode: string): Promise<SyncResult & { d
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** 기본 워크스페이스에서 데이터 가져오기 (전 직원 공유) */
+export async function fetchDefaultWorkspace(): Promise<SyncResult & { data?: string }> {
+  const workspaceId = getDefaultWorkspaceId();
+  if (!workspaceId) return { ok: false, error: "Supabase가 설정되지 않았습니다." };
+  return fetchFromCloud(workspaceId);
+}
+
+/** 기본 워크스페이스에 데이터 저장 (전 직원 공유) */
+export async function pushDefaultWorkspace(jsonData: string): Promise<SyncResult> {
+  const workspaceId = getDefaultWorkspaceId();
+  if (!workspaceId) return { ok: false, error: "Supabase가 설정되지 않았습니다." };
+  return pushToCloud(workspaceId, jsonData);
 }
 
 /** 클라우드에 데이터 저장 */

@@ -82,7 +82,7 @@ export function BaseStockAndDailyStock() {
       </p>
 
       {/* PC: 테이블 / 모바일: 카드 */}
-      <div className="mb-6 overflow-x-auto rounded-lg border border-surface-border md:min-w-0" style={{ borderColor: "#27272a" }}>
+      <div className="mb-6 min-w-0 overflow-hidden rounded-lg border border-surface-border md:overflow-x-auto" style={{ borderColor: "#27272a" }}>
         <table className="hidden w-full min-w-[520px] text-left text-sm md:table">
           <thead>
             <tr className="border-b border-surface-border bg-surface-elevated text-zinc-400" style={{ backgroundColor: "#121214", borderColor: "#27272a" }}>
@@ -115,10 +115,10 @@ export function BaseStockAndDailyStock() {
                   <td className="px-4 py-3 text-right tabular-nums text-zinc-300">
                     {base.toLocaleString()}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-green-400">
+                  <td className="px-4 py-3 text-right tabular-nums text-inbound">
                     +{inQty.toLocaleString()}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-red-400">
+                  <td className="px-4 py-3 text-right tabular-nums text-outbound">
                     -{outQty.toLocaleString()}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums font-medium text-white">
@@ -146,7 +146,7 @@ export function BaseStockAndDailyStock() {
           </tbody>
         </table>
 
-        {/* 모바일: 카드형 레이아웃 */}
+        {/* 모바일: 카드형 레이아웃 (2행 2열, 높이 일정) */}
         <div className="space-y-3 p-4 md:hidden">
           {ITEMS.map((item) => {
             const base = baseStock[item.id] ?? 0;
@@ -156,43 +156,52 @@ export function BaseStockAndDailyStock() {
             const daily = dailyStock[item.id] ?? 0;
             const diff = calc - daily;
             const isMismatch = daily > 0 && diff !== 0;
+            const compact = (n: number) => n >= 1000000;
             return (
               <div
                 key={item.id}
-                className={`rounded-xl border p-4 ${
+                className={`flex min-h-[140px] flex-col rounded-xl border p-4 mobile-no-overflow ${
                   isMismatch ? "border-amber-500/50 bg-amber-500/10" : "border-zinc-700 bg-zinc-900/50"
                 }`}
               >
-                <div className="mb-3 text-sm font-semibold text-white">{item.name}</div>
-                <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
-                  <div>
+                <div className="mb-3 shrink-0 text-sm font-semibold text-white">{item.name}</div>
+                <div className="grid min-w-0 flex-1 grid-cols-2 grid-rows-3 gap-x-4 gap-y-2 text-sm">
+                  <div className="flex min-w-0 flex-col">
                     <span className="text-zinc-500">기초</span>
-                    <div className="mobile-number-large text-white">{base.toLocaleString()}</div>
+                    <div className={`mobile-number-large mobile-no-overflow text-white ${compact(base) ? "mobile-number-compact" : ""}`}>
+                      {base.toLocaleString()}
+                    </div>
                   </div>
-                  <div>
+                  <div className="flex min-w-0 flex-col">
                     <span className="text-zinc-500">+입고</span>
-                    <div className="mobile-number-large text-green-400">+{inQty.toLocaleString()}</div>
+                    <div className={`mobile-number-large mobile-no-overflow text-inbound ${compact(inQty) ? "mobile-number-compact" : ""}`}>
+                      +{inQty.toLocaleString()}
+                    </div>
                   </div>
-                  <div>
+                  <div className="flex min-w-0 flex-col">
                     <span className="text-zinc-500">-출고</span>
-                    <div className="mobile-number-large text-red-400">-{outQty.toLocaleString()}</div>
+                    <div className={`mobile-number-large mobile-no-overflow text-outbound ${compact(outQty) ? "mobile-number-compact" : ""}`}>
+                      -{outQty.toLocaleString()}
+                    </div>
                   </div>
-                  <div>
+                  <div className="flex min-w-0 flex-col">
                     <span className="text-zinc-500">계산</span>
-                    <div className="mobile-number-large font-bold text-white">{calc.toLocaleString()}</div>
+                    <div className={`mobile-number-large mobile-no-overflow font-bold text-white ${compact(calc) ? "mobile-number-compact" : ""}`}>
+                      {calc.toLocaleString()}
+                    </div>
                   </div>
-                  <div>
+                  <div className="flex min-w-0 flex-col">
                     <span className="text-zinc-500">당일</span>
-                    <div className="mobile-number-large text-white">
+                    <div className={`mobile-number-large mobile-no-overflow text-white ${compact(daily) ? "mobile-number-compact" : ""}`}>
                       {daily > 0 ? daily.toLocaleString() : "-"}
                     </div>
                   </div>
-                  <div>
+                  <div className="flex min-w-0 flex-col">
                     <span className="text-zinc-500">차이</span>
                     <div
-                      className={`mobile-number-large font-bold ${
-                        diff > 0 ? "text-amber-400" : diff < 0 ? "text-red-400" : "text-zinc-500"
-                      }`}
+                      className={`mobile-number-large mobile-no-overflow font-bold ${
+                        diff > 0 ? "text-amber-400" : diff < 0 ? "text-outbound" : "text-zinc-500"
+                      } ${compact(Math.abs(diff)) ? "mobile-number-compact" : ""}`}
                     >
                       {daily > 0
                         ? diff > 0
@@ -228,7 +237,7 @@ export function BaseStockAndDailyStock() {
                 </span>
                 <span
                   className={`text-lg font-bold md:text-base ${
-                    d.diff > 0 ? "text-amber-400" : "text-red-400"
+                    d.diff > 0 ? "text-amber-400" : "text-outbound"
                   }`}
                 >
                   {d.diff > 0 ? "+" : ""}

@@ -15,7 +15,14 @@ import {
   storage,
   STORAGE_KEYS,
 } from "@/lib/store";
-import { getStoredSyncCode, pushToCloud } from "@/lib/sync";
+import {
+  getStoredSyncCode,
+  getDefaultWorkspaceId,
+  fetchFromCloud,
+  fetchDefaultWorkspace,
+  pushToCloud,
+  pushDefaultWorkspace,
+} from "@/lib/sync";
 import type { ProductMasterRow } from "@/lib/types";
 import { mapGroupToItemId } from "@/lib/unifiedImport";
 
@@ -149,35 +156,53 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     setProductsState(storage.loadProducts() as ProductMasterRow[]);
   }, []);
 
-  // 앱 로드 시: 연동코드가 있으면 클라우드에서 먼저 가져온 뒤 refresh
+  // 앱 로드 시: Supabase 설정 시 클라우드에서 먼저 가져옴 (전 직원 공유)
   useEffect(() => {
-    const code = getStoredSyncCode();
-    if (code) {
-      import("@/lib/sync").then(({ fetchFromCloud }) => {
-        fetchFromCloud(code)
-          .then((r) => {
-            if (r.ok && r.data) storage.restoreFromBackup(r.data);
-          })
-          .catch(() => {})
-          .finally(() => refresh());
-      });
+    const defaultWorkspace = getDefaultWorkspaceId();
+    const syncCode = getStoredSyncCode();
+
+    if (defaultWorkspace) {
+      // Supabase 기본 워크스페이스: 전 직원이 동일 데이터 공유
+      fetchDefaultWorkspace()
+        .then((r) => {
+          if (r.ok && r.data) storage.restoreFromBackup(r.data);
+        })
+        .catch(() => {})
+        .finally(() => refresh());
+    } else if (syncCode) {
+      // 연동코드 방식 (Supabase 미설정 시)
+      fetchFromCloud(syncCode)
+        .then((r) => {
+          if (r.ok && r.data) storage.restoreFromBackup(r.data);
+        })
+        .catch(() => {})
+        .finally(() => refresh());
     } else {
       refresh();
     }
   }, [refresh]);
 
-  // 연동코드가 있을 때 데이터 변경 시 클라우드에 자동 저장 (디바운스)
+  // Supabase 설정 시 데이터 변경 시 클라우드에 자동 저장 (전 직원 실시간 공유)
   useEffect(() => {
-    const code = getStoredSyncCode();
-    if (!code) return;
+    const defaultWorkspace = getDefaultWorkspaceId();
+    const syncCode = getStoredSyncCode();
+    const targetCode = defaultWorkspace ?? syncCode;
+    if (!targetCode) return;
+
     const hasData =
       transactions.length > 0 ||
       products.length > 0 ||
       Object.values(baseStock).some((v) => v > 0) ||
       Object.values(dailyStock).some((v) => v > 0);
     if (!hasData) return; // 빈 데이터로 클라우드 덮어쓰기 방지
+
     const t = setTimeout(() => {
-      pushToCloud(code, storage.exportBackup()).catch(() => {});
+      const json = storage.exportBackup();
+      if (defaultWorkspace) {
+        pushDefaultWorkspace(json).catch(() => {});
+      } else {
+        pushToCloud(syncCode!, json).catch(() => {});
+      }
     }, 1500);
     return () => clearTimeout(t);
   }, [transactions, baseStock, baseStockByProduct, dailyStock, products]);

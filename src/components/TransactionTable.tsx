@@ -55,8 +55,8 @@ export function TransactionTable() {
                   <span
                     className={
                       tx.type === "in"
-                        ? "text-accent-green"
-                        : "text-accent-red"
+                        ? "font-medium text-inbound"
+                        : "font-medium text-outbound"
                     }
                   >
                     {tx.type === "in" ? "입고" : "출고"}
@@ -78,25 +78,30 @@ export function TransactionTable() {
         {displayRows.map((tx) => (
           <div
             key={tx.id}
-            className="rounded-xl border border-zinc-700 bg-zinc-900/50 p-4"
+            className="min-w-0 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900/50 p-4"
           >
-            <div className="mb-2 flex items-center justify-between">
-              <span className="font-semibold text-white">{getItemName(tx.itemId)}</span>
+            <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+              <span className="min-w-0 truncate font-semibold text-white">{getItemName(tx.itemId)}</span>
               <span
-                className={`rounded-full px-3 py-1 text-sm font-bold ${
-                  tx.type === "in" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"
+                className={`shrink-0 rounded-full px-3 py-1 text-sm font-bold ${
+                  tx.type === "in" ? "bg-green-500/30 text-green-400" : "bg-red-500/30 text-red-400"
                 }`}
               >
                 {tx.type === "in" ? "입고" : "출고"}
               </span>
             </div>
-            <div className="text-2xl font-bold tabular-nums text-white">
+            <div
+              className={`min-w-0 overflow-hidden tabular-nums font-bold text-white ${
+                tx.quantity >= 1000000 ? "text-lg" : "text-2xl"
+              }`}
+              style={{ wordBreak: "break-word" }}
+            >
               {tx.quantity.toLocaleString()}개
             </div>
-            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-zinc-400">
-              <span>{tx.date}</span>
-              <span>{tx.person}</span>
-              {tx.note && <span className="text-zinc-500">{tx.note}</span>}
+            <div className="mt-2 flex min-w-0 flex-wrap gap-x-4 gap-y-1 overflow-hidden text-sm text-zinc-400">
+              <span className="break-words">{tx.date}</span>
+              <span className="break-words">{tx.person}</span>
+              {tx.note && <span className="break-words text-zinc-500">{tx.note}</span>}
             </div>
           </div>
         ))}
