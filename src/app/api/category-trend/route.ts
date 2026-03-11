@@ -7,7 +7,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";
 
 const emptyResponse = {
@@ -33,7 +33,7 @@ const emptyResponse = {
 const PAGE_SIZE = 1000;
 
 async function fetchAllRows<T>(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   table: string,
   select: string,
   gteCol: string,

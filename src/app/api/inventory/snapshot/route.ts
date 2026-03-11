@@ -6,7 +6,7 @@
  * - dailyVelocityByProduct: 최근 30일 출고 합산 / 30 (일일 평균 판매량)
  */
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -35,7 +35,7 @@ function isGeneralStock(dest: string | null | undefined): boolean {
 const PAGE_SIZE = 1000;
 
 async function fetchAllOutbound(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   dateFrom: string
 ): Promise<{ product_code: string; quantity: number; sales_channel?: string }[]> {
   const all: { product_code: string; quantity: number; sales_channel?: string }[] = [];

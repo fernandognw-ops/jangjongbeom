@@ -3,72 +3,65 @@
 @tailwind utilities;
 
 :root {
-  --bg: #0a0a0b;
-  --bg-elevated: #121214;
-  --bg-card: #18181b;
-  --border: #27272a;
-  --text: #fafafa;
-  --text-muted: #a1a1aa;
-  --accent-cyan: #22d3ee;
+  --bg: #E0E7FF;
+  --bg-elevated: #DEE2FF;
+  --bg-card: #FFFFFF;
+  --border: #E2E8F0;
+  --text: #1e293b;
+  --text-muted: #64748b;
+  --accent-primary: #4F46E5;
   --accent-green: #22c55e;
   --accent-red: #ef4444;
   --accent-amber: #f59e0b;
 }
 
 html {
-  background-color: #0a0a0b !important;
+  background-color: #E0E7FF !important;
   overflow-x: hidden;
 }
 
 body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #0a0a0b !important;
-  color: #fafafa !important;
+  background-color: #E0E7FF !important;
+  color: #1e293b !important;
   min-height: 100vh;
   min-height: 100dvh;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   overflow-x: hidden;
 }
 
-/* 카드/섹션 - 다크 테마 (Tailwind 미적용 시에도 유지) */
+/* 카드/섹션 - 화이트/연보라 톤 */
 .bg-surface-card,
 section.rounded-xl,
 [class*="bg-surface-card"] {
-  background-color: #18181b !important;
+  background-color: #FFFFFF !important;
 }
 
 .bg-surface-elevated,
 [class*="bg-surface-elevated"] {
-  background-color: #121214 !important;
+  background-color: #FFFFFF !important;
 }
 
 .border-surface-border,
 [class*="border-surface-border"] {
-  border-color: #27272a !important;
+  border-color: #E2E8F0 !important;
 }
 
-/* 그라데이션 카드 (총 재고 자산) */
-.bg-gradient-to-br {
-  background: linear-gradient(to bottom right, rgba(34, 211, 238, 0.1), transparent) !important;
-  border-color: rgba(34, 211, 238, 0.3) !important;
-}
-
-
-/* 입력 필드 - 다크 테마에서 가시성 확보 */
+/* 입력 필드 - 라이트 테마 */
 input,
 select,
 button,
 textarea {
-  color: #fafafa !important;
+  color: #1e293b !important;
 }
 
 input[type="text"],
 input[type="number"],
 input[type="date"],
 select {
-  background-color: #18181b !important;
-  border: 1px solid #3f3f46 !important;
+  background-color: #FFFFFF !important;
+  border: 1px solid #E2E8F0 !important;
 }
 
 /* 파일 업로드 */
@@ -110,8 +103,7 @@ main {
 
   /* 숫자·텍스트 대비 강화 (공장 조명) */
   .mobile-high-contrast {
-    color: #ffffff !important;
-    text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+    color: #1e293b !important;
   }
 
   .mobile-number-large {
@@ -147,7 +139,7 @@ select:focus,
 button:focus-visible,
 textarea:focus {
   outline: none;
-  box-shadow: 0 0 0 2px #0a0a0b, 0 0 0 4px rgba(34, 211, 238, 0.5);
+  box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 4px rgba(79, 70, 229, 0.4);
 }
 
 /* Scrollbar */
@@ -159,9 +151,9 @@ textarea:focus {
   background: var(--bg-elevated);
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: #cbd5e1;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
+  background: #94a3b8;
 }

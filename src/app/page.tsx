@@ -42,15 +42,15 @@ function SupabaseDiagnosticBanner() {
 
   return (
     <div
-      className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 md:mb-6 md:rounded-xl md:p-4"
+      className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-3 shadow-card md:mb-6 md:p-4"
       role="alert"
     >
-      <h3 className="text-sm font-semibold text-amber-400">{msg.title}</h3>
-      <p className="mt-1 text-xs text-zinc-400 md:text-sm">{msg.desc}</p>
+      <h3 className="text-sm font-semibold text-amber-800">{msg.title}</h3>
+      <p className="mt-1 text-xs text-slate-600 md:text-sm">{msg.desc}</p>
       <button
         type="button"
         onClick={() => refresh()}
-        className="mt-2 text-xs text-cyan-400 hover:underline"
+        className="mt-2 text-xs font-medium text-indigo-600 hover:underline"
       >
         새로고침
       </button>
@@ -63,18 +63,18 @@ export default function DashboardPage() {
 
   return (
     <div
-      className="min-h-screen bg-[#0a0a0b]"
-      style={{ minHeight: "100vh", backgroundColor: "#0a0a0b", color: "#fafafa" }}
+      className="min-h-screen bg-[#E0E7FF]"
+      style={{ minHeight: "100vh", backgroundColor: "#E0E7FF", color: "#1e293b" }}
     >
       <header
-        className="sticky top-0 z-10 border-b border-surface-border bg-surface/95 backdrop-blur pt-[env(safe-area-inset-top)]"
-        style={{ backgroundColor: "rgba(10,10,11,0.98)", borderBottom: "1px solid #3f3f46" }}
+        className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 backdrop-blur shadow-sm pt-[env(safe-area-inset-top)]"
+        style={{ backgroundColor: "rgba(255,255,255,0.98)", borderBottom: "1px solid #E2E8F0" }}
       >
         <div className="mx-auto max-w-6xl px-3 py-2 md:px-6 md:py-3">
-          <h1 className="text-sm font-semibold leading-tight text-white md:text-xl">
+          <h1 className="text-sm font-semibold leading-tight text-slate-800 md:text-xl">
             실시간 통합 수불관리 시스템
           </h1>
-          <p className="mt-0.5 text-[10px] text-zinc-400 md:text-sm">
+          <p className="mt-0.5 text-[10px] text-slate-500 md:text-sm">
             제조·유통 재고 자산 및 입출고 관리
           </p>
         </div>
@@ -82,13 +82,13 @@ export default function DashboardPage() {
 
       <main className="mx-auto max-w-6xl min-w-0 px-3 py-3 md:px-6 md:py-8 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pb-[max(1rem,env(safe-area-inset-bottom))]">
         {isSupabaseLoading && supabaseFetchStatus === "idle" ? (
-          <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 py-16 text-center">
-            <p className="text-zinc-400">데이터 로딩 중입니다…</p>
-            <p className="mt-2 text-xs text-zinc-500">15초 이상 걸리면 자동으로 종료됩니다. 아래 버튼으로 재시도할 수 있습니다.</p>
+          <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center shadow-card">
+            <p className="text-slate-600">데이터 로딩 중입니다…</p>
+            <p className="mt-2 text-xs text-slate-500">15초 이상 걸리면 자동으로 종료됩니다. 아래 버튼으로 재시도할 수 있습니다.</p>
             <button
               type="button"
               onClick={() => refresh()}
-              className="mt-4 rounded-lg bg-cyan-500/20 px-4 py-2 text-sm text-cyan-400 hover:bg-cyan-500/30"
+              className="mt-4 rounded-xl bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600 shadow-sm"
             >
               새로고침
             </button>
@@ -99,18 +99,12 @@ export default function DashboardPage() {
             {/* KPI 카드: snapshot 단일 출처 (재고 금액, 품목 수, 수량 EA, SKU 박스) */}
             {(kpiData || totalValue > 0) && (
               <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 md:gap-4">
-                <div
-                  className="min-w-0 overflow-hidden rounded-xl border p-4 md:p-6"
-                  style={{
-                    background: "linear-gradient(to bottom right, rgba(34, 211, 238, 0.15), #0a0a0b)",
-                    borderColor: "rgba(34, 211, 238, 0.4)",
-                  }}
-                >
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-cyan-400 md:text-xs">
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-indigo-600 md:text-xs">
                     총 재고 금액
                   </div>
                   <div
-                    className={`mt-1 min-w-0 overflow-hidden font-bold tabular-nums text-white md:mt-2 md:text-2xl lg:text-3xl ${
+                    className={`mt-1 min-w-0 overflow-hidden font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl ${
                       (kpiData?.totalValue ?? totalValue) >= 1000000000 ? "text-lg md:text-2xl" : ""
                     }`}
                     style={{ wordBreak: "break-word" }}
@@ -118,27 +112,27 @@ export default function DashboardPage() {
                     {(kpiData?.totalValue ?? totalValue).toLocaleString()}원
                   </div>
                 </div>
-                <div className="min-w-0 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900/50 p-4 md:p-6">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 md:text-xs">
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500 md:text-xs">
                     품목 수
                   </div>
-                  <div className="mt-1 font-bold tabular-nums text-white md:mt-2 md:text-2xl lg:text-3xl">
+                  <div className="mt-1 font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl">
                     {(kpiData?.productCount ?? 0).toLocaleString()}건
                   </div>
                 </div>
-                <div className="min-w-0 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900/50 p-4 md:p-6">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 md:text-xs">
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500 md:text-xs">
                     총 재고 수량 (EA)
                   </div>
-                  <div className="mt-1 font-bold tabular-nums text-white md:mt-2 md:text-2xl lg:text-3xl">
+                  <div className="mt-1 font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl">
                     {(kpiData?.totalQuantity ?? 0).toLocaleString()}EA
                   </div>
                 </div>
-                <div className="min-w-0 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900/50 p-4 md:p-6">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 md:text-xs">
+                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500 md:text-xs">
                     SKU (박스)
                   </div>
-                  <div className="mt-1 font-bold tabular-nums text-white md:mt-2 md:text-2xl lg:text-3xl">
+                  <div className="mt-1 font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl">
                     {(kpiData?.totalSku ?? 0).toLocaleString()}박스
                   </div>
                 </div>
@@ -172,18 +166,12 @@ export default function DashboardPage() {
             </div>
             <SupabaseDiagnosticBanner />
 
-            <div
-              className="mb-3 min-w-0 overflow-hidden rounded-lg border p-3 md:mb-6 md:rounded-xl md:p-6"
-              style={{
-                background: "linear-gradient(to bottom right, rgba(34, 211, 238, 0.15), #0a0a0b)",
-                borderColor: "rgba(34, 211, 238, 0.4)",
-              }}
-            >
-              <div className="text-[10px] font-medium uppercase tracking-wider text-cyan-400 md:text-xs">
+            <div className="mb-3 min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-card md:mb-6 md:p-6">
+              <div className="text-[10px] font-medium uppercase tracking-wider text-indigo-600 md:text-xs">
                 재고 금액
               </div>
               <div
-                className={`mt-1 min-w-0 overflow-hidden font-bold tabular-nums text-white md:mt-2 md:text-4xl ${
+                className={`mt-1 min-w-0 overflow-hidden font-bold tabular-nums text-slate-800 md:mt-2 md:text-4xl ${
                   totalValue >= 1000000000 ? "text-lg md:text-3xl" : totalValue >= 1000000 ? "text-xl md:text-4xl" : "text-2xl"
                 }`}
                 style={{ wordBreak: "break-word" }}
@@ -205,7 +193,7 @@ export default function DashboardPage() {
             </div>
 
             <div className="mb-3 md:mb-8">
-              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 md:mb-4 md:text-sm">
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-600 md:mb-4 md:text-sm">
                 품목별 재고 현황
               </h2>
               <ItemCards />
@@ -221,7 +209,7 @@ export default function DashboardPage() {
 
         {/* Supabase 사용 시: 소진일 예측·데이터 관리·입출고 */}
         {useSupabaseInventory && (
-          <div className="mt-12 space-y-8 border-t border-zinc-700 pt-8">
+          <div className="mt-12 space-y-8 border-t border-slate-200 pt-8">
             <RunOutDateCard />
             <DataManagement />
             <TransactionTable />

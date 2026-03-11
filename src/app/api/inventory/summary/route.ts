@@ -88,6 +88,7 @@ export async function GET() {
     }
 
     const products = (productsRes.data ?? []) as InventoryProduct[];
+    const stockSnapshotRows = (snapshotRes.data ?? []) as { product_code: string; quantity: unknown; unit_cost: unknown; snapshot_date: string; dest_warehouse?: string }[];
     const currentCodes =
       currentRes.data != null
         ? (currentRes.data as { product_code: string }[]).map((r) => r.product_code)

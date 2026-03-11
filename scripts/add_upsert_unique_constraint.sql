@@ -1,0 +1,12 @@
+-- [DEPRECATED] 이 스크립트는 사용하지 마세요.
+-- UNIQUE 제약이 데이터 로딩·그래프 생성을 막습니다.
+-- 대신 scripts/rollback_unique_constraints.sql 실행 후
+-- 엑셀 업로드 시 코드에서 중복 병합(INSERT) 방식을 사용합니다.
+--
+-- -- 입고 (사용 중단)
+-- CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_upsert
+--   ON inventory_inbound (product_code, inbound_date, sales_channel);
+--
+-- -- 출고 (사용 중단)
+-- CREATE UNIQUE INDEX IF NOT EXISTS idx_outbound_upsert
+--   ON inventory_outbound (product_code, outbound_date, sales_channel);

@@ -28,7 +28,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <div
             style={{
               minHeight: "100vh",
-              backgroundColor: "#0a0a0b",
+              backgroundColor: "#E0E7FF",
               color: "#fafafa",
               padding: "2rem",
               fontFamily: "system-ui, sans-serif",

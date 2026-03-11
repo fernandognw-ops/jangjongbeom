@@ -20,15 +20,15 @@ export const viewport: Viewport = {
   maximumScale: 5,
   userScalable: true,
   viewportFit: "cover",
-  themeColor: "#0a0a0b",
+  themeColor: "#E0E7FF",
 };
 
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko" className="dark" suppressHydrationWarning>
-      <body className="font-sans min-h-screen bg-[#0a0a0b] text-white antialiased">
+    <html lang="ko" suppressHydrationWarning>
+      <body className="font-sans min-h-screen bg-[#E0E7FF] text-slate-800 antialiased">
         <ErrorBoundary>
           <InventoryProvider>{children}</InventoryProvider>
         </ErrorBoundary>

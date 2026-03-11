@@ -8,17 +8,18 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
--- 제품 마스터
+-- 제품 마스터 (표준 필드: product_code=바코드, product_name=상품명)
 CREATE TABLE IF NOT EXISTS inventory_products (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  code TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
+  product_code TEXT NOT NULL UNIQUE,
+  product_name TEXT NOT NULL DEFAULT '',
   group_name TEXT NOT NULL,
   sub_group TEXT DEFAULT '',
   spec TEXT DEFAULT '',
   unit_cost NUMERIC(12,2) DEFAULT 0,
   pack_size INTEGER DEFAULT 1,
   sales_channel sales_channel,
+  lead_time_days INTEGER DEFAULT 7,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -26,18 +27,17 @@ CREATE TABLE IF NOT EXISTS inventory_products (
 CREATE INDEX IF NOT EXISTS idx_inv_products_group ON inventory_products(group_name);
 CREATE INDEX IF NOT EXISTS idx_inv_products_channel ON inventory_products(sales_channel);
 
--- 입고
+-- 입고 (sales_channel 없음. dest_warehouse = 입고처: 테이칼튼→쿠팡, 제이에스→일반)
 CREATE TABLE IF NOT EXISTS inventory_inbound (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   product_code TEXT NOT NULL,
   quantity INTEGER NOT NULL,
-  sales_channel sales_channel NOT NULL,
   inbound_date DATE NOT NULL,
   source_warehouse TEXT,
-  dest_warehouse TEXT,
+  dest_warehouse TEXT,  -- 입고처
   note TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  FOREIGN KEY (product_code) REFERENCES inventory_products(code)
+  FOREIGN KEY (product_code) REFERENCES inventory_products(product_code)
 );
 
 CREATE INDEX IF NOT EXISTS idx_inv_inbound_date ON inventory_inbound(inbound_date DESC);
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS inventory_outbound (
   dest_warehouse TEXT,
   note TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  FOREIGN KEY (product_code) REFERENCES inventory_products(code)
+  FOREIGN KEY (product_code) REFERENCES inventory_products(product_code)
 );
 
 CREATE INDEX IF NOT EXISTS idx_inv_outbound_date ON inventory_outbound(outbound_date DESC);

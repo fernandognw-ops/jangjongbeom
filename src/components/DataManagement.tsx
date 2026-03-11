@@ -179,11 +179,11 @@ export function DataManagement() {
   };
 
   return (
-    <section className="rounded-lg border border-surface-border bg-surface-card p-2 md:rounded-xl md:p-6" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
+    <section className="rounded-2xl border border-slate-200 bg-white p-2 shadow-card md:p-6">
       <div className="flex flex-wrap items-center justify-between gap-2 md:gap-3">
         <div className="min-w-0 flex-1">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 md:text-sm">데이터 관리</h2>
-          <p className="mt-0.5 text-[10px] text-zinc-500 md:mt-1 md:text-sm md:text-zinc-300">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-600 md:text-sm">데이터 관리</h2>
+          <p className="mt-0.5 text-[10px] text-slate-500 md:mt-1 md:text-sm md:text-slate-600">
             Rawdata·입고·기초·출고·당일. CSV/Excel 지원.
           </p>
         </div>
@@ -197,7 +197,7 @@ export function DataManagement() {
       </div>
 
       {msg && (
-        <div className="mt-4 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100">
+        <div className="mt-4 rounded-lg border border-cyan-500/30 bg-indigo-500/10 px-3 py-2 text-sm text-cyan-100">
           {msg}
         </div>
       )}
@@ -205,9 +205,9 @@ export function DataManagement() {
       <div className="mt-3 grid gap-2 md:mt-5 md:gap-4 lg:grid-cols-2">
         {/* 1. Rawdata = 제품 품목 리스트 */}
         <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">1. Rawdata</div>
-          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">품목코드, 제품명, 품목구분, 원가</p>
-          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-600 md:text-xs">1. Rawdata</div>
+          <p className="mt-0.5 hidden text-xs text-slate-500 md:mt-1 md:block">품목코드, 제품명, 품목구분, 원가</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-indigo-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-indigo-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
             <span className="text-[10px] text-cyan-400 md:text-sm">{rawFile ? rawFile.name : "파일 선택 (CSV/Excel)"}</span>
             <input
               type="file"
@@ -216,19 +216,19 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-400 md:mt-3 md:gap-2 md:text-sm md:text-zinc-300">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-600 md:mt-3 md:gap-2 md:text-sm md:text-slate-600">
             <span>품목 {products.length.toLocaleString()}개</span>
             <button
               type="button"
               disabled={!rawParsed || rawParsed.products.length === 0}
               onClick={onApplyRaw}
-              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
+              className="rounded bg-indigo-500 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
               저장
             </button>
           </div>
           {rawParsed && (
-            <div className="mt-1 text-[10px] text-zinc-500 md:mt-2 md:text-xs">
+            <div className="mt-1 text-[10px] text-slate-500 md:mt-2 md:text-xs">
               감지: {rawParsed.products.length.toLocaleString()}개
             </div>
           )}
@@ -236,9 +236,9 @@ export function DataManagement() {
 
         {/* 2. 입고 = 순수 입고 (일자별) */}
         <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">2. 입고</div>
-          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">입고일자, 품목구분, 수량</p>
-          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-600 md:text-xs">2. 입고</div>
+          <p className="mt-0.5 hidden text-xs text-slate-500 md:mt-1 md:block">입고일자, 품목구분, 수량</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-indigo-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-indigo-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
             <span className="text-[10px] text-cyan-400 md:text-sm">{inFile ? inFile.name : "파일 선택"}</span>
             <input
               type="file"
@@ -247,19 +247,19 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-400 md:mt-3 md:gap-2 md:text-sm md:text-zinc-300">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-600 md:mt-3 md:gap-2 md:text-sm md:text-slate-600">
             <span>거래 {transactions.length.toLocaleString()}건</span>
             <button
               type="button"
               disabled={!inParsed || inParsed.txs.length === 0}
               onClick={onApplyIn}
-              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
+              className="rounded bg-indigo-500 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
               반영
             </button>
           </div>
           {inParsed?.summary && (
-            <div className="mt-1 text-[10px] text-zinc-500 md:mt-2 md:text-xs">
+            <div className="mt-1 text-[10px] text-slate-500 md:mt-2 md:text-xs">
               {inParsed.summary.dateMin ?? "-"}~{inParsed.summary.dateMax ?? "-"} {inParsed.summary.usedRows.toLocaleString()}건
             </div>
           )}
@@ -267,9 +267,9 @@ export function DataManagement() {
 
         {/* 3. 기초 재고 (파일 입력만) */}
         <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">3. 기초 재고</div>
-          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">품목구분, 수량</p>
-          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-600 md:text-xs">3. 기초 재고</div>
+          <p className="mt-0.5 hidden text-xs text-slate-500 md:mt-1 md:block">품목구분, 수량</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-indigo-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-indigo-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
             <span className="text-[10px] text-cyan-400 md:text-sm">{stockFile ? stockFile.name : "파일 선택"}</span>
             <input
               type="file"
@@ -287,13 +287,13 @@ export function DataManagement() {
                   Object.keys(stockParsed.baseStockByProduct).length === 0)
               }
               onClick={onApplyStock}
-              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
+              className="rounded bg-indigo-500 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
               반영
             </button>
           </div>
           {stockParsed?.summary && (
-            <div className="mt-1 text-[10px] text-zinc-500 md:text-xs">
+            <div className="mt-1 text-[10px] text-slate-500 md:text-xs">
               감지 {stockParsed.summary.usedRows.toLocaleString()}건
             </div>
           )}
@@ -301,9 +301,9 @@ export function DataManagement() {
 
         {/* 4. 출고 = 순수 출고 (일자별) */}
         <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">4. 출고</div>
-          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">출고일자, 품목구분, 수량</p>
-          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-600 md:text-xs">4. 출고</div>
+          <p className="mt-0.5 hidden text-xs text-slate-500 md:mt-1 md:block">출고일자, 품목구분, 수량</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-indigo-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-indigo-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
             <span className="text-[10px] text-cyan-400 md:text-sm">{outFile ? outFile.name : "파일 선택"}</span>
             <input
               type="file"
@@ -312,19 +312,19 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-400 md:mt-3 md:gap-2 md:text-sm md:text-zinc-300">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-slate-600 md:mt-3 md:gap-2 md:text-sm md:text-slate-600">
             <span className="hidden md:inline">수량만 반영</span>
             <button
               type="button"
               disabled={!outParsed || outParsed.txs.length === 0}
               onClick={onApplyOut}
-              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
+              className="rounded bg-indigo-500 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
               반영
             </button>
           </div>
           {outParsed?.summary && (
-            <div className="mt-1 text-[10px] text-zinc-500 md:mt-2 md:text-xs">
+            <div className="mt-1 text-[10px] text-slate-500 md:mt-2 md:text-xs">
               {outParsed.summary.dateMin ?? "-"}~{outParsed.summary.dateMax ?? "-"} {outParsed.summary.usedRows.toLocaleString()}건
             </div>
           )}
@@ -333,12 +333,12 @@ export function DataManagement() {
 
       {/* 5. 당일 재고 (실사/실제 재고) */}
       <div className="mt-3 rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:mt-6 md:rounded-xl md:p-4">
-        <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">5. 당일 재고</div>
-        <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">실사/실제 재고 수량</p>
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-600 md:text-xs">5. 당일 재고</div>
+        <p className="mt-0.5 hidden text-xs text-slate-500 md:mt-1 md:block">실사/실제 재고 수량</p>
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:mt-3 md:gap-3 lg:grid-cols-5">
           {ITEMS.map((item) => (
             <label key={item.id} className="block">
-              <span className="mb-0.5 block text-[10px] text-zinc-500 md:mb-1 md:text-xs">{item.name}</span>
+              <span className="mb-0.5 block text-[10px] text-slate-500 md:mb-1 md:text-xs">{item.name}</span>
               <input
                 type="text"
                 inputMode="numeric"
@@ -349,14 +349,14 @@ export function DataManagement() {
                   setDailyStock(next);
                 }}
                 placeholder="0"
-                className="w-full rounded border border-surface-border bg-surface-card px-2 py-1.5 text-xs text-white placeholder-zinc-500 focus:ring-2 focus:ring-cyan-500/50 min-h-[36px] touch-manipulation md:rounded-lg md:px-3 md:py-2.5 md:text-sm md:min-h-[44px]"
+                className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-indigo-500/50 min-h-[36px] touch-manipulation md:rounded-lg md:px-3 md:py-2.5 md:text-sm md:min-h-[44px]"
               />
             </label>
           ))}
         </div>
         <div className="mt-2 border-t border-surface-border/50 pt-2 md:mt-3 md:pt-3">
-          <span className="mb-1 block text-[10px] text-zinc-500 md:mb-2 md:text-xs">또는 CSV 업로드</span>
-          <label className="relative flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+          <span className="mb-1 block text-[10px] text-slate-500 md:mb-2 md:text-xs">또는 CSV 업로드</span>
+          <label className="relative flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-indigo-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-indigo-500/10 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
             <span className="text-[10px] text-cyan-400 md:text-sm">{dailyFile ? dailyFile.name : "파일 선택"}</span>
             <input
               type="file"
@@ -370,13 +370,13 @@ export function DataManagement() {
               type="button"
               disabled={!dailyParsed || !Object.values(dailyParsed.baseStock).some((v) => v > 0)}
               onClick={onApplyDailyStock}
-              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 min-h-[36px] touch-manipulation md:rounded-lg md:px-3 md:py-2 md:text-sm md:min-h-[44px]"
+              className="rounded bg-indigo-500 px-2 py-1 text-[10px] font-medium text-white hover:bg-indigo-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 min-h-[36px] touch-manipulation md:rounded-lg md:px-3 md:py-2 md:text-sm md:min-h-[44px]"
             >
               반영
             </button>
           </div>
           {dailyParsed?.summary && (
-            <div className="mt-1 text-[10px] text-zinc-500 md:text-xs">감지 {dailyParsed.summary.usedRows.toLocaleString()}건</div>
+            <div className="mt-1 text-[10px] text-slate-500 md:text-xs">감지 {dailyParsed.summary.usedRows.toLocaleString()}건</div>
           )}
         </div>
       </div>

@@ -129,11 +129,11 @@ export function ProductionSheetUploader() {
   );
 
   return (
-    <div className="rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 md:p-6">
-      <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 md:text-base">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
+      <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 md:text-base">
         생산수불현황 업로드
       </h2>
-      <p className="mt-1 text-xs text-zinc-500 md:text-sm">
+      <p className="mt-1 text-xs text-slate-500 md:text-sm">
         담당자가 매일 아침 집계한 생산수불현황.xlsx를 드래그 앤 드롭하여 DB를 갱신합니다.
       </p>
 
@@ -143,8 +143,8 @@ export function ProductionSheetUploader() {
         onDragLeave={onDragLeave}
         className={`relative mt-4 flex min-h-[140px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed transition-colors md:min-h-[180px] ${
           isDragging
-            ? "border-cyan-500 bg-cyan-500/10"
-            : "border-zinc-600 bg-zinc-800/50 hover:border-zinc-500 hover:bg-zinc-800/70"
+            ? "border-indigo-500 bg-indigo-50"
+            : "border-slate-300 bg-slate-50 hover:border-indigo-400 hover:bg-indigo-50/50"
         }`}
       >
         <input
@@ -160,20 +160,20 @@ export function ProductionSheetUploader() {
         >
           {status === "parsing" || status === "uploading" ? (
             <div className="flex flex-col items-center gap-1">
-              <span className="text-sm text-cyan-400">{progress || (status === "parsing" ? "파일 파싱 중…" : "DB 저장 중…")}</span>
-              <span className="text-xs text-zinc-500">{status === "parsing" ? "날짜 변환 중…" : "배치 저장 중…"}</span>
+              <span className="text-sm text-indigo-600">{progress || (status === "parsing" ? "파일 파싱 중…" : "DB 저장 중…")}</span>
+              <span className="text-xs text-slate-500">{status === "parsing" ? "날짜 변환 중…" : "배치 저장 중…"}</span>
             </div>
           ) : file ? (
-            <span className="text-sm font-medium text-cyan-400">{file.name}</span>
+            <span className="text-sm font-medium text-indigo-600">{file.name}</span>
           ) : (
             <>
-              <span className="text-4xl text-zinc-500" aria-hidden>
+              <span className="text-4xl text-slate-400" aria-hidden>
                 📄
               </span>
-              <span className="mt-2 text-sm text-zinc-400">
+              <span className="mt-2 text-sm text-slate-600">
                 생산수불현황.xlsx를 여기에 드래그하거나 클릭하여 선택
               </span>
-              <span className="mt-1 text-xs text-zinc-500">
+              <span className="mt-1 text-xs text-slate-500">
                 입고·출고·재고 시트 필수
               </span>
             </>
@@ -183,12 +183,12 @@ export function ProductionSheetUploader() {
 
       {message && (
         <div
-          className={`mt-4 rounded-lg px-4 py-3 text-sm ${
+          className={`mt-4 rounded-xl px-4 py-3 text-sm ${
             status === "error"
-              ? "border border-red-500/40 bg-red-500/10 text-red-300"
+              ? "border border-red-200 bg-red-50 text-red-700"
               : status === "success"
-                ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
-                : "border border-zinc-600 bg-zinc-800/50 text-zinc-300"
+                ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                : "border border-slate-200 bg-slate-50 text-slate-700"
           }`}
           role="alert"
         >

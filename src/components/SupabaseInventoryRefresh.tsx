@@ -68,14 +68,14 @@ export function SupabaseInventoryRefresh() {
 
   return (
     <div className="mt-2 flex flex-wrap items-center gap-2">
-      <span className="text-[10px] text-emerald-400 md:text-xs">
+      <span className="text-[10px] text-emerald-600 md:text-xs">
         Supabase inventory_* 테이블 연동
       </span>
       <button
         type="button"
         onClick={handleRefresh}
         disabled={loading}
-        className="rounded border border-cyan-500/50 bg-cyan-500/10 px-2 py-1 text-[10px] font-medium text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-50 md:text-xs"
+        className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 md:text-xs"
       >
         {loading ? "새로고침 중..." : "새로고침"}
       </button>
@@ -83,7 +83,7 @@ export function SupabaseInventoryRefresh() {
         type="button"
         onClick={handleDiag}
         disabled={diagLoading}
-        className="rounded border border-zinc-500/50 bg-zinc-500/10 px-2 py-1 text-[10px] font-medium text-zinc-300 hover:bg-zinc-500/20 disabled:opacity-50 md:text-xs"
+        className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 md:text-xs"
         title="Supabase 테이블 row 수 및 재고금액 확인"
       >
         {diagLoading ? "확인 중..." : "데이터 진단"}
@@ -92,13 +92,13 @@ export function SupabaseInventoryRefresh() {
         type="button"
         onClick={handleTestAlert}
         disabled={alertLoading}
-        className="rounded border border-amber-500/50 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-50 md:text-xs"
+        className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50 md:text-xs"
         title="품절 임박 핵심 품목(1,000만원+) 알림 테스트"
       >
         {alertLoading ? "확인 중..." : "알림 테스트"}
       </button>
       {(alertResult || diagResult) && (
-        <span className="text-[10px] text-zinc-400">{diagResult ?? alertResult}</span>
+        <span className="text-[10px] text-slate-600">{diagResult ?? alertResult}</span>
       )}
     </div>
   );

@@ -2,19 +2,23 @@
 """
 생산수불현황 Excel → Supabase 업로드 스크립트
 
-products, inbound, outbound 테이블에 자동 업로드합니다.
+inventory_products, inventory_inbound, inventory_outbound 테이블에 자동 업로드합니다.
+
+- 품번/품목코드/SKU → code (제품 식별자)
+- 날짜: 25.03.01, 2025-03-01 등 다양한 형식 → YYYY-MM-DD 자동 변환
+- 중복: DB 기존 + 파일 내 동일 건(product_code, date, qty, channel) 자동 제외
 
 사용법:
   python upload_excel_to_supabase.py [Excel파일경로]
+  python upload_excel_to_supabase.py "25년 3월마감_생산수불현황.xlsx" --dry-run
+
+25년 3월~26년 2월 자료를 순서대로 업로드:
+  python upload_excel_to_supabase.py "25년 3월마감_생산수불현황.xlsx"
+  python upload_excel_to_supabase.py "25년 4월마감_생산수불현황.xlsx"
+  ...
 
 환경변수:
-  SUPABASE_URL      - Supabase Project URL (필수)
-  SUPABASE_KEY      - Supabase anon key 또는 service_role key (필수)
-
-예시:
-  set SUPABASE_URL=https://xxxxx.supabase.co
-  set SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-  python upload_excel_to_supabase.py "C:/Downloads/0304_생산수불현황.xlsx"
+  SUPABASE_URL, SUPABASE_KEY (또는 NEXT_PUBLIC_*)
 """
 
 import argparse
@@ -37,8 +41,16 @@ except ImportError:
 
 
 def find_col(df: pd.DataFrame, header_row: int, names: list[str]) -> int:
-    """헤더 행에서 컬럼명 찾기 (부분 일치)"""
+    """헤더 행에서 컬럼명 찾기 (정확 일치 우선, 없으면 부분 일치)"""
     row = df.iloc[header_row]
+    # 1순위: 정확 일치 (입수량 vs 수량 구분)
+    for n in names:
+        n_clean = n.replace(" ", "").replace("\n", "").lower()
+        for i in range(len(row)):
+            v = str(row.iloc[i] or "").replace(" ", "").replace("\n", "").lower()
+            if v == n_clean:
+                return i
+    # 2순위: 부분 일치
     for n in names:
         n_clean = n.replace(" ", "").replace("\n", "").lower()
         for i in range(len(row)):
@@ -76,31 +88,54 @@ def safe_float(val: Any) -> Optional[float]:
 
 
 def parse_date(val: Any) -> Optional[str]:
-    """날짜를 YYYY-MM-DD로"""
+    """날짜를 YYYY-MM-DD 형식으로 자동 변환 (과거 자료 다양한 형식 지원)"""
     if pd.isna(val):
         return None
     if isinstance(val, datetime):
         return val.strftime("%Y-%m-%d")
-    if isinstance(val, str) and len(val) >= 10:
-        return val[:10]
+    s = str(val).strip()
+    if not s:
+        return None
+    # 이미 YYYY-MM-DD 형태
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return s[:10]
+    # YYYY.MM.DD, YYYY/MM/DD
+    if len(s) >= 10 and s[4] in "./" and s[7] in "./":
+        try:
+            dt = pd.to_datetime(s[:10].replace(".", "-").replace("/", "-"))
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    # 25.03.01, 2025.03.01, 250301, 20250301 등
     try:
         dt = pd.to_datetime(val)
         return dt.strftime("%Y-%m-%d")
     except Exception:
-        return None
+        pass
+    # 25-03-01 → 2025-03-01
+    if len(s) == 8 and s[2] in "-./" and s[5] in "-./":
+        try:
+            y, m, d = s.split(s[2])[0], s.split(s[2])[1], s.split(s[2])[2]
+            year = int(y)
+            if year < 100:
+                year += 2000 if year < 50 else 1900
+            return f"{year:04d}-{int(m):02d}-{int(d):02d}"
+        except Exception:
+            pass
+    return None
 
 
 def load_products(df: pd.DataFrame, sheet_name: str) -> list[dict]:
     """Rawdata 시트에서 제품 목록 추출"""
     products = []
     for i in range(10):
-        if find_col(df, i, ["품목코드", "제품코드"]) >= 0:
+        if find_col(df, i, ["품목코드", "품번", "제품코드", "SKU"]) >= 0:
             header_row = i
             break
     else:
         return []
 
-    idx_code = find_col(df, header_row, ["품목코드", "제품코드", "코드"])
+    idx_code = find_col(df, header_row, ["품목코드", "품번", "제품코드", "SKU", "코드"])
     idx_name = find_col(df, header_row, ["품목명", "제품명", "상품명"])
     idx_group = find_col(df, header_row, ["품목구분", "품목"])
     idx_cost = find_col(df, header_row, ["원가", "제품원가표", "단가"])
@@ -118,7 +153,11 @@ def load_products(df: pd.DataFrame, sheet_name: str) -> list[dict]:
         code = str(row.iloc[idx_code] or "").strip()
         name = str(row.iloc[idx_name] or "").strip()
         group = str(row.iloc[idx_group] or "").strip()
-        if not code or not name:
+        if not code or code.lower() == "nan" or not name or name.lower() == "nan":
+            continue
+        # 품목코드/품번은 숫자 위주 (예: 8809912471715) - "3월 잔여출고" 등 제외
+        digits = sum(1 for c in code if c.isdigit())
+        if len(code) < 5 or digits < len(code) * 0.5:
             continue
         if code in seen:
             continue
@@ -154,7 +193,7 @@ def load_inbound(df: pd.DataFrame) -> list[dict]:
     else:
         return []
 
-    idx_code = find_col(df, header_row, ["품목코드", "제품코드"])
+    idx_code = find_col(df, header_row, ["품목코드", "품번", "제품코드", "SKU"])
     idx_qty = find_col(df, header_row, ["수량"])
     idx_date = find_col(df, header_row, ["입고일자", "입고일", "일자"])
     idx_source = find_col(df, header_row, ["출고처", "생산처"])
@@ -195,7 +234,7 @@ def load_outbound(df: pd.DataFrame) -> list[dict]:
     else:
         return []
 
-    idx_code = find_col(df, header_row, ["품목코드", "제품코드"])
+    idx_code = find_col(df, header_row, ["품목코드", "품번", "제품코드", "SKU"])
     idx_qty = find_col(df, header_row, ["수량"])
     idx_date = find_col(df, header_row, ["출고일자", "출고일", "일자"])
     idx_source = find_col(df, header_row, ["출고처"])
@@ -224,6 +263,64 @@ def load_outbound(df: pd.DataFrame) -> list[dict]:
             "note": str(row.iloc[idx_name] or "").strip()[:200] if idx_name >= 0 else None,
         })
     return records
+
+
+def _inbound_dedup_key(r: dict) -> tuple:
+    """중복 판별용 키: (product_code, inbound_date, quantity, sales_channel)"""
+    return (
+        str(r.get("product_code", "")),
+        str(r.get("inbound_date", "")),
+        int(r.get("quantity", 0)),
+        str(r.get("sales_channel", "general")),
+    )
+
+
+def _outbound_dedup_key(r: dict) -> tuple:
+    """중복 판별용 키"""
+    return (
+        str(r.get("product_code", "")),
+        str(r.get("outbound_date", "")),
+        int(r.get("quantity", 0)),
+        str(r.get("sales_channel", "general")),
+    )
+
+
+def fetch_existing_inbound_keys(supabase: Client, table: str) -> set[tuple]:
+    """DB에 이미 있는 입고 건의 (product_code, inbound_date, quantity, sales_channel) 집합"""
+    keys = set()
+    try:
+        resp = supabase.table(table).select("product_code,inbound_date,quantity,sales_channel").execute()
+        for row in resp.data or []:
+            keys.add(
+                (
+                    str(row.get("product_code", "")),
+                    str(row.get("inbound_date", ""))[:10],
+                    int(row.get("quantity", 0)),
+                    str(row.get("sales_channel", "general")),
+                )
+            )
+    except Exception as e:
+        print(f"  기존 입고 조회 경고: {e}")
+    return keys
+
+
+def fetch_existing_outbound_keys(supabase: Client, table: str) -> set[tuple]:
+    """DB에 이미 있는 출고 건의 키 집합"""
+    keys = set()
+    try:
+        resp = supabase.table(table).select("product_code,outbound_date,quantity,sales_channel").execute()
+        for row in resp.data or []:
+            keys.add(
+                (
+                    str(row.get("product_code", "")),
+                    str(row.get("outbound_date", ""))[:10],
+                    int(row.get("quantity", 0)),
+                    str(row.get("sales_channel", "general")),
+                )
+            )
+    except Exception as e:
+        print(f"  기존 출고 조회 경고: {e}")
+    return keys
 
 
 def ensure_products_from_transactions(
@@ -294,13 +391,20 @@ def main() -> None:
     xl = pd.ExcelFile(file_path)
     sheet_names = xl.sheet_names
 
-    # 시트 찾기 (이름 유사도)
-    raw_sheet = next((s for s in sheet_names if "raw" in s.lower() or "제품" in s.lower()), None)
-    in_sheet = next((s for s in sheet_names if "입고" in s), None)
-    out_sheet = next((s for s in sheet_names if "출고" in s), None)
+    # 시트 찾기 (수불 마감 자료 형식: 생산계획_전체, 입고, 출고 등)
+    raw_sheet = next(
+        (s for s in sheet_names if "raw" in s.lower() or "제품" in s or "생산계획" in s),
+        None,
+    )
+    in_sheet = next((s for s in sheet_names if s == "입고" or "입고" in s), None)
+    out_sheet = next((s for s in sheet_names if s == "출고" or "출고" in s), None)
 
     if not raw_sheet:
-        raw_sheet = "Rawdata" if "Rawdata" in sheet_names else sheet_names[0]
+        raw_sheet = (
+            "Rawdata"
+            if "Rawdata" in sheet_names
+            else ("생산계획_전체" if "생산계획_전체" in sheet_names else sheet_names[0])
+        )
     if not in_sheet:
         in_sheet = "입고" if "입고" in sheet_names else None
     if not out_sheet:
@@ -370,29 +474,55 @@ def main() -> None:
                 print(f"  → supabase-schema-inventory-alt.sql 실행 후 재시도")
                 raise
 
-    # 2. inbound insert
+    # 2. inbound insert (DB 기존 + 파일 내 중복 제거)
     if inbound:
-        print("\n입고 업로드 중...")
-        for i in range(0, len(inbound), 100):
-            batch = inbound[i : i + 100]
-            try:
-                supabase.table(TABLE_INBOUND).insert(batch).execute()
-                print(f"  {min(i + 100, len(inbound))}/{len(inbound)} 완료")
-            except Exception as e:
-                print(f"  오류: {e}")
-                raise
+        existing_in = fetch_existing_inbound_keys(supabase, TABLE_INBOUND)
+        seen_in_file: set[tuple] = set()
+        to_insert = []
+        for r in inbound:
+            k = _inbound_dedup_key(r)
+            if k in existing_in or k in seen_in_file:
+                continue
+            seen_in_file.add(k)
+            to_insert.append(r)
+        skipped = len(inbound) - len(to_insert)
+        if skipped:
+            print(f"\n입고: 기존 중복 {skipped}건 제외, 신규 {len(to_insert)}건 업로드")
+        if to_insert:
+            print("\n입고 업로드 중...")
+            for i in range(0, len(to_insert), 100):
+                batch = to_insert[i : i + 100]
+                try:
+                    supabase.table(TABLE_INBOUND).insert(batch).execute()
+                    print(f"  {min(i + 100, len(to_insert))}/{len(to_insert)} 완료")
+                except Exception as e:
+                    print(f"  오류: {e}")
+                    raise
 
-    # 3. outbound insert
+    # 3. outbound insert (DB 기존 + 파일 내 중복 제거)
     if outbound:
-        print("\n출고 업로드 중...")
-        for i in range(0, len(outbound), 100):
-            batch = outbound[i : i + 100]
-            try:
-                supabase.table(TABLE_OUTBOUND).insert(batch).execute()
-                print(f"  {min(i + 100, len(outbound))}/{len(outbound)} 완료")
-            except Exception as e:
-                print(f"  오류: {e}")
-                raise
+        existing_out = fetch_existing_outbound_keys(supabase, TABLE_OUTBOUND)
+        seen_out_file: set[tuple] = set()
+        to_insert = []
+        for r in outbound:
+            k = _outbound_dedup_key(r)
+            if k in existing_out or k in seen_out_file:
+                continue
+            seen_out_file.add(k)
+            to_insert.append(r)
+        skipped = len(outbound) - len(to_insert)
+        if skipped:
+            print(f"\n출고: 기존 중복 {skipped}건 제외, 신규 {len(to_insert)}건 업로드")
+        if to_insert:
+            print("\n출고 업로드 중...")
+            for i in range(0, len(to_insert), 100):
+                batch = to_insert[i : i + 100]
+                try:
+                    supabase.table(TABLE_OUTBOUND).insert(batch).execute()
+                    print(f"  {min(i + 100, len(to_insert))}/{len(to_insert)} 완료")
+                except Exception as e:
+                    print(f"  오류: {e}")
+                    raise
 
     print("\n업로드 완료.")
 

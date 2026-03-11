@@ -276,31 +276,31 @@ export function DashboardBoxHero() {
 
   const channelTheme = {
     all: {
-      border: "border-zinc-700",
-      bg: "bg-zinc-900/50",
-      accent: "cyan",
-      totalBorder: "border-cyan-500/40",
-      totalBg: "from-cyan-500/15",
-      totalText: "text-cyan-400",
-      tabActive: "bg-zinc-600 text-white",
+      border: "border-slate-200",
+      bg: "bg-white",
+      accent: "indigo",
+      totalBorder: "border-indigo-200",
+      totalBg: "from-indigo-50",
+      totalText: "text-indigo-600",
+      tabActive: "bg-indigo-500 text-white",
     },
     coupang: {
-      border: "border-orange-500/30",
-      bg: "bg-orange-500/5",
+      border: "border-orange-200",
+      bg: "bg-white",
       accent: "orange",
-      totalBorder: "border-orange-500/40",
-      totalBg: "from-orange-500/15",
-      totalText: "text-orange-400",
-      tabActive: "bg-orange-500/90 text-white",
+      totalBorder: "border-orange-200",
+      totalBg: "from-orange-50",
+      totalText: "text-orange-600",
+      tabActive: "bg-orange-500 text-white",
     },
     general: {
-      border: "border-sky-500/30",
-      bg: "bg-sky-500/5",
-      accent: "blue",
-      totalBorder: "border-sky-500/40",
-      totalBg: "from-sky-500/15",
-      totalText: "text-sky-400",
-      tabActive: "bg-sky-500/90 text-white",
+      border: "border-sky-200",
+      bg: "bg-white",
+      accent: "sky",
+      totalBorder: "border-sky-200",
+      totalBg: "from-sky-50",
+      totalText: "text-sky-600",
+      tabActive: "bg-sky-500 text-white",
     },
   };
   const theme = channelTheme[channel];
@@ -310,9 +310,9 @@ export function DashboardBoxHero() {
   }
 
   return (
-    <div className={`min-w-0 space-y-6 overflow-hidden rounded-2xl border ${theme.border} ${theme.bg} p-4 transition-colors md:p-6`}>
+    <div className={`min-w-0 space-y-6 overflow-hidden rounded-2xl border ${theme.border} ${theme.bg} p-4 shadow-card transition-colors md:p-6`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-lg font-bold text-white md:text-xl">
+        <h1 className="text-lg font-bold text-slate-800 md:text-xl">
           재고 대시보드
         </h1>
         <SupabaseInventoryRefresh />
@@ -320,14 +320,14 @@ export function DashboardBoxHero() {
 
       {/* 채널 탭: 전체 | 쿠팡 보유 재고 | 일반 보유 재고 */}
       <div className="space-y-2">
-        <div className="flex gap-2 rounded-xl border border-zinc-700 bg-zinc-900/80 p-1">
+        <div className="flex gap-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
           <button
             type="button"
             onClick={() => setChannel("all")}
             className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
               channel === "all"
-                ? "bg-zinc-600 text-white"
-                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                ? "bg-indigo-500 text-white shadow-sm"
+                : "text-slate-600 hover:bg-slate-200"
             }`}
           >
             전체
@@ -337,8 +337,8 @@ export function DashboardBoxHero() {
             onClick={() => setChannel("coupang")}
             className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
               channel === "coupang"
-                ? "bg-orange-500/90 text-white"
-                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                ? "bg-orange-500 text-white shadow-sm"
+                : "text-slate-600 hover:bg-slate-200"
             }`}
           >
             쿠팡 보유 재고
@@ -348,26 +348,26 @@ export function DashboardBoxHero() {
             onClick={() => setChannel("general")}
             className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
               channel === "general"
-                ? "bg-sky-500/90 text-white"
-                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                ? "bg-sky-500 text-white shadow-sm"
+                : "text-slate-600 hover:bg-slate-200"
             }`}
           >
             일반 보유 재고
           </button>
         </div>
-        <div className="flex flex-wrap gap-4 text-sm text-zinc-400">
-          <span>쿠팡: <span className="font-semibold text-orange-400">{coupangStockTotal.toLocaleString()}EA</span></span>
-          <span>일반: <span className="font-semibold text-sky-400">{generalStockTotal.toLocaleString()}EA</span></span>
+        <div className="flex flex-wrap gap-4 text-sm text-slate-600">
+          <span>쿠팡: <span className="font-semibold text-orange-600">{coupangStockTotal.toLocaleString()}EA</span></span>
+          <span>일반: <span className="font-semibold text-sky-600">{generalStockTotal.toLocaleString()}EA</span></span>
         </div>
       </div>
 
       {/* 마이너스 재고 경고 */}
       {negativeStockCount > 0 && (
-        <div className="flex items-center gap-2 rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-3">
+        <div className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 shadow-sm">
           <span className="text-lg" role="img" aria-label="경고">
             ⚠️
           </span>
-          <span className="text-sm text-amber-300">
+          <span className="text-sm text-amber-800">
             {channel === "all" ? "전체" : channel === "coupang" ? "쿠팡" : "일반"} 채널에서 입고 없이 출고만 있는 제품이 {negativeStockCount}건 있습니다. 재고는 0으로 표시됩니다.
           </span>
         </div>
@@ -378,10 +378,10 @@ export function DashboardBoxHero() {
         <button
           type="button"
           onClick={() => setProductFilter("active")}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
             productFilter === "active"
-              ? "bg-emerald-500/90 text-white"
-              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+              ? "bg-emerald-500 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
           }`}
         >
           현재 운영 ({activeProducts.length}건)
@@ -389,10 +389,10 @@ export function DashboardBoxHero() {
         <button
           type="button"
           onClick={() => setProductFilter("discontinued")}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
             productFilter === "discontinued"
-              ? "bg-amber-500/90 text-white"
-              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+              ? "bg-amber-500 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
           }`}
         >
           단종 품목 ({discontinuedProducts.length}건)
@@ -400,10 +400,10 @@ export function DashboardBoxHero() {
         <button
           type="button"
           onClick={() => setProductFilter("all")}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
             productFilter === "all"
-              ? "bg-zinc-600 text-white"
-              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+              ? "bg-indigo-500 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
           }`}
         >
           전체 ({inventoryProducts.length}건)
@@ -411,10 +411,10 @@ export function DashboardBoxHero() {
         <button
           type="button"
           onClick={() => setShowNormal((v) => !v)}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
             showNormal
-              ? "bg-zinc-600 text-white"
-              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+              ? "bg-slate-600 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
           }`}
         >
           {showNormal ? "정상 숨기기" : "정상 표시"}
@@ -423,122 +423,122 @@ export function DashboardBoxHero() {
 
       {/* 상단 요약 카드 */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-        <div className="rounded-2xl border border-zinc-700 bg-zinc-900/80 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-slate-500">
             전체 품목
           </div>
-          <div className="mt-2 text-2xl font-bold tabular-nums text-white md:text-3xl">
+          <div className="mt-2 text-2xl font-bold tabular-nums text-slate-800 md:text-3xl">
             {activeProducts.length.toLocaleString()}건
           </div>
         </div>
-        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-red-400">
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-red-600">
             데이터 오류
           </div>
-          <div className="mt-2 text-2xl font-bold tabular-nums text-red-300 md:text-3xl">
+          <div className="mt-2 text-2xl font-bold tabular-nums text-red-700 md:text-3xl">
             {warningCount.toLocaleString()}건
           </div>
-          <div className="mt-1 text-[10px] text-zinc-500">재고 ≤ 0</div>
+          <div className="mt-1 text-[10px] text-slate-500">재고 ≤ 0</div>
         </div>
-        <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-rose-400">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-rose-600">
             품절 임박
           </div>
-          <div className="mt-2 text-2xl font-bold tabular-nums text-rose-300 md:text-3xl">
+          <div className="mt-2 text-2xl font-bold tabular-nums text-rose-700 md:text-3xl">
             {nearOutCount.toLocaleString()}건
           </div>
-          <div className="mt-1 text-[10px] text-zinc-500">보유 일수 ≤ 3일</div>
+          <div className="mt-1 text-[10px] text-slate-500">보유 일수 ≤ 3일</div>
         </div>
-        <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-amber-400">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-amber-600">
             부족
           </div>
-          <div className="mt-2 text-2xl font-bold tabular-nums text-amber-300 md:text-3xl">
+          <div className="mt-2 text-2xl font-bold tabular-nums text-amber-700 md:text-3xl">
             {lowCount.toLocaleString()}건
           </div>
-          <div className="mt-1 text-[10px] text-zinc-500">보유 일수 &lt; 14일</div>
+          <div className="mt-1 text-[10px] text-slate-500">보유 일수 &lt; 14일</div>
         </div>
-        <div className="rounded-2xl border border-violet-500/40 bg-violet-500/10 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-violet-400">
+        <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-violet-600">
             과재고
           </div>
-          <div className="mt-2 text-2xl font-bold tabular-nums text-violet-300 md:text-3xl">
+          <div className="mt-2 text-2xl font-bold tabular-nums text-violet-700 md:text-3xl">
             {overstockCount.toLocaleString()}건
           </div>
           <div className="mt-1 text-[10px] text-zinc-500">보유 일수 ≥ 60일</div>
         </div>
-        <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-emerald-400">
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-emerald-600">
             오늘 입고/출고
           </div>
-          <div className="mt-2 text-2xl font-bold tabular-nums text-emerald-300 md:text-3xl">
+          <div className="mt-2 text-2xl font-bold tabular-nums text-emerald-700 md:text-3xl">
             {todayInOutCount.inbound} / {todayInOutCount.outbound}건
           </div>
         </div>
         {momIndicators && (
           <>
-            <div className="rounded-2xl border border-cyan-500/40 bg-cyan-500/10 p-5 shadow-lg">
-              <div className="text-xs font-medium uppercase tracking-wider text-cyan-400">
+            <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-5 shadow-card">
+              <div className="text-xs font-medium uppercase tracking-wider text-indigo-600">
                 이번 달 총 판매량
               </div>
               <div className="mt-2 flex items-baseline gap-2">
-                <span className="text-2xl font-bold tabular-nums text-cyan-300 md:text-3xl">
+                <span className="text-2xl font-bold tabular-nums text-indigo-700 md:text-3xl">
                   {momIndicators.thisMonthOutbound.toLocaleString()}건
                 </span>
                 {momIndicators.outbound != null && (
-                  <span className={`text-sm font-medium ${momIndicators.outbound >= 0 ? "text-red-400" : "text-blue-400"}`}>
+                  <span className={`text-sm font-medium ${momIndicators.outbound >= 0 ? "text-red-600" : "text-blue-600"}`}>
                     {momIndicators.outbound >= 0 ? "▲" : "▼"} {Math.abs(momIndicators.outbound)}%
                   </span>
                 )}
               </div>
-              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-zinc-400">
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-600">
                 <span>쿠팡: {(momIndicators.thisMonthOutboundCoupang ?? 0).toLocaleString()}EA</span>
                 <span>일반: {(momIndicators.thisMonthOutboundGeneral ?? 0).toLocaleString()}EA</span>
               </div>
-              <div className="mt-0.5 text-[10px] text-zinc-500">전월 대비</div>
+              <div className="mt-0.5 text-[10px] text-slate-500">전월 대비</div>
             </div>
-            <div className="rounded-2xl border border-sky-500/40 bg-sky-500/10 p-5 shadow-lg">
-              <div className="text-xs font-medium uppercase tracking-wider text-sky-400">
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-5 shadow-card">
+              <div className="text-xs font-medium uppercase tracking-wider text-sky-600">
                 이번 달 총 입고량
               </div>
               <div className="mt-2 flex items-baseline gap-2">
-                <span className="text-2xl font-bold tabular-nums text-sky-300 md:text-3xl">
+                <span className="text-2xl font-bold tabular-nums text-sky-700 md:text-3xl">
                   {momIndicators.thisMonthInbound.toLocaleString()}EA
                 </span>
                 {momIndicators.inbound != null && (
-                  <span className={`text-sm font-medium ${momIndicators.inbound >= 0 ? "text-red-400" : "text-blue-400"}`}>
+                  <span className={`text-sm font-medium ${momIndicators.inbound >= 0 ? "text-red-600" : "text-blue-600"}`}>
                     {momIndicators.inbound >= 0 ? "▲" : "▼"} {Math.abs(momIndicators.inbound)}%
                   </span>
                 )}
               </div>
-              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-zinc-400">
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-600">
                 <span>쿠팡: {(momIndicators.thisMonthInboundCoupang ?? 0).toLocaleString()}EA</span>
                 <span>일반: {(momIndicators.thisMonthInboundGeneral ?? 0).toLocaleString()}EA</span>
               </div>
-              <div className="mt-0.5 text-[10px] text-zinc-500">전월 대비</div>
+              <div className="mt-0.5 text-[10px] text-slate-500">전월 대비</div>
             </div>
           </>
         )}
       </div>
 
       {/* 총 재고 금액 (채널별 실시간 재계산) */}
-      <div className={`rounded-2xl border ${theme.totalBorder} bg-gradient-to-br ${theme.totalBg} to-transparent p-5`}>
+      <div className={`rounded-2xl border ${theme.totalBorder} bg-white p-5 shadow-card`}>
         <div className={`text-xs font-medium uppercase tracking-wider ${theme.totalText}`}>
           재고 금액
           {channel !== "all" && (
-            <span className="ml-2 text-zinc-500">
+            <span className="ml-2 text-slate-500">
               — {channel === "coupang" ? "쿠팡" : "일반"} 채널
             </span>
           )}
         </div>
-        <div className="mt-1 text-2xl font-bold tabular-nums text-white md:text-3xl">
+        <div className="mt-1 text-2xl font-bold tabular-nums text-slate-800 md:text-3xl">
           {totalValue.toLocaleString()}원
         </div>
         {channel === "all" && valueVariance != null && lastMonthEndValue != null && lastMonthEndValue > 0 && (
-          <div className="mt-1 text-xs text-zinc-500">
+          <div className="mt-1 text-xs text-slate-500">
             전월 말 대비 {valueVariance >= 0 ? "+" : ""}{valueVariance.toLocaleString()}원
             {valueVariance !== 0 && (
-              <span className={`ml-1 ${valueVariance > 0 ? "text-emerald-400" : "text-red-400"}`}>
+              <span className={`ml-1 ${valueVariance > 0 ? "text-emerald-600" : "text-red-600"}`}>
                 ({valueVariance > 0 ? "▲" : "▼"} {Math.abs(Math.round((valueVariance / lastMonthEndValue) * 100))}%)
               </span>
             )}
@@ -551,14 +551,14 @@ export function DashboardBoxHero() {
         <button
           type="button"
           onClick={() => setSelectedCategory(null)}
-          className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+          className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
             selectedCategory === null
               ? channel === "coupang"
                 ? "bg-orange-500 text-white"
                 : channel === "general"
                   ? "bg-sky-500 text-white"
-                  : "bg-cyan-500 text-white"
-              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+                  : "bg-indigo-500 text-white"
+              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
           }`}
         >
           전체
@@ -568,14 +568,14 @@ export function DashboardBoxHero() {
             key={String(cat)}
             type="button"
             onClick={() => setSelectedCategory(cat)}
-            className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
               selectedCategory === cat
                 ? channel === "coupang"
                   ? "bg-orange-500 text-white"
                   : channel === "general"
                     ? "bg-sky-500 text-white"
-                    : "bg-cyan-500 text-white"
-                : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+                    : "bg-indigo-500 text-white"
+                : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
             }`}
           >
             {cat}
@@ -604,7 +604,7 @@ export function DashboardBoxHero() {
           <button
             type="button"
             onClick={() => setVisibleCount((v) => Math.min(v + 50, filteredProducts.length))}
-            className="rounded-xl border border-zinc-600 bg-zinc-800 px-6 py-3 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white"
+            className="rounded-xl border border-slate-200 bg-white px-6 py-3 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
           >
             더 보기 ({filteredProducts.length - visibleCount}건 남음)
           </button>
@@ -612,7 +612,7 @@ export function DashboardBoxHero() {
       )}
 
       {filteredProducts.length === 0 && (
-        <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 py-16 text-center text-zinc-500">
+        <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-slate-500 shadow-card">
           {!showNormal
             ? "문제가 있는 제품이 없습니다. (정상 표시 버튼으로 전체 보기)"
             : "해당 카테고리에 제품이 없습니다."}
@@ -628,23 +628,23 @@ const STATUS_CONFIG: Record<
 > = {
   warning: {
     label: "데이터 오류",
-    className: "bg-red-500/30 text-red-400 border-red-500/50",
+    className: "bg-red-100 text-red-700 border-red-200",
   },
   out: {
     label: "품절 임박",
-    className: "bg-rose-500/30 text-rose-400 border-rose-500/50",
+    className: "bg-rose-100 text-rose-700 border-rose-200",
   },
   low: {
     label: "부족",
-    className: "bg-amber-500/30 text-amber-400 border-amber-500/50",
+    className: "bg-amber-100 text-amber-700 border-amber-200",
   },
   overstock: {
     label: "과재고",
-    className: "bg-violet-500/30 text-violet-400 border-violet-500/50",
+    className: "bg-violet-100 text-violet-700 border-violet-200",
   },
   normal: {
     label: "정상",
-    className: "bg-emerald-500/30 text-emerald-400 border-emerald-500/50",
+    className: "bg-emerald-100 text-emerald-700 border-emerald-200",
   },
 };
 
@@ -673,16 +673,16 @@ function ProductCard({
   const simplifiedName = simplifyProductName(String(product.product_name ?? product.product_code ?? ""));
 
   return (
-    <div className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 shadow-lg transition-shadow hover:shadow-xl">
+    <div className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card transition-shadow hover:shadow-card-hover">
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0 flex-1 overflow-hidden">
           <div
-            className="line-clamp-2 text-[13px] font-semibold leading-snug text-white md:text-sm"
+            className="line-clamp-2 text-[13px] font-semibold leading-snug text-slate-800 md:text-sm"
             title={String(product.product_name ?? product.product_code ?? "").trim() || "-"}
           >
             {simplifiedName || String(product.product_name ?? product.product_code ?? "").trim() || "-"}
           </div>
-          <div className="mt-0.5 truncate text-xs text-zinc-500" title={product.product_code}>
+          <div className="mt-0.5 truncate text-xs text-slate-500" title={product.product_code}>
             바코드 {String(product.product_code ?? "").trim() || "-"}
           </div>
         </div>
@@ -693,23 +693,23 @@ function ProductCard({
         </span>
       </div>
       <div className="mt-4 flex min-w-0 flex-col gap-1">
-        <div className="min-w-0 truncate text-xs text-zinc-500">
+        <div className="min-w-0 truncate text-xs text-slate-500">
           {String(product.group_name ?? "").trim()}
           {product.sub_group && ` · ${String(product.sub_group).trim()}`}
         </div>
         <div className="flex min-w-0 flex-col items-end gap-0.5">
           <div className="flex min-w-0 items-baseline justify-between gap-2 w-full">
             <div className="min-w-0 text-right flex-1">
-              <div className="text-sm text-zinc-400">
-                현재 재고: <span className="font-semibold tabular-nums text-white">{displayStock.toLocaleString()}EA</span>
+              <div className="text-sm text-slate-600">
+                현재 재고: <span className="font-semibold tabular-nums text-slate-800">{displayStock.toLocaleString()}EA</span>
                 {(product.pack_size ?? 0) > 0 && (
-                  <span className="ml-1.5 text-zinc-500">
-                    / SKU: <span className="font-medium tabular-nums text-white">{Math.floor(displayStock / (product.pack_size ?? 1)).toLocaleString()}박스</span>
+                  <span className="ml-1.5 text-slate-500">
+                    / SKU: <span className="font-medium tabular-nums text-slate-800">{Math.floor(displayStock / (product.pack_size ?? 1)).toLocaleString()}박스</span>
                   </span>
                 )}
                 {daysOfStock != null && daysOfStock > 0 && (
-                  <span className="ml-1.5 text-zinc-500">
-                    / 보유: <span className="font-medium tabular-nums text-white">{daysOfStock.toFixed(1)}일</span>
+                  <span className="ml-1.5 text-slate-500">
+                    / 보유: <span className="font-medium tabular-nums text-slate-800">{daysOfStock.toFixed(1)}일</span>
                   </span>
                 )}
                 {shortfall > 0 && (
@@ -725,10 +725,10 @@ function ProductCard({
               </span>
             )}
           </div>
-          {recommendedOrder != null && recommendedOrder > 0 && (
-            <div className="mt-1 w-full rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1.5 text-right">
-              <span className="text-xs text-cyan-300">권장 발주량</span>
-              <span className="ml-2 text-sm font-bold tabular-nums text-cyan-400">
+            {recommendedOrder != null && recommendedOrder > 0 && (
+            <div className="mt-1 w-full rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-right">
+              <span className="text-xs text-indigo-600">권장 발주량</span>
+              <span className="ml-2 text-sm font-bold tabular-nums text-indigo-700">
                 {recommendedOrder.toLocaleString()}개
               </span>
             </div>

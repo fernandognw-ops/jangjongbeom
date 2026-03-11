@@ -13,11 +13,11 @@ export function TransactionTable() {
 
   if (transactions.length === 0) {
     return (
-      <section className="rounded-lg border border-surface-border bg-surface-card p-3 md:rounded-xl md:p-6" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
-        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 md:mb-4 md:text-sm">
+      <section className="rounded-2xl border border-slate-200 bg-white p-3 shadow-card md:p-6">
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-600 md:mb-4 md:text-sm">
           입출고 내역 (최근 {MAX_ROWS}건)
         </h2>
-        <p className="text-center text-xs text-zinc-500 md:text-base">입출고 내역이 없습니다.</p>
+        <p className="text-center text-xs text-slate-500 md:text-base">입출고 내역이 없습니다.</p>
       </section>
     );
   }
@@ -32,7 +32,7 @@ export function TransactionTable() {
       <div className="hidden overflow-x-auto md:block">
         <table className="w-full min-w-[640px] text-left text-sm">
           <thead>
-            <tr className="border-b border-surface-border text-zinc-400">
+            <tr className="border-b border-slate-200 text-slate-600">
               <th className="px-4 py-3 font-medium md:px-6">일자</th>
               <th className="px-4 py-3 font-medium md:px-6">품목</th>
               <th className="px-4 py-3 font-medium md:px-6">구분</th>
@@ -65,8 +65,8 @@ export function TransactionTable() {
                 <td className="px-4 py-3 text-right tabular-nums text-white md:px-6">
                   {tx.quantity.toLocaleString()}
                 </td>
-                <td className="px-4 py-3 text-zinc-300 md:px-6">{tx.person}</td>
-                <td className="px-4 py-3 text-zinc-500 md:px-6">{tx.note || "-"}</td>
+                <td className="px-4 py-3 text-slate-600 md:px-6">{tx.person}</td>
+                <td className="px-4 py-3 text-slate-500 md:px-6">{tx.note || "-"}</td>
               </tr>
             ))}
           </tbody>
@@ -98,17 +98,17 @@ export function TransactionTable() {
             >
               {tx.quantity.toLocaleString()}개
             </div>
-            <div className="mt-0.5 flex min-w-0 flex-wrap gap-x-2 overflow-hidden text-[10px] text-zinc-500">
+            <div className="mt-0.5 flex min-w-0 flex-wrap gap-x-2 overflow-hidden text-[10px] text-slate-500">
               <span>{tx.date}</span>
               <span>{tx.person}</span>
-              {tx.note && <span className="text-zinc-600">{tx.note}</span>}
+              {tx.note && <span className="text-slate-600">{tx.note}</span>}
             </div>
           </div>
         ))}
       </div>
 
       {transactions.length > MAX_ROWS && (
-        <p className="border-t border-surface-border px-2 py-1 text-center text-[10px] text-zinc-500 md:px-6 md:py-2 md:text-xs">
+        <p className="border-t border-slate-200 px-2 py-1 text-center text-[10px] text-slate-500 md:px-6 md:py-2 md:text-xs">
           외 {transactions.length - MAX_ROWS}건 (총 {transactions.length}건)
         </p>
       )}
