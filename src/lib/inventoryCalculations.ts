@@ -233,7 +233,12 @@ export function predictAllRunOutDates(
       runOutDate: pred.date,
       daysLeft,
       isInfinite: pred.isInfinite,
-      isUrgent: !pred.isInfinite && pred.daysLeft <= 7 && pred.daysLeft >= 0,
+      isUrgent:
+        currentStock > 0 &&
+        avgDailyOut > 0 &&
+        !pred.isInfinite &&
+        pred.daysLeft <= 7 &&
+        pred.daysLeft >= 0,
     });
   }
 

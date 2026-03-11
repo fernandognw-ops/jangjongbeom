@@ -484,7 +484,8 @@ export function parseStockCsvToBaseStock(
   const nameToCode = new Map<string, string>();
   if (products) {
     for (const p of products) {
-      const k = (p.name ?? "").replace(/\s+/g, " ").trim();
+      const pn = (p as { name?: string; product_code?: string }).product_code ?? (p as { name?: string }).name;
+      const k = (pn ?? "").replace(/\s+/g, " ").trim();
       if (k) nameToCode.set(k, p.code);
     }
   }

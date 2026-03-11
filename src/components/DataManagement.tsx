@@ -27,7 +27,8 @@ function draftsToTransactions(
 ): Array<Omit<Transaction, "id" | "createdAt">> {
   const nameToCode = new Map<string, string>();
   for (const p of products) {
-    const k = normalizeProductKey(p.name);
+    const pname = (p as { name?: string; product_code?: string }).product_code ?? (p as { name?: string }).name;
+    const k = normalizeProductKey(pname ?? "");
     if (k) nameToCode.set(k, p.code);
   }
 
@@ -39,8 +40,14 @@ function draftsToTransactions(
       const norm = normalizeProductKey(d.productName);
       productCode =
         nameToCode.get(norm) ??
-        products.find((p) => normalizeProductKey(p.name) === norm)?.code ??
-        products.find((p) => p.name.includes(d.productName!) || d.productName!.includes(p.name))?.code;
+        products.find((p) => {
+          const pn = (p as { name?: string; product_code?: string }).product_code ?? (p as { name?: string }).name ?? "";
+          return normalizeProductKey(pn) === norm;
+        })?.code ??
+        products.find((p) => {
+          const pn = (p as { name?: string; product_code?: string }).product_code ?? (p as { name?: string }).name ?? "";
+          return pn.includes(d.productName!) || d.productName!.includes(pn);
+        })?.code;
     }
     return {
       date: d.date,

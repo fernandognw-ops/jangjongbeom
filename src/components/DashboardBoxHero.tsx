@@ -1,25 +1,63 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useInventory } from "@/context/InventoryContext";
+import { simplifyProductName } from "@/lib/productNameFormatter";
 import { SupabaseInventoryRefresh } from "./SupabaseInventoryRefresh";
-import { computeTotalValue } from "@/lib/inventoryApi";
+import {
+  computeTotalValue,
+  computeAvgNDayOutboundByProduct,
+} from "@/lib/inventoryApi";
 import type { InventoryProduct } from "@/lib/inventoryApi";
 
 type Channel = "all" | "coupang" | "general";
 
+export type StockStatusType =
+  | "warning"   // 데이터 오류
+  | "out"      // 품절 임박
+  | "low"      // 부족
+  | "overstock" // 과재고
+  | "normal";   // 정상
+
+/** 기본 카테고리 (필터에 항상 노출, DB group_name과 병합) */
+const STANDARD_CATEGORIES = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"];
+
+/** 상태 우선순위 (낮을수록 먼저 표시) */
+const STATUS_PRIORITY: Record<StockStatusType, number> = {
+  warning: 0,
+  out: 1,
+  low: 2,
+  overstock: 3,
+  normal: 4,
+};
+
+/**
+ * 재고 보유 일수(Days of Stock) 기준 상태 분류
+ * 보유 일수 = 현재 재고 / 일일 평균 판매량 (최근 30일 출고/30)
+ * - 품절 임박: 보유 일수 ≤ 3일
+ * - 부족: 보유 일수 < 14일
+ * - 과재고: 보유 일수 ≥ 60일
+ * - 데이터 오류: 재고 ≤ 0
+ * - 정상: 위에 해당하지 않는 경우
+ */
 function getStockStatus(
   stock: number,
-  safetyStock: number,
-  hasNegativeWarning: boolean
-): "normal" | "low" | "out" | "warning" {
-  if (hasNegativeWarning) return "warning";
-  if (stock <= 0) return "out";
-  if (safetyStock > 0 && stock < safetyStock) return "low";
+  _safetyStock: number,
+  hasNegativeWarning: boolean,
+  dailyVelocity: number,
+  hasRequiredData: boolean
+): StockStatusType {
+  if (!hasRequiredData || hasNegativeWarning || stock < 0) return "warning";
+  if (stock <= 0) return "warning"; // 데이터 오류
+  if (dailyVelocity <= 0) return "normal"; // 출고 이력 없으면 판단 불가 → 정상
+  const daysOfStock = stock / dailyVelocity;
+  if (daysOfStock <= 3) return "out";   // 품절 임박
+  if (daysOfStock < 14) return "low";   // 부족
+  if (daysOfStock >= 60) return "overstock";
   return "normal";
 }
 
-/** 채널별 재고 합산 (전체 = 쿠팡 + 일반) */
+/** 채널별 재고 합산 (전체 = 쿠팡 + 일반). general 선택 시 데이터 없으면 전체 합산 반환 */
 function getStockByChannel(
   stockByProductByChannel: { coupang: Record<string, number>; general: Record<string, number> } | undefined,
   channel: Channel
@@ -27,7 +65,18 @@ function getStockByChannel(
   if (!stockByProductByChannel) return {};
   const { coupang, general } = stockByProductByChannel;
   if (channel === "coupang") return coupang;
-  if (channel === "general") return general;
+  if (channel === "general") {
+    const generalSum = Object.values(general).reduce((a, b) => a + b, 0);
+    if (generalSum === 0) {
+      const merged: Record<string, number> = {};
+      const codes = new Set([...Object.keys(coupang), ...Object.keys(general)]);
+      Array.from(codes).forEach((code) => {
+        merged[code] = (coupang[code] ?? 0) + (general[code] ?? 0);
+      });
+      return merged;
+    }
+    return general;
+  }
   const merged: Record<string, number> = {};
   const codes = new Set([...Object.keys(coupang), ...Object.keys(general)]);
   Array.from(codes).forEach((code) => {
@@ -46,13 +95,45 @@ export function DashboardBoxHero() {
   const {
     useSupabaseInventory,
     inventoryProducts = [],
+    inventoryOutbound = [],
+    avg14DayOutboundByProduct: contextAvg14 = {},
+    dailyVelocityByProduct: contextDailyVelocity = {},
     stockByProductByChannel,
+    stockSnapshot = [],
     safetyStockByProduct = {},
     todayInOutCount = { inbound: 0, outbound: 0 },
+    totalValue: contextTotalValue,
+    lastMonthEndValue,
+    valueVariance,
+    recommendedOrderByProduct = {},
   } = useInventory();
 
   const [channel, setChannel] = useState<Channel>("all");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [productFilter, setProductFilter] = useState<"active" | "discontinued" | "all">("active");
+  const [showNormal, setShowNormal] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(50);
+  const [momIndicators, setMomIndicators] = useState<{
+    outbound: number | null;
+    inbound: number | null;
+    thisMonthOutbound: number;
+    thisMonthInbound: number;
+    thisMonthOutboundCoupang?: number;
+    thisMonthOutboundGeneral?: number;
+    thisMonthInboundCoupang?: number;
+    thisMonthInboundGeneral?: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/category-trend")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled && d.momIndicators) setMomIndicators(d.momIndicators);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const stockByProductRaw = useMemo(
     () => getStockByChannel(stockByProductByChannel, channel),
@@ -71,32 +152,127 @@ export function DashboardBoxHero() {
     return computeTotalValue(stockByProduct, inventoryProducts);
   }, [stockByProduct, inventoryProducts]);
 
-  const totalValue = channelTotalValue;
+  const totalValue =
+    stockSnapshot.length > 0 ? contextTotalValue : channelTotalValue;
 
-  const categories = useMemo(() => {
-    const set = new Set(inventoryProducts.map((p) => p.group_name));
-    return Array.from(set).sort();
+  const { activeProducts, discontinuedProducts } = useMemo(() => {
+    const active = inventoryProducts.filter((p) => p.is_active !== false);
+    const discontinued = inventoryProducts.filter((p) => p.is_active === false);
+    return { activeProducts: active, discontinuedProducts: discontinued };
   }, [inventoryProducts]);
 
-  const filteredProducts = useMemo(() => {
-    let list = inventoryProducts;
+  const baseProducts = useMemo(() => {
+    if (productFilter === "active") return activeProducts;
+    if (productFilter === "discontinued") return discontinuedProducts;
+    return inventoryProducts;
+  }, [productFilter, activeProducts, discontinuedProducts, inventoryProducts]);
+
+  const categories = useMemo(() => {
+    const fromData = baseProducts.map((p) => p.group_name).filter((g) => g && g !== "기타");
+    const merged = new Set([...STANDARD_CATEGORIES, ...fromData]);
+    return Array.from(merged).filter((c) => c !== "기타").sort();
+  }, [baseProducts]);
+
+  const avg14DayOutboundByProduct = useMemo(
+    () => (contextAvg14 && Object.keys(contextAvg14).length > 0)
+      ? contextAvg14
+      : computeAvgNDayOutboundByProduct(inventoryOutbound, 14),
+    [contextAvg14, inventoryOutbound]
+  );
+
+  const dailyVelocityByProduct = useMemo(
+    () => (contextDailyVelocity && Object.keys(contextDailyVelocity).length > 0)
+      ? contextDailyVelocity
+      : (() => {
+          const avg30 = computeAvgNDayOutboundByProduct(inventoryOutbound, 30);
+          const out: Record<string, number> = {};
+          for (const [code, avg] of Object.entries(avg30)) out[code] = avg;
+          return out;
+        })(),
+    [contextDailyVelocity, inventoryOutbound]
+  );
+
+  const productsWithStatus = useMemo(() => {
+    let list = baseProducts;
     if (selectedCategory) {
       list = list.filter((p) => p.group_name === selectedCategory);
     }
-    return list;
-  }, [inventoryProducts, selectedCategory]);
+    return list.map((p) => {
+      const rawStock = stockByProductRaw[p.product_code] ?? 0;
+      const { display, hasWarning } = clampStock(rawStock);
+      const safety = safetyStockByProduct[p.product_code] ?? 0;
+      const dailyVelocity = dailyVelocityByProduct[p.product_code] ?? 0;
+      const hasRequiredData = !!(p.product_code && p.product_name);
+      const status = getStockStatus(
+        display,
+        safety,
+        hasWarning,
+        dailyVelocity,
+        hasRequiredData
+      );
+      const daysOfStock = dailyVelocity > 0 ? display / dailyVelocity : null;
+      return { product: p, stock: display, safetyStock: safety, hasWarning, status, daysOfStock };
+    });
+  }, [
+    baseProducts,
+    selectedCategory,
+    stockByProductRaw,
+    safetyStockByProduct,
+    dailyVelocityByProduct,
+  ]);
 
-  const nearOutCount = useMemo(() => {
-    return inventoryProducts.filter((p) => {
-      const stock = stockByProduct[p.code] ?? 0;
-      const safety = safetyStockByProduct[p.code] ?? 0;
-      return safety > 0 && stock < safety;
-    }).length;
-  }, [inventoryProducts, stockByProduct, safetyStockByProduct]);
+  const filteredProducts = useMemo(() => {
+    let list = productsWithStatus;
+    if (!showNormal) {
+      list = list.filter((item) => item.status !== "normal");
+    }
+    return list.sort(
+      (a, b) => STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]
+    );
+  }, [productsWithStatus, showNormal]);
+
+  const displayedProducts = useMemo(
+    () => filteredProducts.slice(0, visibleCount),
+    [filteredProducts, visibleCount]
+  );
+  const hasMore = visibleCount < filteredProducts.length;
+
+  useEffect(() => {
+    setVisibleCount(50);
+  }, [selectedCategory, productFilter, showNormal]);
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<StockStatusType, number> = {
+      warning: 0,
+      out: 0,
+      low: 0,
+      overstock: 0,
+      normal: 0,
+    };
+    for (const item of productsWithStatus) {
+      counts[item.status]++;
+    }
+    return counts;
+  }, [productsWithStatus]);
+
+  const nearOutCount = statusCounts.out;
+  const lowCount = statusCounts.low;
+  const overstockCount = statusCounts.overstock;
+  const warningCount = statusCounts.warning;
 
   const negativeStockCount = useMemo(() => {
     return Object.values(stockByProductRaw).filter((q) => q < 0).length;
   }, [stockByProductRaw]);
+
+  const coupangStockTotal = useMemo(() => {
+    if (!stockByProductByChannel?.coupang) return 0;
+    return Object.values(stockByProductByChannel.coupang).reduce((a, b) => a + b, 0);
+  }, [stockByProductByChannel]);
+
+  const generalStockTotal = useMemo(() => {
+    if (!stockByProductByChannel?.general) return 0;
+    return Object.values(stockByProductByChannel.general).reduce((a, b) => a + b, 0);
+  }, [stockByProductByChannel]);
 
   const channelTheme = {
     all: {
@@ -134,7 +310,7 @@ export function DashboardBoxHero() {
   }
 
   return (
-    <div className={`space-y-6 rounded-2xl border ${theme.border} ${theme.bg} p-4 transition-colors md:p-6`}>
+    <div className={`min-w-0 space-y-6 overflow-hidden rounded-2xl border ${theme.border} ${theme.bg} p-4 transition-colors md:p-6`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-bold text-white md:text-xl">
           재고 대시보드
@@ -142,41 +318,47 @@ export function DashboardBoxHero() {
         <SupabaseInventoryRefresh />
       </div>
 
-      {/* 채널 탭: 전체 | 쿠팡 | 일반 */}
-      <div className="flex gap-2 rounded-xl border border-zinc-700 bg-zinc-900/80 p-1">
-        <button
-          type="button"
-          onClick={() => setChannel("all")}
-          className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-            channel === "all"
-              ? "bg-zinc-600 text-white"
-              : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
-          }`}
-        >
-          전체
-        </button>
-        <button
-          type="button"
-          onClick={() => setChannel("coupang")}
-          className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-            channel === "coupang"
-              ? "bg-orange-500/90 text-white"
-              : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
-          }`}
-        >
-          쿠팡 (Coupang)
-        </button>
-        <button
-          type="button"
-          onClick={() => setChannel("general")}
-          className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
-            channel === "general"
-              ? "bg-sky-500/90 text-white"
-              : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
-          }`}
-        >
-          일반 (General)
-        </button>
+      {/* 채널 탭: 전체 | 쿠팡 보유 재고 | 일반 보유 재고 */}
+      <div className="space-y-2">
+        <div className="flex gap-2 rounded-xl border border-zinc-700 bg-zinc-900/80 p-1">
+          <button
+            type="button"
+            onClick={() => setChannel("all")}
+            className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+              channel === "all"
+                ? "bg-zinc-600 text-white"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            }`}
+          >
+            전체
+          </button>
+          <button
+            type="button"
+            onClick={() => setChannel("coupang")}
+            className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+              channel === "coupang"
+                ? "bg-orange-500/90 text-white"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            }`}
+          >
+            쿠팡 보유 재고
+          </button>
+          <button
+            type="button"
+            onClick={() => setChannel("general")}
+            className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+              channel === "general"
+                ? "bg-sky-500/90 text-white"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            }`}
+          >
+            일반 보유 재고
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-4 text-sm text-zinc-400">
+          <span>쿠팡: <span className="font-semibold text-orange-400">{coupangStockTotal.toLocaleString()}EA</span></span>
+          <span>일반: <span className="font-semibold text-sky-400">{generalStockTotal.toLocaleString()}EA</span></span>
+        </div>
       </div>
 
       {/* 마이너스 재고 경고 */}
@@ -191,49 +373,158 @@ export function DashboardBoxHero() {
         </div>
       )}
 
+      {/* 품목 필터: 현재 운영 | 단종 | 전체 | 정상 표시 */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setProductFilter("active")}
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            productFilter === "active"
+              ? "bg-emerald-500/90 text-white"
+              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+          }`}
+        >
+          현재 운영 ({activeProducts.length}건)
+        </button>
+        <button
+          type="button"
+          onClick={() => setProductFilter("discontinued")}
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            productFilter === "discontinued"
+              ? "bg-amber-500/90 text-white"
+              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+          }`}
+        >
+          단종 품목 ({discontinuedProducts.length}건)
+        </button>
+        <button
+          type="button"
+          onClick={() => setProductFilter("all")}
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            productFilter === "all"
+              ? "bg-zinc-600 text-white"
+              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+          }`}
+        >
+          전체 ({inventoryProducts.length}건)
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowNormal((v) => !v)}
+          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            showNormal
+              ? "bg-zinc-600 text-white"
+              : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
+          }`}
+        >
+          {showNormal ? "정상 숨기기" : "정상 표시"}
+        </button>
+      </div>
+
       {/* 상단 요약 카드 */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         <div className="rounded-2xl border border-zinc-700 bg-zinc-900/80 p-5 shadow-lg">
           <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">
-            전체 품목 수
+            전체 품목
           </div>
-          <div className="mt-2 text-3xl font-bold tabular-nums text-white">
-            {inventoryProducts.length.toLocaleString()}건
-          </div>
-        </div>
-        <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-amber-400">
-            품절 임박
-          </div>
-          <div className="mt-2 text-3xl font-bold tabular-nums text-amber-300">
-            {nearOutCount.toLocaleString()}건
-          </div>
-          <div className="mt-1 text-[10px] text-zinc-500">
-            재고 &lt; 안전재고
+          <div className="mt-2 text-2xl font-bold tabular-nums text-white md:text-3xl">
+            {activeProducts.length.toLocaleString()}건
           </div>
         </div>
-        <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 shadow-lg">
-          <div className="text-xs font-medium uppercase tracking-wider text-emerald-400">
-            오늘 입고
+        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-5 shadow-lg">
+          <div className="text-xs font-medium uppercase tracking-wider text-red-400">
+            데이터 오류
           </div>
-          <div className="mt-2 text-3xl font-bold tabular-nums text-emerald-300">
-            {todayInOutCount.inbound.toLocaleString()}건
+          <div className="mt-2 text-2xl font-bold tabular-nums text-red-300 md:text-3xl">
+            {warningCount.toLocaleString()}건
           </div>
+          <div className="mt-1 text-[10px] text-zinc-500">재고 ≤ 0</div>
         </div>
         <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-5 shadow-lg">
           <div className="text-xs font-medium uppercase tracking-wider text-rose-400">
-            오늘 출고
+            품절 임박
           </div>
-          <div className="mt-2 text-3xl font-bold tabular-nums text-rose-300">
-            {todayInOutCount.outbound.toLocaleString()}건
+          <div className="mt-2 text-2xl font-bold tabular-nums text-rose-300 md:text-3xl">
+            {nearOutCount.toLocaleString()}건
+          </div>
+          <div className="mt-1 text-[10px] text-zinc-500">보유 일수 ≤ 3일</div>
+        </div>
+        <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-5 shadow-lg">
+          <div className="text-xs font-medium uppercase tracking-wider text-amber-400">
+            부족
+          </div>
+          <div className="mt-2 text-2xl font-bold tabular-nums text-amber-300 md:text-3xl">
+            {lowCount.toLocaleString()}건
+          </div>
+          <div className="mt-1 text-[10px] text-zinc-500">보유 일수 &lt; 14일</div>
+        </div>
+        <div className="rounded-2xl border border-violet-500/40 bg-violet-500/10 p-5 shadow-lg">
+          <div className="text-xs font-medium uppercase tracking-wider text-violet-400">
+            과재고
+          </div>
+          <div className="mt-2 text-2xl font-bold tabular-nums text-violet-300 md:text-3xl">
+            {overstockCount.toLocaleString()}건
+          </div>
+          <div className="mt-1 text-[10px] text-zinc-500">보유 일수 ≥ 60일</div>
+        </div>
+        <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 shadow-lg">
+          <div className="text-xs font-medium uppercase tracking-wider text-emerald-400">
+            오늘 입고/출고
+          </div>
+          <div className="mt-2 text-2xl font-bold tabular-nums text-emerald-300 md:text-3xl">
+            {todayInOutCount.inbound} / {todayInOutCount.outbound}건
           </div>
         </div>
+        {momIndicators && (
+          <>
+            <div className="rounded-2xl border border-cyan-500/40 bg-cyan-500/10 p-5 shadow-lg">
+              <div className="text-xs font-medium uppercase tracking-wider text-cyan-400">
+                이번 달 총 판매량
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-bold tabular-nums text-cyan-300 md:text-3xl">
+                  {momIndicators.thisMonthOutbound.toLocaleString()}건
+                </span>
+                {momIndicators.outbound != null && (
+                  <span className={`text-sm font-medium ${momIndicators.outbound >= 0 ? "text-red-400" : "text-blue-400"}`}>
+                    {momIndicators.outbound >= 0 ? "▲" : "▼"} {Math.abs(momIndicators.outbound)}%
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-zinc-400">
+                <span>쿠팡: {(momIndicators.thisMonthOutboundCoupang ?? 0).toLocaleString()}EA</span>
+                <span>일반: {(momIndicators.thisMonthOutboundGeneral ?? 0).toLocaleString()}EA</span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-zinc-500">전월 대비</div>
+            </div>
+            <div className="rounded-2xl border border-sky-500/40 bg-sky-500/10 p-5 shadow-lg">
+              <div className="text-xs font-medium uppercase tracking-wider text-sky-400">
+                이번 달 총 입고량
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-bold tabular-nums text-sky-300 md:text-3xl">
+                  {momIndicators.thisMonthInbound.toLocaleString()}EA
+                </span>
+                {momIndicators.inbound != null && (
+                  <span className={`text-sm font-medium ${momIndicators.inbound >= 0 ? "text-red-400" : "text-blue-400"}`}>
+                    {momIndicators.inbound >= 0 ? "▲" : "▼"} {Math.abs(momIndicators.inbound)}%
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-zinc-400">
+                <span>쿠팡: {(momIndicators.thisMonthInboundCoupang ?? 0).toLocaleString()}EA</span>
+                <span>일반: {(momIndicators.thisMonthInboundGeneral ?? 0).toLocaleString()}EA</span>
+              </div>
+              <div className="mt-0.5 text-[10px] text-zinc-500">전월 대비</div>
+            </div>
+          </>
+        )}
       </div>
 
       {/* 총 재고 금액 (채널별 실시간 재계산) */}
       <div className={`rounded-2xl border ${theme.totalBorder} bg-gradient-to-br ${theme.totalBg} to-transparent p-5`}>
         <div className={`text-xs font-medium uppercase tracking-wider ${theme.totalText}`}>
-          총 재고 자산 가치 (원가 기준)
+          재고 금액
           {channel !== "all" && (
             <span className="ml-2 text-zinc-500">
               — {channel === "coupang" ? "쿠팡" : "일반"} 채널
@@ -243,6 +534,16 @@ export function DashboardBoxHero() {
         <div className="mt-1 text-2xl font-bold tabular-nums text-white md:text-3xl">
           {totalValue.toLocaleString()}원
         </div>
+        {channel === "all" && valueVariance != null && lastMonthEndValue != null && lastMonthEndValue > 0 && (
+          <div className="mt-1 text-xs text-zinc-500">
+            전월 말 대비 {valueVariance >= 0 ? "+" : ""}{valueVariance.toLocaleString()}원
+            {valueVariance !== 0 && (
+              <span className={`ml-1 ${valueVariance > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                ({valueVariance > 0 ? "▲" : "▼"} {Math.abs(Math.round((valueVariance / lastMonthEndValue) * 100))}%)
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 카테고리 탭 */}
@@ -250,7 +551,7 @@ export function DashboardBoxHero() {
         <button
           type="button"
           onClick={() => setSelectedCategory(null)}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+          className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
             selectedCategory === null
               ? channel === "coupang"
                 ? "bg-orange-500 text-white"
@@ -264,10 +565,10 @@ export function DashboardBoxHero() {
         </button>
         {categories.map((cat) => (
           <button
-            key={cat}
+            key={String(cat)}
             type="button"
             onClick={() => setSelectedCategory(cat)}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
+            className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors ${
               selectedCategory === cat
                 ? channel === "coupang"
                   ? "bg-orange-500 text-white"
@@ -282,73 +583,107 @@ export function DashboardBoxHero() {
         ))}
       </div>
 
-      {/* 제품 카드 그리드 */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {filteredProducts.map((product) => {
-          const rawStock = stockByProductRaw[product.code] ?? 0;
-          const { display, hasWarning } = clampStock(rawStock);
-          return (
-            <ProductCard
-              key={product.id}
-              product={product}
-              stock={display}
-              safetyStock={safetyStockByProduct[product.code] ?? 0}
-              hasNegativeWarning={hasWarning}
-            />
-          );
-        })}
+      {/* 제품 카드 그리드 (50건씩 무한 스크롤) */}
+      <div className="grid min-w-0 grid-cols-1 gap-4 overflow-hidden sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {displayedProducts.map((item) => (
+          <ProductCard
+            key={item.product.id}
+            product={item.product}
+            stock={item.stock}
+            safetyStock={item.safetyStock}
+            hasNegativeWarning={item.hasWarning}
+            status={item.status}
+            daysOfStock={item.daysOfStock}
+            recommendedOrder={recommendedOrderByProduct[item.product.product_code]}
+          />
+        ))}
       </div>
+
+      {hasMore && (
+        <div className="flex justify-center py-6">
+          <button
+            type="button"
+            onClick={() => setVisibleCount((v) => Math.min(v + 50, filteredProducts.length))}
+            className="rounded-xl border border-zinc-600 bg-zinc-800 px-6 py-3 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white"
+          >
+            더 보기 ({filteredProducts.length - visibleCount}건 남음)
+          </button>
+        </div>
+      )}
 
       {filteredProducts.length === 0 && (
         <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 py-16 text-center text-zinc-500">
-          해당 카테고리에 제품이 없습니다.
+          {!showNormal
+            ? "문제가 있는 제품이 없습니다. (정상 표시 버튼으로 전체 보기)"
+            : "해당 카테고리에 제품이 없습니다."}
         </div>
       )}
     </div>
   );
 }
 
+const STATUS_CONFIG: Record<
+  StockStatusType,
+  { label: string; className: string }
+> = {
+  warning: {
+    label: "데이터 오류",
+    className: "bg-red-500/30 text-red-400 border-red-500/50",
+  },
+  out: {
+    label: "품절 임박",
+    className: "bg-rose-500/30 text-rose-400 border-rose-500/50",
+  },
+  low: {
+    label: "부족",
+    className: "bg-amber-500/30 text-amber-400 border-amber-500/50",
+  },
+  overstock: {
+    label: "과재고",
+    className: "bg-violet-500/30 text-violet-400 border-violet-500/50",
+  },
+  normal: {
+    label: "정상",
+    className: "bg-emerald-500/30 text-emerald-400 border-emerald-500/50",
+  },
+};
+
 function ProductCard({
   product,
   stock,
   safetyStock,
   hasNegativeWarning,
+  status,
+  daysOfStock,
+  recommendedOrder,
 }: {
   product: InventoryProduct;
   stock: number;
   safetyStock: number;
   hasNegativeWarning?: boolean;
+  status: StockStatusType;
+  daysOfStock?: number | null;
+  recommendedOrder?: number;
 }) {
-  const status = getStockStatus(stock, safetyStock, hasNegativeWarning ?? false);
-  const statusConfig = {
-    normal: {
-      label: "정상",
-      className: "bg-emerald-500/30 text-emerald-400 border-emerald-500/50",
-    },
-    low: {
-      label: "부족",
-      className: "bg-amber-500/30 text-amber-400 border-amber-500/50",
-    },
-    out: {
-      label: "품절임박",
-      className: "bg-rose-500/30 text-rose-400 border-rose-500/50",
-    },
-    warning: {
-      label: "⚠️ 데이터 오류",
-      className: "bg-amber-500/40 text-amber-300 border-amber-500/60",
-    },
-  };
-  const cfg = statusConfig[status];
+  const cfg = STATUS_CONFIG[status];
+  const displayStock = Number.isFinite(stock) ? Math.floor(stock) : 0;
+  const shortfall = safetyStock > 0 && displayStock < safetyStock
+    ? Math.max(0, safetyStock - displayStock)
+    : 0;
+  const simplifiedName = simplifyProductName(String(product.product_name ?? product.product_code ?? ""));
 
   return (
-    <div className="flex flex-col rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 shadow-lg transition-shadow hover:shadow-xl">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="truncate font-semibold text-white">
-            {product.name}
+    <div className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 shadow-lg transition-shadow hover:shadow-xl">
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <div
+            className="line-clamp-2 text-[13px] font-semibold leading-snug text-white md:text-sm"
+            title={String(product.product_name ?? product.product_code ?? "").trim() || "-"}
+          >
+            {simplifiedName || String(product.product_name ?? product.product_code ?? "").trim() || "-"}
           </div>
-          <div className="mt-0.5 text-xs text-zinc-500">
-            SKU {product.code}
+          <div className="mt-0.5 truncate text-xs text-zinc-500" title={product.product_code}>
+            바코드 {String(product.product_code ?? "").trim() || "-"}
           </div>
         </div>
         <span
@@ -357,21 +692,47 @@ function ProductCard({
           {cfg.label}
         </span>
       </div>
-      <div className="mt-4 flex items-end justify-between">
-        <div className="text-xs text-zinc-500">
-          {product.group_name}
-          {product.sub_group && ` · ${product.sub_group}`}
+      <div className="mt-4 flex min-w-0 flex-col gap-1">
+        <div className="min-w-0 truncate text-xs text-zinc-500">
+          {String(product.group_name ?? "").trim()}
+          {product.sub_group && ` · ${String(product.sub_group).trim()}`}
         </div>
-        <div className="text-right">
-          {hasNegativeWarning && (
-            <span className="mr-1 text-amber-400" role="img" aria-label="경고">
-              ⚠️
-            </span>
-          )}
-          <div className="text-2xl font-bold tabular-nums text-white md:text-3xl">
-            {stock.toLocaleString()}
+        <div className="flex min-w-0 flex-col items-end gap-0.5">
+          <div className="flex min-w-0 items-baseline justify-between gap-2 w-full">
+            <div className="min-w-0 text-right flex-1">
+              <div className="text-sm text-zinc-400">
+                현재 재고: <span className="font-semibold tabular-nums text-white">{displayStock.toLocaleString()}EA</span>
+                {(product.pack_size ?? 0) > 0 && (
+                  <span className="ml-1.5 text-zinc-500">
+                    / SKU: <span className="font-medium tabular-nums text-white">{Math.floor(displayStock / (product.pack_size ?? 1)).toLocaleString()}박스</span>
+                  </span>
+                )}
+                {daysOfStock != null && daysOfStock > 0 && (
+                  <span className="ml-1.5 text-zinc-500">
+                    / 보유: <span className="font-medium tabular-nums text-white">{daysOfStock.toFixed(1)}일</span>
+                  </span>
+                )}
+                {shortfall > 0 && (
+                  <span className="ml-1.5 text-red-400">
+                    / 부족: <span className="font-medium tabular-nums">{shortfall.toLocaleString()}EA</span>
+                  </span>
+                )}
+              </div>
+            </div>
+            {hasNegativeWarning && (
+              <span className="shrink-0 text-amber-400" role="img" aria-label="경고">
+                ⚠️
+              </span>
+            )}
           </div>
-          <div className="text-[10px] text-zinc-500">개</div>
+          {recommendedOrder != null && recommendedOrder > 0 && (
+            <div className="mt-1 w-full rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1.5 text-right">
+              <span className="text-xs text-cyan-300">권장 발주량</span>
+              <span className="ml-2 text-sm font-bold tabular-nums text-cyan-400">
+                {recommendedOrder.toLocaleString()}개
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>

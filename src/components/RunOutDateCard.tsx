@@ -41,6 +41,8 @@ export function RunOutDateCard() {
 
   const urgentCount = predictions.filter((p) => p.isUrgent).length;
   const hasUrgent = urgentCount > 0;
+  const hasAnyStock = Object.values(stock).some((v) => v > 0);
+  const hasAnyOutbound = predictions.some((p) => p.avgDailyOut > 0);
 
   return (
     <section
@@ -74,22 +76,32 @@ export function RunOutDateCard() {
         )}
       </div>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 md:mt-4">
+      {!hasAnyStock && !hasAnyOutbound ? (
+        <div className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 md:p-5">
+          <p className="text-sm text-amber-200/90">
+            재고·출고 데이터가 없습니다. Supabase에 입출고·재고 스냅샷을 동기화한 뒤 새로고침하세요.
+          </p>
+          <p className="mt-2 text-xs text-zinc-500">
+            <code className="rounded bg-zinc-800 px-1.5 py-0.5">npm run bulk-upload</code> 실행 후 대시보드 새로고침
+          </p>
+        </div>
+      ) : (
+        <div className="mt-3 grid min-w-0 grid-cols-1 gap-2 overflow-hidden sm:grid-cols-2 md:mt-4 lg:grid-cols-3 xl:grid-cols-5">
         {predictions.map((p) => (
           <div
-            key={p.itemId}
-            className={`rounded-lg border p-3 transition-colors ${
+            key={String(p.itemId)}
+            className={`min-w-0 overflow-hidden rounded-lg border p-3 transition-colors ${
               p.isUrgent
                 ? "border-rose-500/40 bg-rose-500/10"
                 : "border-zinc-700/50 bg-zinc-800/30"
             }`}
           >
-            <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-400 md:text-xs">
-              {p.itemName}
+            <div className="mb-1 truncate text-[10px] font-medium uppercase tracking-wider text-zinc-400 md:text-xs">
+              {String(p.itemName ?? p.itemId ?? "").trim() || "-"}
             </div>
-            <div className="flex flex-wrap items-baseline gap-1">
-              <span className="text-[10px] text-zinc-500 md:text-xs">
-                현재고: {p.currentStock.toLocaleString()}개
+            <div className="flex min-w-0 flex-wrap items-baseline gap-1 overflow-hidden">
+              <span className="truncate text-[10px] text-zinc-500 md:text-xs">
+                현재고: {Number(p.currentStock).toLocaleString()}개
               </span>
               {realTimeAvailable[p.itemId] !== p.currentStock && (
                 <span className="text-[10px] text-cyan-400 md:text-xs">
@@ -97,11 +109,11 @@ export function RunOutDateCard() {
                 </span>
               )}
             </div>
-            <div className="mt-1 text-[10px] text-zinc-500 md:text-xs">
-              일평균 출고: {p.avgDailyOut.toFixed(1)}개
+            <div className="mt-1 truncate text-[10px] text-zinc-500 md:text-xs">
+              일평균 출고: {Number(p.avgDailyOut).toFixed(1)}개
             </div>
             <div
-              className={`mt-2 font-bold md:text-lg ${
+              className={`mt-2 truncate font-bold md:text-lg ${
                 p.isUrgent ? "text-rose-400" : p.isInfinite ? "text-emerald-400" : "text-white"
               }`}
             >
@@ -109,13 +121,14 @@ export function RunOutDateCard() {
                 "소진 예상 없음"
               ) : (
                 <>
-                  {p.runOutDate} ({p.daysLeft}일 후)
+                  {p.runOutDate} ({Math.floor(Number(p.daysLeft))}일 후)
                 </>
               )}
             </div>
           </div>
         ))}
-      </div>
+        </div>
+      )}
     </section>
   );
 }

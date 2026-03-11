@@ -5,6 +5,7 @@ import { useInventory } from "@/context/InventoryContext";
 import { mapGroupToItemId } from "@/lib/csvImport";
 import { exportShortageToExcel } from "@/lib/excelExport";
 import { ITEMS } from "@/lib/types";
+import { formatProductDisplayName } from "@/lib/productNameFormatter";
 
 type ShortageRow = {
   productName: string;
@@ -196,7 +197,19 @@ export function SafetyStockManagement() {
                     key={`${row.productCode}-${idx}`}
                     className="border-b border-surface-border/80 transition-colors hover:bg-surface-elevated/50"
                   >
-                    <td className="px-2 py-1.5 font-medium text-white md:px-4 md:py-3">{row.productName}</td>
+                    <td className="px-2 py-1.5 font-medium text-white md:px-4 md:py-3">
+                      {(() => {
+                        const { display, full } = formatProductDisplayName(row.productName, 15);
+                        return (
+                          <span
+                            className="inline-block max-w-[180px] truncate align-middle"
+                            title={full}
+                          >
+                            {display}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="hidden px-2 py-1.5 text-zinc-400 md:table-cell md:px-4 md:py-3">{row.productCode}</td>
                     <td className="px-2 py-1.5 text-zinc-400 md:px-4 md:py-3">{row.categoryName}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-zinc-400 md:px-4 md:py-3">

@@ -75,12 +75,14 @@ export function getItemValue(itemId: keyof StockMap, qty: number, unitCost?: num
   return qty * cost;
 }
 
-// safetyStockMap: 최근 2주 출고 기준 안전재고 (동적)
+/** 품절 임박: 재고 0 이거나 안전재고 이하만 (재고 > 0 && 재고 > 안전재고 → 제외) */
 export function getShortageItems(stock: StockMap, safetyStockMap?: Record<string, number>) {
   return ITEMS.filter((item) => {
     const qty = stock[item.id] ?? 0;
     const safety = safetyStockMap?.[item.id] ?? item.safetyStock ?? 0;
-    return safety > 0 && qty < safety;
+    if (qty <= 0) return true;
+    if (safety > 0 && qty <= safety) return true;
+    return false;
   });
 }
 
