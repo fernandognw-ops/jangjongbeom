@@ -23,6 +23,9 @@ export const ITEMS: ItemMaster[] = [
 
 export type TransactionType = "in" | "out";
 
+/** 매출 구분: 쿠팡(Coupang 물류) vs 일반 */
+export type SalesChannel = "coupang" | "general";
+
 export interface Transaction {
   id: string;
   date: string; // YYYY-MM-DD
@@ -33,6 +36,7 @@ export interface Transaction {
   note: string;
   createdAt: number;
   productCode?: string; // 제품별 집계용 (품목코드)
+  salesChannel?: SalesChannel; // 매출구분: 쿠팡/일반
 }
 
 export type StockMap = Record<ItemId, number>;

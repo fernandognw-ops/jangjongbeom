@@ -8,7 +8,7 @@ export function ItemCards() {
   const { stock, productCostMap, safetyStockMap } = useInventory();
 
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+    <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 md:gap-4">
       {ITEMS.map((item) => {
         const qty = stock[item.id] ?? 0;
         const unitCost = productCostMap?.[item.id] ?? item.unitCost;
@@ -19,7 +19,7 @@ export function ItemCards() {
         return (
           <div
             key={item.id}
-            className={`flex min-h-[120px] flex-col overflow-hidden rounded-xl border p-5 transition-colors md:min-h-0 md:p-5 ${
+            className={`flex min-h-[80px] flex-col overflow-hidden rounded-lg border p-2 transition-colors md:min-h-[120px] md:p-5 md:rounded-xl ${
               isShort
                 ? "border-amber-500/50 bg-amber-500/5"
                 : "border-surface-border bg-surface-card"
@@ -29,28 +29,28 @@ export function ItemCards() {
               borderColor: isShort ? undefined : "#27272a",
             }}
           >
-            <div className="mb-2 shrink-0 text-xs font-medium uppercase tracking-wider text-zinc-400 md:text-xs">
+            <div className="mb-0.5 shrink-0 text-[10px] font-medium uppercase tracking-wider text-zinc-400 md:mb-2 md:text-xs">
               {item.name}
             </div>
             <div
-              className={`min-w-0 overflow-hidden text-ellipsis tabular-nums font-bold text-white md:text-2xl ${
-                isLargeNumber ? "text-xl md:text-lg" : "text-3xl"
+              className={`min-w-0 overflow-hidden text-ellipsis tabular-nums font-bold text-white ${
+                isLargeNumber ? "text-xs md:text-lg" : "text-sm md:text-2xl"
               }`}
               style={{ wordBreak: "break-word" }}
             >
               {qty.toLocaleString()}개
             </div>
             <div
-              className={`mt-2 min-w-0 overflow-hidden text-ellipsis text-zinc-300 md:mt-1 md:text-sm md:text-zinc-400 ${
-                value >= 1000000 ? "text-sm" : "text-base"
+              className={`mt-0.5 min-w-0 overflow-hidden text-ellipsis text-zinc-400 md:mt-2 md:text-sm ${
+                value >= 1000000 ? "text-[10px] md:text-sm" : "text-[10px] md:text-base"
               }`}
               style={{ wordBreak: "break-word" }}
             >
-              원가 기준 {value.toLocaleString()}원
+              {value.toLocaleString()}원
             </div>
             {isShort && safetyStock > 0 && (
-              <div className="mt-2 shrink-0 text-sm font-medium text-amber-400 md:text-xs">
-                2주 안전재고 {safetyStock.toLocaleString()}개 미달
+              <div className="mt-0.5 shrink-0 text-[10px] font-medium text-amber-400 md:mt-2 md:text-xs">
+                안전재고 {safetyStock.toLocaleString()}개 미달
               </div>
             )}
           </div>

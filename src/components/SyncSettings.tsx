@@ -104,12 +104,12 @@ export function SyncSettings() {
   // Supabase 기본 워크스페이스: 전 직원 자동 공유 (연동코드 불필요)
   if (defaultWorkspace) {
     return (
-      <div className="rounded-xl border border-green-500/30 bg-green-500/5 p-4">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-green-400">
-          ✓ 전 직원 실시간 데이터 공유
+      <div className="rounded-lg border border-green-500/30 bg-green-500/5 p-2 md:rounded-xl md:p-4">
+        <h3 className="text-[10px] font-semibold uppercase tracking-wider text-green-400 md:text-sm">
+          ✓ 전 직원 실시간 공유
         </h3>
-        <p className="mt-2 text-sm text-zinc-300">
-          Supabase에 연결되어 있습니다. 모든 직원이 동일한 재고 데이터를 실시간으로 공유합니다.
+        <p className="mt-0.5 text-[10px] text-zinc-400 md:mt-2 md:text-sm md:text-zinc-300">
+          Supabase 연결됨
         </p>
       </div>
     );

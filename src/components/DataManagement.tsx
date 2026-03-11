@@ -50,6 +50,7 @@ function draftsToTransactions(
       person: d.person,
       note: d.note,
       ...(productCode && { productCode }),
+      ...(d.salesChannel && { salesChannel: d.salesChannel }),
     };
   });
 }
@@ -171,23 +172,20 @@ export function DataManagement() {
   };
 
   return (
-    <section className="rounded-xl border border-surface-border bg-surface-card p-4 md:p-6" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">데이터 관리</h2>
-          <p className="mt-1 text-sm text-zinc-300">
-            Rawdata / 입고 / 기초 재고 / 출고 4개 파일. 기초 재고(순수 현재고) → 입고(일자별) → 출고(일자별) 순으로 반영합니다.
-          </p>
-          <p className="mt-1 text-xs text-zinc-500">
-            CSV 또는 Excel(.xlsx) 지원 · 수량 단위: 개
+    <section className="rounded-lg border border-surface-border bg-surface-card p-2 md:rounded-xl md:p-6" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
+      <div className="flex flex-wrap items-center justify-between gap-2 md:gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 md:text-sm">데이터 관리</h2>
+          <p className="mt-0.5 text-[10px] text-zinc-500 md:mt-1 md:text-sm md:text-zinc-300">
+            Rawdata·입고·기초·출고·당일. CSV/Excel 지원.
           </p>
         </div>
         <button
           type="button"
           onClick={onReset}
-          className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2.5 text-sm font-medium text-red-200 hover:bg-red-500/15"
+          className="shrink-0 rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-[10px] font-medium text-red-200 hover:bg-red-500/15 md:rounded-lg md:px-4 md:py-2.5 md:text-sm"
         >
-          데이터 삭제(초기화)
+          초기화
         </button>
       </div>
 
@@ -197,13 +195,13 @@ export function DataManagement() {
         </div>
       )}
 
-      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+      <div className="mt-3 grid gap-2 md:mt-5 md:gap-4 lg:grid-cols-2">
         {/* 1. Rawdata = 제품 품목 리스트 */}
-        <div className="rounded-xl border border-surface-border bg-surface-elevated/30 p-4">
-          <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">1. Rawdata · 제품 품목 리스트</div>
-          <p className="mt-1 text-xs text-zinc-500">품목코드, 제품명, 품목구분, 원가, 하위품목, 규격, 입수량(SKU 분석용)</p>
-          <label className="relative mt-3 flex min-h-[80px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-4 py-4 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10">
-            <span className="text-sm text-cyan-400">{rawFile ? rawFile.name : "클릭하여 파일 선택 (CSV/Excel)"}</span>
+        <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">1. Rawdata</div>
+          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">품목코드, 제품명, 품목구분, 원가</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+            <span className="text-[10px] text-cyan-400 md:text-sm">{rawFile ? rawFile.name : "파일 선택 (CSV/Excel)"}</span>
             <input
               type="file"
               accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -211,30 +209,30 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-zinc-300">
-            <span>저장된 품목: {products.length.toLocaleString()}개</span>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-400 md:mt-3 md:gap-2 md:text-sm md:text-zinc-300">
+            <span>품목 {products.length.toLocaleString()}개</span>
             <button
               type="button"
               disabled={!rawParsed || rawParsed.products.length === 0}
               onClick={onApplyRaw}
-              className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300"
+              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
-              Rawdata 저장
+              저장
             </button>
           </div>
           {rawParsed && (
-            <div className="mt-2 text-xs text-zinc-500">
-              감지: {rawParsed.products.length.toLocaleString()}개 품목
+            <div className="mt-1 text-[10px] text-zinc-500 md:mt-2 md:text-xs">
+              감지: {rawParsed.products.length.toLocaleString()}개
             </div>
           )}
         </div>
 
         {/* 2. 입고 = 순수 입고 (일자별) */}
-        <div className="rounded-xl border border-surface-border bg-surface-elevated/30 p-4">
-          <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">2. 입고 · 순수 입고 (일자별)</div>
-          <p className="mt-1 text-xs text-zinc-500">입고일자, 품목구분, 수량(개) · 입고일 기준</p>
-          <label className="relative mt-3 flex min-h-[80px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-4 py-4 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10">
-            <span className="text-sm text-cyan-400">{inFile ? inFile.name : "클릭하여 파일 선택 (CSV/Excel)"}</span>
+        <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">2. 입고</div>
+          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">입고일자, 품목구분, 수량</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+            <span className="text-[10px] text-cyan-400 md:text-sm">{inFile ? inFile.name : "파일 선택"}</span>
             <input
               type="file"
               accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -242,30 +240,30 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-zinc-300">
-            <span>현재 거래: {transactions.length.toLocaleString()}건</span>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-400 md:mt-3 md:gap-2 md:text-sm md:text-zinc-300">
+            <span>거래 {transactions.length.toLocaleString()}건</span>
             <button
               type="button"
               disabled={!inParsed || inParsed.txs.length === 0}
               onClick={onApplyIn}
-              className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300"
+              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
-              입고 반영
+              반영
             </button>
           </div>
           {inParsed?.summary && (
-            <div className="mt-2 text-xs text-zinc-500">
-              {inParsed.summary.dateMin ?? "-"} ~ {inParsed.summary.dateMax ?? "-"} · {inParsed.summary.usedRows.toLocaleString()}건
+            <div className="mt-1 text-[10px] text-zinc-500 md:mt-2 md:text-xs">
+              {inParsed.summary.dateMin ?? "-"}~{inParsed.summary.dateMax ?? "-"} {inParsed.summary.usedRows.toLocaleString()}건
             </div>
           )}
         </div>
 
         {/* 3. 기초 재고 (파일 입력만) */}
-        <div className="rounded-xl border border-surface-border bg-surface-elevated/30 p-4">
-          <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">3. 기초 재고</div>
-          <p className="mt-1 text-xs text-zinc-500">CSV 업로드 (품목구분, 수량) · 권장: 초기화 후 가장 먼저 반영</p>
-          <label className="relative mt-3 flex min-h-[80px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-4 py-4 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10">
-            <span className="text-sm text-cyan-400">{stockFile ? stockFile.name : "클릭하여 파일 선택 (CSV/Excel)"}</span>
+        <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">3. 기초 재고</div>
+          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">품목구분, 수량</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+            <span className="text-[10px] text-cyan-400 md:text-sm">{stockFile ? stockFile.name : "파일 선택"}</span>
             <input
               type="file"
               accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -273,8 +271,7 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm text-zinc-300">
-            <span />
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-1 md:gap-2">
             <button
               type="button"
               disabled={
@@ -283,24 +280,24 @@ export function DataManagement() {
                   Object.keys(stockParsed.baseStockByProduct).length === 0)
               }
               onClick={onApplyStock}
-              className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300"
+              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
-              기초 재고 반영
+              반영
             </button>
           </div>
           {stockParsed?.summary && (
-            <div className="mt-1 text-xs text-zinc-500">
-              감지: {stockParsed.summary.usedRows.toLocaleString()}건
+            <div className="mt-1 text-[10px] text-zinc-500 md:text-xs">
+              감지 {stockParsed.summary.usedRows.toLocaleString()}건
             </div>
           )}
         </div>
 
         {/* 4. 출고 = 순수 출고 (일자별) */}
-        <div className="rounded-xl border border-surface-border bg-surface-elevated/30 p-4">
-          <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">4. 출고 · 순수 출고 (일자별)</div>
-          <p className="mt-1 text-xs text-zinc-500">출고일자, 품목구분, 수량(개) · 출고일 기준</p>
-          <label className="relative mt-3 flex min-h-[80px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-4 py-4 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10">
-            <span className="text-sm text-cyan-400">{outFile ? outFile.name : "클릭하여 파일 선택 (CSV/Excel)"}</span>
+        <div className="rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:rounded-xl md:p-4">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">4. 출고</div>
+          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">출고일자, 품목구분, 수량</p>
+          <label className="relative mt-2 flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:mt-3 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+            <span className="text-[10px] text-cyan-400 md:text-sm">{outFile ? outFile.name : "파일 선택"}</span>
             <input
               type="file"
               accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -308,33 +305,33 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm text-zinc-300">
-            <span>수량만 반영 (판매가 무시)</span>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-1 text-[10px] text-zinc-400 md:mt-3 md:gap-2 md:text-sm md:text-zinc-300">
+            <span className="hidden md:inline">수량만 반영</span>
             <button
               type="button"
               disabled={!outParsed || outParsed.txs.length === 0}
               onClick={onApplyOut}
-              className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300"
+              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 md:rounded-lg md:px-3 md:py-2 md:text-sm"
             >
-              일자별 출고 반영
+              반영
             </button>
           </div>
           {outParsed?.summary && (
-            <div className="mt-2 text-xs text-zinc-500">
-              {outParsed.summary.dateMin ?? "-"} ~ {outParsed.summary.dateMax ?? "-"} · {outParsed.summary.usedRows.toLocaleString()}건
+            <div className="mt-1 text-[10px] text-zinc-500 md:mt-2 md:text-xs">
+              {outParsed.summary.dateMin ?? "-"}~{outParsed.summary.dateMax ?? "-"} {outParsed.summary.usedRows.toLocaleString()}건
             </div>
           )}
         </div>
       </div>
 
       {/* 5. 당일 재고 (실사/실제 재고) */}
-      <div className="mt-6 rounded-xl border border-surface-border bg-surface-elevated/30 p-4">
-        <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">5. 당일 재고</div>
-        <p className="mt-1 text-xs text-zinc-500">실사 또는 실제 재고 수량. 수동 입력 또는 CSV 업로드 (품목구분, 수량)</p>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mt-3 rounded-lg border border-surface-border bg-surface-elevated/30 p-2 md:mt-6 md:rounded-xl md:p-4">
+        <div className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 md:text-xs">5. 당일 재고</div>
+        <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">실사/실제 재고 수량</p>
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 md:mt-3 md:gap-3 lg:grid-cols-5">
           {ITEMS.map((item) => (
             <label key={item.id} className="block">
-              <span className="mb-1 block text-xs text-zinc-500">{item.name}</span>
+              <span className="mb-0.5 block text-[10px] text-zinc-500 md:mb-1 md:text-xs">{item.name}</span>
               <input
                 type="text"
                 inputMode="numeric"
@@ -345,15 +342,15 @@ export function DataManagement() {
                   setDailyStock(next);
                 }}
                 placeholder="0"
-                className="w-full rounded-lg border border-surface-border bg-surface-card px-3 py-2.5 text-sm text-white placeholder-zinc-500 focus:ring-2 focus:ring-cyan-500/50 min-h-[44px] touch-manipulation"
+                className="w-full rounded border border-surface-border bg-surface-card px-2 py-1.5 text-xs text-white placeholder-zinc-500 focus:ring-2 focus:ring-cyan-500/50 min-h-[36px] touch-manipulation md:rounded-lg md:px-3 md:py-2.5 md:text-sm md:min-h-[44px]"
               />
             </label>
           ))}
         </div>
-        <div className="mt-3 border-t border-surface-border/50 pt-3">
-          <span className="mb-2 block text-xs text-zinc-500">또는 CSV 업로드 (품목구분, 수량)</span>
-          <label className="relative flex min-h-[80px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-4 py-4 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10">
-            <span className="text-sm text-cyan-400">{dailyFile ? dailyFile.name : "클릭하여 파일 선택 (CSV/Excel)"}</span>
+        <div className="mt-2 border-t border-surface-border/50 pt-2 md:mt-3 md:pt-3">
+          <span className="mb-1 block text-[10px] text-zinc-500 md:mb-2 md:text-xs">또는 CSV 업로드</span>
+          <label className="relative flex min-h-[48px] cursor-pointer flex-col items-center justify-center rounded border-2 border-dashed border-cyan-500/50 bg-cyan-500/5 px-2 py-2 transition-colors hover:border-cyan-500/70 hover:bg-cyan-500/10 md:min-h-[80px] md:rounded-lg md:px-4 md:py-4">
+            <span className="text-[10px] text-cyan-400 md:text-sm">{dailyFile ? dailyFile.name : "파일 선택"}</span>
             <input
               type="file"
               accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -361,25 +358,24 @@ export function DataManagement() {
               className="absolute inset-0 w-full cursor-pointer opacity-0"
             />
           </label>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-sm text-zinc-300">
-            <span />
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-1 md:gap-2">
             <button
               type="button"
               disabled={!dailyParsed || !Object.values(dailyParsed.baseStock).some((v) => v > 0)}
               onClick={onApplyDailyStock}
-              className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 min-h-[44px] touch-manipulation"
+              className="rounded bg-cyan-500 px-2 py-1 text-[10px] font-medium text-black hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-300 min-h-[36px] touch-manipulation md:rounded-lg md:px-3 md:py-2 md:text-sm md:min-h-[44px]"
             >
-              당일 재고 반영
+              반영
             </button>
           </div>
           {dailyParsed?.summary && (
-            <div className="mt-1 text-xs text-zinc-500">감지: {dailyParsed.summary.usedRows.toLocaleString()}건</div>
+            <div className="mt-1 text-[10px] text-zinc-500 md:text-xs">감지 {dailyParsed.summary.usedRows.toLocaleString()}건</div>
           )}
         </div>
       </div>
 
       {/* 6. 제품별 안전재고 미달 품목 관리 (Excel 내보내기) */}
-      <div className="mt-6">
+      <div className="mt-3 md:mt-6">
         <SafetyStockManagement />
       </div>
     </section>

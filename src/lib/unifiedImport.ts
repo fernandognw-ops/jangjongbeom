@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import type { ItemId, ProductMasterRow } from "@/lib/types";
+import type { ItemId, ProductMasterRow, SalesChannel } from "@/lib/types";
 import { parseKoreanDateToISO } from "./csvImport";
 
 export interface CsvImportTxDraft {
@@ -9,6 +9,8 @@ export interface CsvImportTxDraft {
   quantity: number;
   person: string;
   note: string;
+  productCode?: string;
+  salesChannel?: SalesChannel;
 }
 
 // 품목구분 → 카테고리: 마스크, 캡슐세제, 섬유유연제, 액상세제, 생활용품
@@ -172,7 +174,7 @@ export async function parseUnifiedFile(
     }
   }
 
-  // 3. 입고 시트 (입고일자, 품목구분, 수량(개), 담당자, 제품명)
+  // 3. 입고 시트 (입고일자, 품목구분, 수량(개), 담당자, 제품명, 매출구분)
   const inSheet = findSheet(wb, ["입고", "생산입고"]);
   if (inSheet) {
     const { headers, rows } = getSheetData(inSheet);
@@ -181,6 +183,8 @@ export async function parseUnifiedFile(
     const idxQty = findCol(headers, ["수량"]);
     const idxPerson = findCol(headers, ["생산처", "입고처", "담당자"]);
     const idxProduct = findCol(headers, ["제품명"]);
+    const idxCode = findCol(headers, ["품목코드", "제품코드", "코드"]);
+    const idxSalesChannel = findCol(headers, ["매출구분", "판매처"]);
 
     if (idxDate >= 0 && idxGroup >= 0 && idxQty >= 0) {
       for (const row of rows) {
@@ -193,6 +197,9 @@ export async function parseUnifiedFile(
         const itemId = mapGroupToItemId(rawGroup);
         const person = String(arr[idxPerson ?? -1] ?? "").replace(/["\s]/g, "") || "-";
         const product = String(arr[idxProduct ?? -1] ?? "").replace(/["\s]/g, "") || "";
+        const code = idxCode >= 0 ? String(arr[idxCode] ?? "").replace(/["\s]/g, "").trim() : "";
+        const rawSc = idxSalesChannel >= 0 ? String(arr[idxSalesChannel] ?? "").replace(/["\s]/g, "").toLowerCase() : "";
+        const salesChannel: SalesChannel | undefined = rawSc.includes("쿠팡") ? "coupang" : rawSc ? "general" : undefined;
         allTxs.push({
           date,
           itemId,
@@ -200,13 +207,15 @@ export async function parseUnifiedFile(
           quantity: qty,
           person,
           note: product ? `CSV ${product}` : "",
+          productCode: code || undefined,
+          salesChannel,
         });
         result.summary.inCount++;
       }
     }
   }
 
-  // 4. 출고 시트 (출고일자, 품목구분, 수량(개), 출고처, 제품명)
+  // 4. 출고 시트 (출고일자, 품목구분, 수량(개), 출고처, 제품명, 매출구분)
   const outSheet = findSheet(wb, ["출고", "이번달출고"]);
   if (outSheet) {
     const { headers, rows } = getSheetData(outSheet);
@@ -215,6 +224,8 @@ export async function parseUnifiedFile(
     const idxQty = findCol(headers, ["수량"]);
     const idxPerson = findCol(headers, ["출고처", "입고처"]);
     const idxProduct = findCol(headers, ["제품명"]);
+    const idxCode = findCol(headers, ["품목코드", "제품코드", "코드"]);
+    const idxSalesChannel = findCol(headers, ["매출구분", "판매처"]);
 
     if (idxDate >= 0 && idxGroup >= 0 && idxQty >= 0) {
       for (const row of rows) {
@@ -227,6 +238,9 @@ export async function parseUnifiedFile(
         const itemId = mapGroupToItemId(rawGroup);
         const person = String(arr[idxPerson ?? -1] ?? "").replace(/["\s]/g, "") || "-";
         const product = String(arr[idxProduct ?? -1] ?? "").replace(/["\s]/g, "") || "";
+        const code = idxCode >= 0 ? String(arr[idxCode] ?? "").replace(/["\s]/g, "").trim() : "";
+        const rawSc = idxSalesChannel >= 0 ? String(arr[idxSalesChannel] ?? "").replace(/["\s]/g, "").toLowerCase() : "";
+        const salesChannel: SalesChannel | undefined = rawSc.includes("쿠팡") ? "coupang" : rawSc ? "general" : undefined;
         allTxs.push({
           date,
           itemId,
@@ -234,6 +248,8 @@ export async function parseUnifiedFile(
           quantity: qty,
           person,
           note: product ? `CSV ${product}` : "",
+          productCode: code || undefined,
+          salesChannel,
         });
         result.summary.outCount++;
       }

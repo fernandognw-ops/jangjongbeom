@@ -1,4 +1,4 @@
-import type { ItemId, ProductMasterRow, StockMap } from "@/lib/types";
+import type { ItemId, ProductMasterRow, StockMap, SalesChannel } from "@/lib/types";
 
 export interface ParsedCsvSummary {
   totalRows: number;
@@ -18,6 +18,7 @@ export interface CsvImportTxDraft {
   note: string;
   productName?: string; // 제품명 (제품별 집계용)
   productCode?: string; // 품목코드 (CSV에 있으면 직접 사용)
+  salesChannel?: SalesChannel; // 매출구분: 쿠팡/일반
 }
 
 /** CSV를 논리적 행으로 분리 (따옴표 안의 줄바꿈 무시) */
@@ -141,6 +142,12 @@ export function parseOutboundCsv(
     }
   }
 
+  let idxSalesChannelFound = -1;
+  if (headerIdx >= 0) {
+    const norm = splitCsvLine(lines[headerIdx]).map(normalizeHeader);
+    idxSalesChannelFound = norm.findIndex((h) => h === "매출구분" || h === "판매처");
+  }
+
   const totalsByItem: Record<ItemId, number> = { mask: 0, capsule: 0, fabric: 0, liquid: 0, living: 0 };
   if (headerIdx < 0) {
     return {
@@ -156,6 +163,7 @@ export function parseOutboundCsv(
 
   const year = new Date().getFullYear();
   const agg = new Map<string, CsvImportTxDraft>();
+  const scIdx = idxSalesChannelFound >= 0 ? idxSalesChannelFound : -1;
 
   let usedRows = 0;
   let skippedRows = 0;
@@ -179,9 +187,11 @@ export function parseOutboundCsv(
     const person = (idxPerson >= 0 ? cols[idxPerson] : "").replace(/["\s]/g, "") || "-";
     const product = (idxProduct >= 0 ? cols[idxProduct] : "").replace(/["\s]/g, "") || "";
     const code = (idxCode >= 0 ? cols[idxCode] : "").replace(/["\s]/g, "") || "";
+    const rawSc = scIdx >= 0 ? String(cols[scIdx] ?? "").replace(/["\s]/g, "").toLowerCase() : "";
+    const salesChannel: SalesChannel | undefined = rawSc.includes("쿠팡") ? "coupang" : rawSc ? "general" : undefined;
     const productKey = product ? product.trim() : "";
     const codeKey = code ? String(code).trim() : "";
-    const key = `${date}|${itemId}|${codeKey || productKey}|${person}`;
+    const key = `${date}|${itemId}|${codeKey || productKey}|${person}|${salesChannel ?? ""}`;
     const existing = agg.get(key);
     if (existing) {
       existing.quantity += qty;
@@ -195,6 +205,7 @@ export function parseOutboundCsv(
         note: `CSV(${fileName})`.trim().slice(0, 100),
         productName: productKey || undefined,
         productCode: codeKey || undefined,
+        salesChannel,
       });
     }
 
@@ -250,6 +261,12 @@ export function parseInboundCsv(
     }
   }
 
+  let idxSalesChannelIn = -1;
+  if (headerIdx >= 0) {
+    const norm = splitCsvLine(lines[headerIdx]).map(normalizeHeader);
+    idxSalesChannelIn = norm.findIndex((h) => h === "매출구분" || h === "판매처");
+  }
+
   const totalsByItem: Record<ItemId, number> = { mask: 0, capsule: 0, fabric: 0, liquid: 0, living: 0 };
   if (headerIdx < 0) {
     return {
@@ -265,6 +282,7 @@ export function parseInboundCsv(
 
   const year = new Date().getFullYear();
   const agg = new Map<string, CsvImportTxDraft>();
+  const scIdxIn = idxSalesChannelIn >= 0 ? idxSalesChannelIn : -1;
 
   let usedRows = 0;
   let skippedRows = 0;
@@ -288,9 +306,11 @@ export function parseInboundCsv(
     const person = (idxPerson >= 0 ? cols[idxPerson] : "").replace(/["\s]/g, "") || "-";
     const product = (idxProduct >= 0 ? cols[idxProduct] : "").replace(/["\s]/g, "") || "";
     const code = (idxCode >= 0 ? cols[idxCode] : "").replace(/["\s]/g, "") || "";
+    const rawSc = scIdxIn >= 0 ? String(cols[scIdxIn] ?? "").replace(/["\s]/g, "").toLowerCase() : "";
+    const salesChannel: SalesChannel | undefined = rawSc.includes("쿠팡") ? "coupang" : rawSc ? "general" : undefined;
     const productKey = product ? product.trim() : "";
     const codeKey = code ? String(code).trim() : "";
-    const key = `${date}|${itemId}|${codeKey || productKey}|${person}`;
+    const key = `${date}|${itemId}|${codeKey || productKey}|${person}|${salesChannel ?? ""}`;
     const existing = agg.get(key);
     if (existing) {
       existing.quantity += qty;
@@ -304,6 +324,7 @@ export function parseInboundCsv(
         note: `CSV(${fileName})`.trim().slice(0, 100),
         productName: productKey || undefined,
         productCode: codeKey || undefined,
+        salesChannel,
       });
     }
 

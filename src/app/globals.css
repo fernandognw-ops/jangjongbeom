@@ -115,14 +115,14 @@ main {
   }
 
   .mobile-number-large {
-    font-size: 1.25rem !important;
-    font-weight: 700 !important;
-    letter-spacing: 0.02em;
+    font-size: 0.8rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.01em;
   }
 
-  /* 7자리 이상 숫자: 폰트 축소 */
+  /* 7자리 이상 숫자: 폰트 최소화 */
   .mobile-number-compact {
-    font-size: 0.9rem !important;
+    font-size: 0.7rem !important;
   }
 
   /* 가로 스크롤 방지 */

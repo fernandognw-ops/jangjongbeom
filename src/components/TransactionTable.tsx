@@ -13,18 +13,18 @@ export function TransactionTable() {
 
   if (transactions.length === 0) {
     return (
-      <section className="rounded-xl border border-surface-border bg-surface-card p-6" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
-        <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-zinc-400">
+      <section className="rounded-lg border border-surface-border bg-surface-card p-3 md:rounded-xl md:p-6" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 md:mb-4 md:text-sm">
           입출고 내역 (최근 {MAX_ROWS}건)
         </h2>
-        <p className="text-center text-zinc-500">입출고 내역이 없습니다.</p>
+        <p className="text-center text-xs text-zinc-500 md:text-base">입출고 내역이 없습니다.</p>
       </section>
     );
   }
 
   return (
-    <section className="rounded-xl border border-surface-border bg-surface-card overflow-hidden" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
-      <h2 className="border-b border-surface-border bg-surface-elevated px-4 py-3 text-sm font-semibold uppercase tracking-wider text-zinc-400 md:px-6" style={{ backgroundColor: "#121214", borderColor: "#27272a" }}>
+    <section className="rounded-lg border border-surface-border bg-surface-card overflow-hidden md:rounded-xl" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
+      <h2 className="border-b border-surface-border bg-surface-elevated px-2 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 md:px-6 md:py-3 md:text-sm" style={{ backgroundColor: "#121214", borderColor: "#27272a" }}>
         입출고 내역 (최근 {MAX_ROWS}건)
       </h2>
 
@@ -73,17 +73,17 @@ export function TransactionTable() {
         </table>
       </div>
 
-      {/* 모바일: 카드형 */}
-      <div className="space-y-3 p-4 md:hidden">
+      {/* 모바일: 카드형 (최소) */}
+      <div className="space-y-2 p-2 md:hidden">
         {displayRows.map((tx) => (
           <div
             key={tx.id}
-            className="min-w-0 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900/50 p-4"
+            className="min-w-0 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900/50 p-2"
           >
-            <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
-              <span className="min-w-0 truncate font-semibold text-white">{getItemName(tx.itemId)}</span>
+            <div className="mb-1 flex min-w-0 items-center justify-between gap-1">
+              <span className="min-w-0 truncate text-xs font-semibold text-white">{getItemName(tx.itemId)}</span>
               <span
-                className={`shrink-0 rounded-full px-3 py-1 text-sm font-bold ${
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
                   tx.type === "in" ? "bg-green-500/30 text-green-400" : "bg-red-500/30 text-red-400"
                 }`}
               >
@@ -92,23 +92,23 @@ export function TransactionTable() {
             </div>
             <div
               className={`min-w-0 overflow-hidden tabular-nums font-bold text-white ${
-                tx.quantity >= 1000000 ? "text-lg" : "text-2xl"
+                tx.quantity >= 1000000 ? "text-xs" : "text-sm"
               }`}
               style={{ wordBreak: "break-word" }}
             >
               {tx.quantity.toLocaleString()}개
             </div>
-            <div className="mt-2 flex min-w-0 flex-wrap gap-x-4 gap-y-1 overflow-hidden text-sm text-zinc-400">
-              <span className="break-words">{tx.date}</span>
-              <span className="break-words">{tx.person}</span>
-              {tx.note && <span className="break-words text-zinc-500">{tx.note}</span>}
+            <div className="mt-0.5 flex min-w-0 flex-wrap gap-x-2 overflow-hidden text-[10px] text-zinc-500">
+              <span>{tx.date}</span>
+              <span>{tx.person}</span>
+              {tx.note && <span className="text-zinc-600">{tx.note}</span>}
             </div>
           </div>
         ))}
       </div>
 
       {transactions.length > MAX_ROWS && (
-        <p className="border-t border-surface-border px-4 py-2 text-center text-xs text-zinc-500 md:px-6">
+        <p className="border-t border-surface-border px-2 py-1 text-center text-[10px] text-zinc-500 md:px-6 md:py-2 md:text-xs">
           외 {transactions.length - MAX_ROWS}건 (총 {transactions.length}건)
         </p>
       )}

@@ -113,41 +113,41 @@ export function SafetyStockManagement() {
   };
 
   return (
-    <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 md:p-6" style={{ backgroundColor: "rgba(245, 158, 11, 0.05)", borderColor: "rgba(245, 158, 11, 0.3)" }}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-amber-400">
-            제품별 안전재고 미달 품목 관리
+    <section className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 md:rounded-xl md:p-6" style={{ backgroundColor: "rgba(245, 158, 11, 0.05)", borderColor: "rgba(245, 158, 11, 0.3)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-2 md:gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-amber-400 md:text-sm">
+            안전재고 미달 품목
           </h2>
-          <p className="mt-1 text-xs text-zinc-500">
-            현재고=제품별 재고(기초+입고-출고) 우선 · 입출고 CSV에 품목코드 포함 시 정확 · SKU=총수량÷입수량
+          <p className="mt-0.5 hidden text-xs text-zinc-500 md:mt-1 md:block">
+            SKU=총수량÷입수량
           </p>
         </div>
         <button
           type="button"
           onClick={onExportExcel}
           disabled={shortageByProduct.length === 0}
-          className="rounded-lg border border-amber-500/40 bg-amber-500/20 px-4 py-2.5 text-sm font-medium text-amber-200 hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+          className="shrink-0 rounded border border-amber-500/40 bg-amber-500/20 px-2 py-1.5 text-[10px] font-medium text-amber-200 hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50 md:rounded-lg md:px-4 md:py-2.5 md:text-sm"
         >
-          Excel 내보내기
+          Excel
         </button>
       </div>
 
       {shortageByProduct.length === 0 ? (
-        <div className="mt-6 space-y-2 py-8 text-center text-sm text-zinc-500">
+        <div className="mt-3 space-y-1 py-4 text-center text-[10px] text-zinc-500 md:mt-6 md:space-y-2 md:py-8 md:text-sm">
           <p>안전재고 미달 품목이 없습니다.</p>
-          <p className="text-xs">
-            Rawdata에 입수량 컬럼을 포함하고, 당일 재고·입출고를 반영하면 SKU 기준(총수량÷입수량)으로 미달 품목이 표시됩니다.
+          <p className="hidden text-xs md:block">
+            Rawdata에 입수량 컬럼을 포함하고, 당일 재고·입출고를 반영하면 SKU 기준으로 미달 품목이 표시됩니다.
           </p>
         </div>
       ) : (
         <>
           {/* 품목별 필터 탭 */}
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-2 flex flex-wrap gap-1 md:mt-4 md:gap-2">
             <button
               type="button"
               onClick={() => setSelectedCategory("all")}
-              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              className={`rounded px-2 py-1 text-[10px] font-medium transition-colors md:rounded-lg md:px-3 md:py-2 md:text-sm ${
                 selectedCategory === "all"
                   ? "bg-amber-500/30 text-amber-200"
                   : "bg-surface-elevated/50 text-zinc-400 hover:bg-surface-elevated"
@@ -164,7 +164,7 @@ export function SafetyStockManagement() {
                   key={item.id}
                   type="button"
                   onClick={() => setSelectedCategory(item.id)}
-                  className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                  className={`rounded px-2 py-1 text-[10px] font-medium transition-colors md:rounded-lg md:px-3 md:py-2 md:text-sm ${
                     selectedCategory === item.id
                       ? "bg-amber-500/30 text-amber-200"
                       : "bg-surface-elevated/50 text-zinc-400 hover:bg-surface-elevated"
@@ -177,17 +177,17 @@ export function SafetyStockManagement() {
             })}
           </div>
 
-          <div className="mt-4 overflow-x-auto rounded-lg border border-surface-border bg-surface-card" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
-            <table className="w-full min-w-[640px] text-left text-sm">
+          <div className="mt-2 overflow-x-auto rounded border border-surface-border bg-surface-card md:mt-4 md:rounded-lg" style={{ backgroundColor: "#18181b", borderColor: "#27272a" }}>
+            <table className="w-full min-w-[480px] text-left text-[10px] md:min-w-[640px] md:text-sm">
               <thead>
                 <tr className="border-b border-surface-border bg-surface-elevated text-zinc-400" style={{ backgroundColor: "#121214", borderColor: "#27272a" }}>
-                  <th className="px-4 py-3 font-medium">상품명</th>
-                  <th className="px-4 py-3 font-medium">품목코드</th>
-                  <th className="px-4 py-3 font-medium">품목구분</th>
-                  <th className="px-4 py-3 font-medium text-right">입수량</th>
-                  <th className="px-4 py-3 font-medium text-right">현재재고(SKU)</th>
-                  <th className="px-4 py-3 font-medium text-right">2주기준(SKU)</th>
-                  <th className="px-4 py-3 font-medium text-right text-amber-400">부족수량(SKU)</th>
+                  <th className="px-2 py-1.5 font-medium md:px-4 md:py-3">상품명</th>
+                  <th className="hidden px-2 py-1.5 font-medium md:table-cell md:px-4 md:py-3">품목코드</th>
+                  <th className="px-2 py-1.5 font-medium md:px-4 md:py-3">품목구분</th>
+                  <th className="px-2 py-1.5 font-medium text-right md:px-4 md:py-3">입수</th>
+                  <th className="px-2 py-1.5 font-medium text-right md:px-4 md:py-3">현재</th>
+                  <th className="px-2 py-1.5 font-medium text-right md:px-4 md:py-3">2주</th>
+                  <th className="px-2 py-1.5 font-medium text-right text-amber-400 md:px-4 md:py-3">부족</th>
                 </tr>
               </thead>
               <tbody>
@@ -196,20 +196,20 @@ export function SafetyStockManagement() {
                     key={`${row.productCode}-${idx}`}
                     className="border-b border-surface-border/80 transition-colors hover:bg-surface-elevated/50"
                   >
-                    <td className="px-4 py-3 font-medium text-white">{row.productName}</td>
-                    <td className="px-4 py-3 text-zinc-400">{row.productCode}</td>
-                    <td className="px-4 py-3 text-zinc-400">{row.categoryName}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-zinc-400">
-                      {row.packSize}개/SKU
+                    <td className="px-2 py-1.5 font-medium text-white md:px-4 md:py-3">{row.productName}</td>
+                    <td className="hidden px-2 py-1.5 text-zinc-400 md:table-cell md:px-4 md:py-3">{row.productCode}</td>
+                    <td className="px-2 py-1.5 text-zinc-400 md:px-4 md:py-3">{row.categoryName}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-zinc-400 md:px-4 md:py-3">
+                      {row.packSize}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-white">
-                      {row.currentStockSKU.toLocaleString()} SKU
+                    <td className="px-2 py-1.5 text-right tabular-nums text-white md:px-4 md:py-3">
+                      {row.currentStockSKU.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-zinc-300">
-                      {row.safetyStockSKU.toLocaleString()} SKU
+                    <td className="px-2 py-1.5 text-right tabular-nums text-zinc-300 md:px-4 md:py-3">
+                      {row.safetyStockSKU.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums font-medium text-amber-400">
-                      {row.shortageQtySKU.toLocaleString()} SKU 부족
+                    <td className="px-2 py-1.5 text-right tabular-nums font-medium text-amber-400 md:px-4 md:py-3">
+                      {row.shortageQtySKU.toLocaleString()}
                     </td>
                   </tr>
                 ))}

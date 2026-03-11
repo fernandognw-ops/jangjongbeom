@@ -67,18 +67,17 @@ export function BaseStockAndDailyStock() {
 
   return (
     <section
-      className="rounded-xl border border-surface-border bg-surface-card p-4 md:p-6"
+      className="rounded-lg border border-surface-border bg-surface-card p-3 md:rounded-xl md:p-6"
       style={{
         backgroundColor: "#18181b",
         borderColor: "#27272a",
-        borderRadius: "0.75rem",
       }}
     >
-      <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-zinc-400">
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-400 md:mb-4 md:text-sm">
         당일 재고 · 재고 불일치 분석
       </h2>
-      <p className="mb-4 text-xs text-zinc-500">
-        기초 재고 + 입고 - 출고 = 재고 (계산값). 당일 재고(실사)는 데이터 관리 5번에서 입력 후 비교합니다.
+      <p className="mb-3 text-[10px] text-zinc-500 md:mb-4 md:text-xs">
+        기초+입고-출고=계산. 당일 재고는 데이터 관리 5번에서 입력 후 비교.
       </p>
 
       {/* PC: 테이블 / 모바일: 카드 */}
@@ -146,8 +145,8 @@ export function BaseStockAndDailyStock() {
           </tbody>
         </table>
 
-        {/* 모바일: 카드형 레이아웃 (2행 2열, 높이 일정) */}
-        <div className="space-y-3 p-4 md:hidden">
+        {/* 모바일: 카드형 레이아웃 (2열 3행, 최소) */}
+        <div className="space-y-2 p-2 md:hidden">
           {ITEMS.map((item) => {
             const base = baseStock[item.id] ?? 0;
             const inQty = inByItem[item.id] ?? 0;
@@ -160,44 +159,44 @@ export function BaseStockAndDailyStock() {
             return (
               <div
                 key={item.id}
-                className={`flex min-h-[140px] flex-col rounded-xl border p-4 mobile-no-overflow ${
+                className={`flex min-h-[100px] flex-col rounded-lg border p-2.5 mobile-no-overflow ${
                   isMismatch ? "border-amber-500/50 bg-amber-500/10" : "border-zinc-700 bg-zinc-900/50"
                 }`}
               >
-                <div className="mb-3 shrink-0 text-sm font-semibold text-white">{item.name}</div>
-                <div className="grid min-w-0 flex-1 grid-cols-2 grid-rows-3 gap-x-4 gap-y-2 text-sm">
-                  <div className="flex min-w-0 flex-col">
-                    <span className="text-zinc-500">기초</span>
+                <div className="mb-1.5 shrink-0 text-xs font-semibold text-white">{item.name}</div>
+                <div className="grid min-w-0 flex-1 grid-cols-2 grid-rows-3 gap-x-3 gap-y-1">
+                  <div className="flex min-w-0 flex-col overflow-hidden">
+                    <span className="text-[10px] text-zinc-500">기초</span>
                     <div className={`mobile-number-large mobile-no-overflow text-white ${compact(base) ? "mobile-number-compact" : ""}`}>
                       {base.toLocaleString()}
                     </div>
                   </div>
-                  <div className="flex min-w-0 flex-col">
-                    <span className="text-zinc-500">+입고</span>
+                  <div className="flex min-w-0 flex-col overflow-hidden">
+                    <span className="text-[10px] text-zinc-500">+입고</span>
                     <div className={`mobile-number-large mobile-no-overflow text-inbound ${compact(inQty) ? "mobile-number-compact" : ""}`}>
                       +{inQty.toLocaleString()}
                     </div>
                   </div>
-                  <div className="flex min-w-0 flex-col">
-                    <span className="text-zinc-500">-출고</span>
+                  <div className="flex min-w-0 flex-col overflow-hidden">
+                    <span className="text-[10px] text-zinc-500">-출고</span>
                     <div className={`mobile-number-large mobile-no-overflow text-outbound ${compact(outQty) ? "mobile-number-compact" : ""}`}>
                       -{outQty.toLocaleString()}
                     </div>
                   </div>
-                  <div className="flex min-w-0 flex-col">
-                    <span className="text-zinc-500">계산</span>
+                  <div className="flex min-w-0 flex-col overflow-hidden">
+                    <span className="text-[10px] text-zinc-500">계산</span>
                     <div className={`mobile-number-large mobile-no-overflow font-bold text-white ${compact(calc) ? "mobile-number-compact" : ""}`}>
                       {calc.toLocaleString()}
                     </div>
                   </div>
-                  <div className="flex min-w-0 flex-col">
-                    <span className="text-zinc-500">당일</span>
+                  <div className="flex min-w-0 flex-col overflow-hidden">
+                    <span className="text-[10px] text-zinc-500">당일</span>
                     <div className={`mobile-number-large mobile-no-overflow text-white ${compact(daily) ? "mobile-number-compact" : ""}`}>
                       {daily > 0 ? daily.toLocaleString() : "-"}
                     </div>
                   </div>
-                  <div className="flex min-w-0 flex-col">
-                    <span className="text-zinc-500">차이</span>
+                  <div className="flex min-w-0 flex-col overflow-hidden">
+                    <span className="text-[10px] text-zinc-500">차이</span>
                     <div
                       className={`mobile-number-large mobile-no-overflow font-bold ${
                         diff > 0 ? "text-amber-400" : diff < 0 ? "text-outbound" : "text-zinc-500"
@@ -221,15 +220,15 @@ export function BaseStockAndDailyStock() {
 
       {/* 불일치 항목 따로 표기 */}
       {discrepancies.length > 0 && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
-          <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-amber-400 md:text-xs">
-            ⚠ 재고 불일치 (계산값 ≠ 당일 재고)
+        <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2 md:p-4">
+          <h3 className="mb-2 text-[10px] font-medium uppercase tracking-wider text-amber-400 md:text-xs">
+            ⚠ 재고 불일치
           </h3>
-          <ul className="space-y-3 text-sm">
+          <ul className="space-y-2 text-xs md:text-sm">
             {discrepancies.map((d) => (
               <li
                 key={d.itemId}
-                className="flex flex-col gap-1 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-2"
+                className="flex flex-col gap-0.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-2 py-2 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3"
               >
                 <span className="font-semibold text-white md:text-base">{d.name}</span>
                 <span className="text-zinc-300 md:text-zinc-400">
