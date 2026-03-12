@@ -136,6 +136,9 @@ export function ProductionSheetUploader() {
       <p className="mt-1 text-xs text-slate-500 md:text-sm">
         담당자가 매일 아침 집계한 생산수불현황.xlsx를 드래그 앤 드롭하여 DB를 갱신합니다.
       </p>
+      <p className="mt-0.5 text-xs text-slate-500 md:text-sm">
+        노형우 과장 수불 붙여넣기 — 중복은 알아서 거름
+      </p>
 
       <div
         onDrop={onDrop}

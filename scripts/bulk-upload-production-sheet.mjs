@@ -69,7 +69,7 @@ const rawUrl = process.env.NEXT_PUBLIC_APP_URL || "";
 const API_URL =
   rawUrl && !rawUrl.includes("your-app") && !rawUrl.includes("your-project")
     ? rawUrl.replace(/\/$/, "")
-    : "http://localhost:3000";
+    : "http://localhost:3007";
 const input = process.argv[2];
 
 if (!input) {

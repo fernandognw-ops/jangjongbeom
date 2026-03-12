@@ -7,6 +7,9 @@ import { SupabaseInventoryRefresh } from "./SupabaseInventoryRefresh";
 import {
   computeTotalValue,
   computeAvgNDayOutboundByProduct,
+  normalizeCategory,
+  normalizeCode,
+  STANDARD_CATEGORIES,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct } from "@/lib/inventoryApi";
 
@@ -19,13 +22,13 @@ export type StockStatusType =
   | "overstock" // 과재고
   | "normal";   // 정상
 
-/** 기본 카테고리 (필터에 항상 노출, DB group_name과 병합) */
-const STANDARD_CATEGORIES = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"];
+/** 기본 카테고리 순서: 전체(버튼) → 마스크 → 캡슐세제 → 섬유유연제 → 액상세제 */
+const CATEGORY_ORDER = [...STANDARD_CATEGORIES];
 
-/** 상태 우선순위 (낮을수록 먼저 표시) */
+/** 상태 우선순위 (낮을수록 먼저 표시) - 품절임박 최우선 */
 const STATUS_PRIORITY: Record<StockStatusType, number> = {
-  warning: 0,
-  out: 1,
+  out: 0,      // 품절임박 - 최우선
+  warning: 1,
   low: 2,
   overstock: 3,
   normal: 4,
@@ -111,7 +114,10 @@ export function DashboardBoxHero() {
   const [channel, setChannel] = useState<Channel>("all");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [productFilter, setProductFilter] = useState<"active" | "discontinued" | "all">("active");
-  const [showNormal, setShowNormal] = useState(true);
+  const [selectedStatuses, setSelectedStatuses] = useState<Set<StockStatusType>>(
+    () => new Set(["out"])
+  );
+  const [showDataErrors, setShowDataErrors] = useState(false);
   const [visibleCount, setVisibleCount] = useState(50);
   const [momIndicators, setMomIndicators] = useState<{
     outbound: number | null;
@@ -124,12 +130,40 @@ export function DashboardBoxHero() {
     thisMonthInboundGeneral?: number;
   } | null>(null);
 
+  const [aiForecastByProduct, setAiForecastByProduct] = useState<
+    Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>
+  >({});
+
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/category-trend")
+    fetch(`/api/category-trend?t=${Date.now()}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         if (!cancelled && d.momIndicators) setMomIndicators(d.momIndicators);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/forecast?t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled || !d?.product_forecasts) return;
+        const map: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
+        for (const row of d.product_forecasts as { product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }[]) {
+          const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
+          if (code) {
+            map[code] = {
+              forecast_month1: Number(row.forecast_month1) || 0,
+              forecast_month2: Number(row.forecast_month2) || 0,
+              forecast_month3: Number(row.forecast_month3) || 0,
+            };
+            map[String(row.product_code ?? "").trim()] = map[code];
+          }
+        }
+        setAiForecastByProduct(map);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -168,9 +202,19 @@ export function DashboardBoxHero() {
   }, [productFilter, activeProducts, discontinuedProducts, inventoryProducts]);
 
   const categories = useMemo(() => {
-    const fromData = baseProducts.map((p) => p.group_name).filter((g) => g && g !== "기타");
-    const merged = new Set([...STANDARD_CATEGORIES, ...fromData]);
-    return Array.from(merged).filter((c) => c !== "기타").sort();
+    const fromData = baseProducts
+      .map((p) => String(p.category ?? "").trim())
+      .filter((g) => g && g !== "기타" && g !== "전체" && !/^\d{10,}$/.test(g));
+    const merged = new Set([...CATEGORY_ORDER, ...fromData]);
+    const filtered = Array.from(merged).filter((c) => c !== "기타" && c !== "전체" && !/^\d{10,}$/.test(c));
+    return filtered.sort((a, b) => {
+      const ia = CATEGORY_ORDER.indexOf(a);
+      const ib = CATEGORY_ORDER.indexOf(b);
+      if (ia >= 0 && ib >= 0) return ia - ib;
+      if (ia >= 0) return -1;
+      if (ib >= 0) return 1;
+      return a.localeCompare(b);
+    });
   }, [baseProducts]);
 
   const avg14DayOutboundByProduct = useMemo(
@@ -195,7 +239,12 @@ export function DashboardBoxHero() {
   const productsWithStatus = useMemo(() => {
     let list = baseProducts;
     if (selectedCategory) {
-      list = list.filter((p) => p.group_name === selectedCategory);
+      const selNorm = selectedCategory.trim();
+      list = list.filter((p) => {
+        const raw = String(p.category ?? "").trim();
+        const pCat = normalizeCategory(raw) || raw;
+        return pCat === selNorm;
+      });
     }
     return list.map((p) => {
       const rawStock = stockByProductRaw[p.product_code] ?? 0;
@@ -221,15 +270,21 @@ export function DashboardBoxHero() {
     dailyVelocityByProduct,
   ]);
 
+  const productsForDisplay = useMemo(() => {
+    return showDataErrors ? productsWithStatus : productsWithStatus.filter((item) => item.status !== "warning");
+  }, [productsWithStatus, showDataErrors]);
+
   const filteredProducts = useMemo(() => {
-    let list = productsWithStatus;
-    if (!showNormal) {
-      list = list.filter((item) => item.status !== "normal");
+    let list = productsForDisplay;
+    if (selectedStatuses.size === 0) {
+      list = [];
+    } else if (selectedStatuses.size < 5) {
+      list = list.filter((item) => selectedStatuses.has(item.status));
     }
     return list.sort(
       (a, b) => STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]
     );
-  }, [productsWithStatus, showNormal]);
+  }, [productsForDisplay, selectedStatuses]);
 
   const displayedProducts = useMemo(
     () => filteredProducts.slice(0, visibleCount),
@@ -239,7 +294,7 @@ export function DashboardBoxHero() {
 
   useEffect(() => {
     setVisibleCount(50);
-  }, [selectedCategory, productFilter, showNormal]);
+  }, [selectedCategory, productFilter, selectedStatuses, showDataErrors]);
 
   const statusCounts = useMemo(() => {
     const counts: Record<StockStatusType, number> = {
@@ -255,10 +310,11 @@ export function DashboardBoxHero() {
     return counts;
   }, [productsWithStatus]);
 
+  const warningCount = statusCounts.warning;
   const nearOutCount = statusCounts.out;
   const lowCount = statusCounts.low;
   const overstockCount = statusCounts.overstock;
-  const warningCount = statusCounts.warning;
+  const normalCount = statusCounts.normal;
 
   const negativeStockCount = useMemo(() => {
     return Object.values(stockByProductRaw).filter((q) => q < 0).length;
@@ -373,99 +429,129 @@ export function DashboardBoxHero() {
         </div>
       )}
 
-      {/* 품목 필터: 현재 운영 | 단종 | 전체 | 정상 표시 */}
-      <div className="flex flex-wrap gap-2">
+      {/* 품목 필터: 체크박스 형태 (전체 선택 / 전체 해제) */}
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
+          상태 필터
+        </span>
+        <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+          <button
+            type="button"
+            onClick={() => setSelectedStatuses(new Set(["warning", "out", "low", "overstock", "normal"]))}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              selectedStatuses.size === 5
+                ? "bg-indigo-500/30 text-indigo-700 ring-1 ring-indigo-500/50"
+                : "text-slate-600 hover:bg-slate-200"
+            }`}
+          >
+            전체 선택
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedStatuses(new Set())}
+            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+              selectedStatuses.size === 0
+                ? "bg-slate-600 text-slate-100 ring-1 ring-slate-500/50"
+                : "text-slate-600 hover:bg-slate-200"
+            }`}
+          >
+            전체 해제
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(["out", "low", "overstock", "normal", "warning"] as const).map((status) => {
+            const config = {
+              out: { label: "품절임박", count: nearOutCount, color: "#f43f5e" },
+              low: { label: "부족", count: lowCount, color: "#f59e0b" },
+              overstock: { label: "과재고", count: overstockCount, color: "#8b5cf6" },
+              normal: { label: "정상", count: normalCount, color: "#10b981" },
+              warning: { label: "데이터 오류", count: warningCount, color: "#ef4444" },
+            }[status];
+            return (
+              <label
+                key={status}
+                className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm transition-colors hover:bg-slate-50"
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedStatuses.has(status)}
+                  onChange={() => {
+                    setSelectedStatuses((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(status)) next.delete(status);
+                      else next.add(status);
+                      return next;
+                    });
+                  }}
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-500 focus:ring-indigo-500"
+                />
+                <span
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: config.color }}
+                />
+                <span className="text-sm font-medium text-slate-700">
+                  {config.label} ({config.count}건)
+                </span>
+              </label>
+            );
+          })}
+        </div>
         <button
           type="button"
-          onClick={() => setProductFilter("active")}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
-            productFilter === "active"
-              ? "bg-emerald-500 text-white"
-              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+          onClick={() => setShowDataErrors((prev) => !prev)}
+          className={`rounded-xl px-3 py-2 text-xs font-medium transition-colors ${
+            showDataErrors
+              ? "bg-red-100 text-red-700 ring-1 ring-red-300"
+              : "border border-slate-200 text-slate-600 hover:bg-slate-50"
           }`}
+          title={showDataErrors ? "클릭 시 데이터 오류 숨김" : "클릭 시 데이터 오류 표시"}
         >
-          현재 운영 ({activeProducts.length}건)
-        </button>
-        <button
-          type="button"
-          onClick={() => setProductFilter("discontinued")}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
-            productFilter === "discontinued"
-              ? "bg-amber-500 text-white"
-              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          단종 품목 ({discontinuedProducts.length}건)
-        </button>
-        <button
-          type="button"
-          onClick={() => setProductFilter("all")}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
-            productFilter === "all"
-              ? "bg-indigo-500 text-white"
-              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          전체 ({inventoryProducts.length}건)
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowNormal((v) => !v)}
-          className={`rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
-            showNormal
-              ? "bg-slate-600 text-white"
-              : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
-          }`}
-        >
-          {showNormal ? "정상 숨기기" : "정상 표시"}
+          데이터 오류 {showDataErrors ? "표시 중" : "숨김"}
         </button>
       </div>
 
-      {/* 상단 요약 카드 */}
+      {/* 상단 요약 카드: 한눈에 보는 재고 현황 */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
-          <div className="text-xs font-medium uppercase tracking-wider text-slate-500">
-            전체 품목
-          </div>
+          <div className="text-xs font-medium uppercase tracking-wider text-slate-500">전체</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-slate-800 md:text-3xl">
-            {activeProducts.length.toLocaleString()}건
+            {productsForDisplay.length.toLocaleString()}건
           </div>
         </div>
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 shadow-card">
-          <div className="text-xs font-medium uppercase tracking-wider text-red-600">
-            데이터 오류
-          </div>
-          <div className="mt-2 text-2xl font-bold tabular-nums text-red-700 md:text-3xl">
-            {warningCount.toLocaleString()}건
-          </div>
-          <div className="mt-1 text-[10px] text-slate-500">재고 ≤ 0</div>
-        </div>
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-card">
-          <div className="text-xs font-medium uppercase tracking-wider text-rose-600">
-            품절 임박
-          </div>
+        <div className="rounded-2xl border-2 border-rose-300 bg-rose-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-rose-600">품절임박</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-rose-700 md:text-3xl">
             {nearOutCount.toLocaleString()}건
           </div>
-          <div className="mt-1 text-[10px] text-slate-500">보유 일수 ≤ 3일</div>
+          <div className="mt-1 text-[10px] text-rose-600/90">3일 이내 재고 소진</div>
         </div>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-card">
-          <div className="text-xs font-medium uppercase tracking-wider text-amber-600">
-            부족
-          </div>
+          <div className="text-xs font-medium uppercase tracking-wider text-amber-600">부족</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-amber-700 md:text-3xl">
             {lowCount.toLocaleString()}건
           </div>
-          <div className="mt-1 text-[10px] text-slate-500">보유 일수 &lt; 14일</div>
+          <div className="mt-1 text-[10px] text-amber-600/90">14일 미만 보유</div>
         </div>
         <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5 shadow-card">
-          <div className="text-xs font-medium uppercase tracking-wider text-violet-600">
-            과재고
-          </div>
+          <div className="text-xs font-medium uppercase tracking-wider text-violet-600">과재고</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-violet-700 md:text-3xl">
             {overstockCount.toLocaleString()}건
           </div>
-          <div className="mt-1 text-[10px] text-zinc-500">보유 일수 ≥ 60일</div>
+          <div className="mt-1 text-[10px] text-violet-600/90">60일 이상 보유</div>
+        </div>
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-emerald-600">정상</div>
+          <div className="mt-2 text-2xl font-bold tabular-nums text-emerald-700 md:text-3xl">
+            {normalCount.toLocaleString()}건
+          </div>
+          <div className="mt-1 text-[10px] text-emerald-600/90">14~60일 보유</div>
+        </div>
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-5 shadow-card">
+          <div className="text-xs font-medium uppercase tracking-wider text-red-600">데이터 오류</div>
+          <div className="mt-2 text-2xl font-bold tabular-nums text-red-700 md:text-3xl">
+            {warningCount.toLocaleString()}건
+          </div>
+          <div className="mt-1 text-[10px] text-red-600/90">재고·정보 확인 필요</div>
         </div>
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-card">
           <div className="text-xs font-medium uppercase tracking-wider text-emerald-600">
@@ -585,18 +671,28 @@ export function DashboardBoxHero() {
 
       {/* 제품 카드 그리드 (50건씩 무한 스크롤) */}
       <div className="grid min-w-0 grid-cols-1 gap-4 overflow-hidden sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {displayedProducts.map((item) => (
-          <ProductCard
-            key={item.product.id}
-            product={item.product}
-            stock={item.stock}
-            safetyStock={item.safetyStock}
-            hasNegativeWarning={item.hasWarning}
-            status={item.status}
-            daysOfStock={item.daysOfStock}
-            recommendedOrder={recommendedOrderByProduct[item.product.product_code]}
-          />
-        ))}
+        {displayedProducts.map((item) => {
+          const fc = aiForecastByProduct[item.product.product_code]
+            ?? aiForecastByProduct[normalizeCode(item.product.product_code) ?? ""];
+          const f1 = fc?.forecast_month1 ?? 0;
+          const stock = item.stock;
+          const aiShortfall = f1 > 0 && stock < f1 ? Math.max(0, Math.ceil(f1 - stock)) : undefined;
+          const aiRecommendedOrder = f1 > 0 && stock < f1 ? Math.max(0, Math.ceil(f1 - stock)) : undefined;
+          return (
+            <ProductCard
+              key={item.product.id}
+              product={item.product}
+              stock={stock}
+              safetyStock={item.safetyStock}
+              hasNegativeWarning={item.hasWarning}
+              status={item.status}
+              daysOfStock={item.daysOfStock}
+              recommendedOrder={recommendedOrderByProduct[item.product.product_code]}
+              aiShortfall={aiShortfall}
+              aiRecommendedOrder={aiRecommendedOrder}
+            />
+          );
+        })}
       </div>
 
       {hasMore && (
@@ -613,9 +709,11 @@ export function DashboardBoxHero() {
 
       {filteredProducts.length === 0 && (
         <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-slate-500 shadow-card">
-          {!showNormal
-            ? "문제가 있는 제품이 없습니다. (정상 표시 버튼으로 전체 보기)"
-            : "해당 카테고리에 제품이 없습니다."}
+          {selectedStatuses.size === 0
+            ? "상태 필터를 선택해 주세요. (전체 선택 시 전체 보기)"
+            : selectedStatuses.size < 5
+              ? `선택한 상태의 제품이 없습니다. (전체 선택으로 전체 보기)${selectedStatuses.has("warning") ? " — 마이너스 재고·필수정보 누락 시 데이터 오류로 분류됩니다." : ""}`
+              : "해당 카테고리에 제품이 없습니다."}
         </div>
       )}
     </div>
@@ -656,6 +754,8 @@ function ProductCard({
   status,
   daysOfStock,
   recommendedOrder,
+  aiShortfall,
+  aiRecommendedOrder,
 }: {
   product: InventoryProduct;
   stock: number;
@@ -664,6 +764,8 @@ function ProductCard({
   status: StockStatusType;
   daysOfStock?: number | null;
   recommendedOrder?: number;
+  aiShortfall?: number;
+  aiRecommendedOrder?: number;
 }) {
   const cfg = STATUS_CONFIG[status];
   const displayStock = Number.isFinite(stock) ? Math.floor(stock) : 0;
@@ -671,9 +773,16 @@ function ProductCard({
     ? Math.max(0, safetyStock - displayStock)
     : 0;
   const simplifiedName = simplifyProductName(String(product.product_name ?? product.product_code ?? ""));
+  const packSize = product.pack_size ?? 0;
+  const boxCount = packSize > 0 ? Math.floor(displayStock / packSize) : null;
+  const needsAction = status === "out" || status === "low";
+  const recommendedBox = recommendedOrder != null && recommendedOrder > 0 && packSize > 0
+    ? Math.ceil(recommendedOrder / packSize)
+    : null;
 
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card transition-shadow hover:shadow-card-hover">
+      {/* 상단: 제품명 + 상태 */}
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0 flex-1 overflow-hidden">
           <div
@@ -683,57 +792,87 @@ function ProductCard({
             {simplifiedName || String(product.product_name ?? product.product_code ?? "").trim() || "-"}
           </div>
           <div className="mt-0.5 truncate text-xs text-slate-500" title={product.product_code}>
-            바코드 {String(product.product_code ?? "").trim() || "-"}
+            {String(product.category ?? "").trim() || "기타"}
+            {product.product_code && ` · ${String(product.product_code).trim()}`}
           </div>
         </div>
         <span
-          className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase ${cfg.className}`}
+          className={`shrink-0 rounded-lg border px-2 py-0.5 text-[10px] font-bold ${cfg.className}`}
         >
           {cfg.label}
         </span>
       </div>
-      <div className="mt-4 flex min-w-0 flex-col gap-1">
-        <div className="min-w-0 truncate text-xs text-slate-500">
-          {String(product.group_name ?? "").trim()}
-          {product.sub_group && ` · ${String(product.sub_group).trim()}`}
+
+      {/* 핵심 지표: 한눈에 보기 */}
+      <div className="mt-4 space-y-2">
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+          <span className="text-slate-500">재고</span>
+          <span className="font-semibold tabular-nums text-slate-800">{displayStock.toLocaleString()}개</span>
+          {boxCount != null && (
+            <>
+              <span className="text-slate-400">·</span>
+              <span className="text-slate-500">박스</span>
+              <span className="font-medium tabular-nums text-slate-700">{boxCount.toLocaleString()}박스</span>
+            </>
+          )}
+          {daysOfStock != null && daysOfStock > 0 && (
+            <>
+              <span className="text-slate-400">·</span>
+              <span className={needsAction ? "font-semibold text-rose-600" : "text-slate-600"}>
+                {daysOfStock.toFixed(1)}일 남음
+              </span>
+            </>
+          )}
         </div>
-        <div className="flex min-w-0 flex-col items-end gap-0.5">
-          <div className="flex min-w-0 items-baseline justify-between gap-2 w-full">
-            <div className="min-w-0 text-right flex-1">
-              <div className="text-sm text-slate-600">
-                현재 재고: <span className="font-semibold tabular-nums text-slate-800">{displayStock.toLocaleString()}EA</span>
-                {(product.pack_size ?? 0) > 0 && (
-                  <span className="ml-1.5 text-slate-500">
-                    / SKU: <span className="font-medium tabular-nums text-slate-800">{Math.floor(displayStock / (product.pack_size ?? 1)).toLocaleString()}박스</span>
-                  </span>
-                )}
-                {daysOfStock != null && daysOfStock > 0 && (
-                  <span className="ml-1.5 text-slate-500">
-                    / 보유: <span className="font-medium tabular-nums text-slate-800">{daysOfStock.toFixed(1)}일</span>
-                  </span>
-                )}
-                {shortfall > 0 && (
-                  <span className="ml-1.5 text-red-400">
-                    / 부족: <span className="font-medium tabular-nums">{shortfall.toLocaleString()}EA</span>
+
+        {/* 부족 수량 · 권장 입고 수량 (AI 기반 우선, SKU 단위: 개) */}
+        {((shortfall > 0 || aiShortfall != null) || (recommendedOrder != null && recommendedOrder > 0) || (aiRecommendedOrder != null && aiRecommendedOrder > 0)) && (
+          <div className="flex flex-wrap gap-x-4 gap-y-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+            {(shortfall > 0 || (aiShortfall != null && aiShortfall > 0)) && (
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-xs text-slate-500">
+                  부족 수량
+                  {aiShortfall != null && aiShortfall > 0 && (
+                    <span className="ml-1 rounded bg-cyan-100 px-1 py-0.5 text-[10px] font-medium text-cyan-700">AI</span>
+                  )}
+                </span>
+                <span className="font-semibold tabular-nums text-red-600">
+                  {(aiShortfall != null && aiShortfall > 0 ? aiShortfall : shortfall).toLocaleString()}개
+                </span>
+                {packSize > 0 && (
+                  <span className="text-xs text-slate-500">
+                    ({Math.ceil((aiShortfall != null && aiShortfall > 0 ? aiShortfall : shortfall) / packSize).toLocaleString()}박스)
                   </span>
                 )}
               </div>
-            </div>
-            {hasNegativeWarning && (
-              <span className="shrink-0 text-amber-400" role="img" aria-label="경고">
-                ⚠️
-              </span>
+            )}
+            {((recommendedOrder != null && recommendedOrder > 0) || (aiRecommendedOrder != null && aiRecommendedOrder > 0)) && (
+              <div className="flex items-baseline gap-1.5">
+                <span className={`text-xs font-medium ${needsAction ? "text-rose-600" : "text-indigo-600"}`}>
+                  권장 입고 수량
+                  {aiRecommendedOrder != null && aiRecommendedOrder > 0 && (
+                    <span className="ml-1 rounded bg-cyan-100 px-1 py-0.5 text-[10px] font-medium text-cyan-700">AI</span>
+                  )}
+                </span>
+                <span className={`font-bold tabular-nums ${needsAction ? "text-rose-700" : "text-indigo-700"}`}>
+                  {(aiRecommendedOrder != null && aiRecommendedOrder > 0 ? aiRecommendedOrder : (recommendedOrder ?? 0)).toLocaleString()}개
+                </span>
+                {packSize > 0 && (
+                  <span className="text-xs text-slate-500">
+                    ({Math.ceil((aiRecommendedOrder != null && aiRecommendedOrder > 0 ? aiRecommendedOrder : (recommendedOrder ?? 0)) / packSize).toLocaleString()}박스)
+                  </span>
+                )}
+              </div>
             )}
           </div>
-            {recommendedOrder != null && recommendedOrder > 0 && (
-            <div className="mt-1 w-full rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 text-right">
-              <span className="text-xs text-indigo-600">권장 발주량</span>
-              <span className="ml-2 text-sm font-bold tabular-nums text-indigo-700">
-                {recommendedOrder.toLocaleString()}개
-              </span>
-            </div>
-          )}
-        </div>
+        )}
+
+        {hasNegativeWarning && (
+          <div className="flex items-center gap-1.5 text-amber-600 text-xs">
+            <span role="img" aria-label="경고">⚠️</span>
+            <span>입고 없이 출고만 있는 제품</span>
+          </div>
+        )}
       </div>
     </div>
   );

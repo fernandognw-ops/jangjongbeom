@@ -35,7 +35,7 @@ export async function GET() {
   try {
     const { data, error } = await supabase
       .from(TABLE_SNAPSHOT)
-      .select("product_code,quantity,pack_size,total_price")
+      .select("product_code,quantity,pack_size,total_price,unit_cost,dest_warehouse")
       .limit(10000);
 
     if (error) {
@@ -46,12 +46,21 @@ export async function GET() {
       );
     }
 
-    const rows = (data ?? []) as Array<{ quantity?: unknown; total_price?: unknown }>;
-    const totalValue = Math.round(
-      rows.reduce((s, r) => s + toNum(r.total_price), 0)
-    );
-    const totalQuantity = rows.reduce((s, r) => s + toNum(r.quantity), 0);
-    const productCount = rows.length;
+    const rows = (data ?? []) as Array<{ product_code?: string; quantity?: unknown; total_price?: unknown; unit_cost?: unknown; dest_warehouse?: string }>;
+    const seen = new Set<string>();
+    let totalValue = 0;
+    let totalQuantity = 0;
+    for (const r of rows) {
+      const key = `${String(r.product_code ?? "").trim()}|${String(r.dest_warehouse ?? "").trim()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let price = toNum(r.total_price);
+      if (price <= 0 && toNum(r.quantity) > 0) price = toNum(r.quantity) * toNum(r.unit_cost);
+      totalValue += price;
+      totalQuantity += toNum(r.quantity);
+    }
+    totalValue = Math.round(totalValue);
+    const productCount = new Set(rows.map((r) => String(r.product_code ?? "").trim()).filter(Boolean)).size;
 
     log(`KPI 완료`, { productCount, totalValue, totalQuantity });
 

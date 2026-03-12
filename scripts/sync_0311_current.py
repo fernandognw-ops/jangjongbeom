@@ -38,12 +38,14 @@ except ImportError:
     sys.exit(1)
 
 
-def _find_col(df: pd.DataFrame, header_row: int, names: list[str]) -> int:
-    """헤더 행에서 컬럼 인덱스 찾기"""
+def _find_col(df: pd.DataFrame, header_row: int, names: list[str], exclude_col: int = -1) -> int:
+    """헤더 행에서 컬럼 인덱스 찾기. exclude_col: 제외할 컬럼 인덱스 (품목코드와 중복 방지)"""
     row = df.iloc[header_row]
     for n in names:
         n_clean = n.replace(" ", "").replace("\n", "").lower()
         for i in range(len(row)):
+            if i == exclude_col:
+                continue
             v = str(row.iloc[i] or "").replace(" ", "").replace("\n", "").lower()
             if n_clean in v or v in n_clean:
                 return i
@@ -58,7 +60,17 @@ def load_rawdata_cost_map(path: str) -> dict[str, float]:
 
 def load_rawdata_product_master(path: str) -> dict[str, dict]:
     """Rawdata 시트에서 품목코드별 제품 마스터 (바코드 동일 = 모든 정보 동일)"""
-    df = pd.read_excel(path, sheet_name="Rawdata", header=None)
+    xl = pd.ExcelFile(path)
+    sheet_name = None
+    for name in xl.sheet_names:
+        if name.replace(" ", "").lower() == "rawdata":
+            sheet_name = name
+            break
+    if sheet_name is None:
+        raise ValueError(
+            f"Rawdata 시트를 찾을 수 없습니다. 시트 목록: {xl.sheet_names}"
+        )
+    df = pd.read_excel(path, sheet_name=sheet_name, header=None)
     idx_code, header_row = 1, 3
     for i in range(10):
         for c, v in enumerate(df.iloc[i]):
@@ -72,7 +84,9 @@ def load_rawdata_product_master(path: str) -> dict[str, dict]:
 
     idx_name = _find_col(df, header_row, ["품목명", "제품명", "상품명"])
     idx_cost = _find_col(df, header_row, ["제품원가표", "제품 원가표", "원가", "단가"])
-    idx_cat = _find_col(df, header_row, ["품목", "품목구분", "카테고리"])
+    idx_cat = _find_col(df, header_row, ["품목구분", "카테고리"], exclude_col=-1)
+    if idx_cat < 0:
+        idx_cat = _find_col(df, header_row, ["품목"], exclude_col=idx_code)
     idx_spec = _find_col(df, header_row, ["규격", "스펙"])
     idx_pack = _find_col(df, header_row, ["입수량", "입수"])
 
@@ -169,6 +183,7 @@ def load_stock_snapshot(
     path: str,
     rawdata_cost_map: dict[str, float] | None = None,
     rawdata_product_master: dict[str, dict] | None = None,
+    snapshot_date: str | None = None,
 ) -> list[dict]:
     """재고 시트에서 품목별 수량·단가 추출. 바코드 동일 = 제품정보 동일 (판매/창고만 상이)"""
     df = pd.read_excel(path, sheet_name="재고", header=None)
@@ -260,7 +275,7 @@ def load_stock_snapshot(
         total_by_code[code]["qty"] += data["qty"]
         total_by_code[code]["amount"] += data["amount"]
 
-    today = date.today().isoformat()
+    date_str = snapshot_date or date.today().isoformat()
     result: list[dict] = []
     for (code, dest), data in agg.items():
         qty = data["qty"]
@@ -280,7 +295,7 @@ def load_stock_snapshot(
             "category": pm.get("category") or "기타",
             "quantity": qty,
             "unit_cost": uc,
-            "snapshot_date": today,
+            "snapshot_date": date_str,
             "pack_size": pm.get("pack_size", 1) or 1,
             "total_price": round(qty * uc, 2),
         })
@@ -295,7 +310,18 @@ def main() -> None:
         default=r"C:\Users\pc\Desktop\장종범\인수 인계서\물류 재고 관리 시스템 구축\수불 마감 자료\26년 0311_생산수불현황.xlsx",
         help="0311 Excel 파일 경로",
     )
+    parser.add_argument(
+        "--snapshot-date",
+        default=None,
+        help="재고 스냅샷 기준일 (YYYY-MM-DD). 0311 파일 기준이면 2026-03-11 권장. 미지정 시 오늘 날짜",
+    )
     args = parser.parse_args()
+
+    # 0311 파일이면 snapshot_date 기본 2026-03-11 (재고 자산 최신 기준)
+    snapshot_date_arg = args.snapshot_date
+    if args.snapshot_date is None and "0311" in os.path.basename(args.file):
+        snapshot_date_arg = "2026-03-11"
+        print(f"0311 파일 감지 → snapshot_date 기본값: {snapshot_date_arg}")
 
     url = os.environ.get("SUPABASE_URL") or os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY") or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
@@ -310,7 +336,7 @@ def main() -> None:
     rawdata_product_master = load_rawdata_product_master(args.file)
     rawdata_cost_map = {c: p["unit_cost"] for c, p in rawdata_product_master.items() if p.get("unit_cost")}
     current_codes = load_current_codes(args.file)
-    snapshot = load_stock_snapshot(args.file, rawdata_cost_map, rawdata_product_master)
+    snapshot = load_stock_snapshot(args.file, rawdata_cost_map, rawdata_product_master, snapshot_date=snapshot_date_arg)
     total_val = sum(s["quantity"] * s["unit_cost"] for s in snapshot)
 
     used_rawdata = sum(1 for s in snapshot if s["product_code"] in rawdata_cost_map)
@@ -358,20 +384,29 @@ def main() -> None:
     except Exception as e:
         print(f"  is_active 업데이트 생략 (컬럼 없음): {e}")
 
-    # 2. 현재 품목 재고 스냅샷 → inventory_stock_snapshot
+    # 2. 현재 품목 재고 스냅샷 → inventory_stock_snapshot (품목별 합산, product_code 1건)
     print("\n재고 스냅샷 업로드 중...")
-    for i in range(0, len(snapshot_active), 100):
-        batch = snapshot_active[i : i + 100]
-        try:
-            supabase.table("inventory_stock_snapshot").upsert(
-                batch,
-                on_conflict="product_code,dest_warehouse",
-                ignore_duplicates=False,
-            ).execute()
-            print(f"  현재 품목 {min(i + 100, len(snapshot_active))}/{len(snapshot_active)} 완료")
-        except Exception as e:
-            print(f"  오류: {e}")
-            raise
+    agg_by_code: dict[str, dict] = {}
+    for s in snapshot_active:
+        code = s["product_code"]
+        if code not in agg_by_code:
+            agg_by_code[code] = {k: v for k, v in s.items() if k != "dest_warehouse"}
+            agg_by_code[code]["quantity"] = 0
+            agg_by_code[code]["total_price"] = 0.0
+        agg_by_code[code]["quantity"] += s["quantity"]
+        agg_by_code[code]["total_price"] = (agg_by_code[code].get("total_price") or 0) + float(s.get("total_price") or 0)
+    for r in agg_by_code.values():
+        r["total_price"] = round(r.get("total_price") or 0, 2)
+    snapshot_merged = list(agg_by_code.values())
+    # 기존 재고 삭제 후 삽입 (ON CONFLICT 제약 이슈 회피)
+    try:
+        supabase.table("inventory_stock_snapshot").delete().neq("product_code", "__NONE__").execute()
+    except Exception:
+        pass
+    for i in range(0, len(snapshot_merged), 100):
+        batch = snapshot_merged[i : i + 100]
+        supabase.table("inventory_stock_snapshot").insert(batch).execute()
+        print(f"  현재 품목 {min(i + 100, len(snapshot_merged))}/{len(snapshot_merged)} 완료")
 
     # 3. 단종/미등록 품목 재고 → inventory_discontinued_stock_snapshot (창고 분류 규칙 동일 적용)
     if snapshot_discontinued:

@@ -24,14 +24,19 @@ export async function GET() {
   try {
     const [currentRes, snapshotRes, inboundRes, outboundRes, productsRes] = await Promise.all([
       supabase.from("inventory_current_products").select("product_code"),
-      supabase.from("inventory_stock_snapshot").select("product_code,quantity"),
+      supabase.from("inventory_stock_snapshot").select("product_code,quantity,category,snapshot_date"),
       supabase.from("inventory_inbound").select("product_code,inbound_date,quantity"),
       supabase.from("inventory_outbound").select("product_code,outbound_date,quantity"),
       supabase.from("inventory_products").select("product_code,unit_cost"),
     ]);
 
     const currentCount = currentRes.data?.length ?? 0;
-    const snapshotData = (snapshotRes.data ?? []) as { product_code?: string; quantity: number }[];
+    const snapshotData = (snapshotRes.data ?? []) as { product_code?: string; quantity: number; category?: string; snapshot_date?: string }[];
+    const categoryCount: Record<string, number> = {};
+    for (const r of snapshotData) {
+      const c = String(r.category ?? "").trim() || "기타";
+      categoryCount[c] = (categoryCount[c] ?? 0) + 1;
+    }
     const productsData = (productsRes.data ?? []) as { product_code?: string; unit_cost?: number }[];
     const codeToCost = new Map<string, number>();
     for (const p of productsData) {
@@ -63,10 +68,12 @@ export async function GET() {
         inventory_outbound: outboundCount,
       },
       totalValue: Math.round(totalValue),
+      categoryByCount: categoryCount,
       sample: {
-        stock_snapshot: snapshotRes.data?.slice(0, 5).map((r: { product_code: string; quantity: number }) => ({
+        stock_snapshot: snapshotRes.data?.slice(0, 5).map((r: { product_code: string; quantity: number; category?: string }) => ({
           product_code: r.product_code,
           quantity: r.quantity,
+          category: r.category,
         })),
         inbound: inboundRes.data?.slice(0, 3),
         outbound: outboundRes.data?.slice(0, 3),

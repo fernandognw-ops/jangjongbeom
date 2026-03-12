@@ -10,7 +10,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "bulk-upload": "node scripts/bulk-upload-production-sheet.mjs"
+    "bulk-upload": "node scripts/bulk-upload-production-sheet.mjs",
+    "update-category": "node scripts/update-category-from-excel.mjs",
+    "reset-and-reupload": "node scripts/reset-and-reupload.mjs",
+    "sync-excel": "python scripts/integrated_sync.py",
+    "sync-all-maram": "python scripts/sync_all_maram.py",
+    "update-stock-costs": "python scripts/update_stock_costs.py",
+    "sync-current-products": "python scripts/sync_current_products.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.0",

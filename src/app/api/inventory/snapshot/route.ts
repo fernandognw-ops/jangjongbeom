@@ -5,8 +5,10 @@
  * - product_code, quantity, pack_size, total_price
  * - dailyVelocityByProduct: 최근 30일 출고 합산 / 30 (일일 평균 판매량)
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -77,12 +79,14 @@ export async function GET() {
     date30Ago.setDate(date30Ago.getDate() - 30);
     const dateFrom = date30Ago.toISOString().slice(0, 10);
 
-    const [snapshotRes, outboundRows] = await Promise.all([
+    const [snapshotRes, productsRes, outboundRows] = await Promise.all([
       supabase
         .from("inventory_stock_snapshot")
-        .select("product_code,product_name,quantity,pack_size,total_price")
+        .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,category,snapshot_date")
+        .order("snapshot_date", { ascending: false })
         .order("product_code")
         .limit(10000),
+      supabase.from("inventory_products").select("product_code,category").order("product_code").limit(10000),
       fetchAllOutbound(supabase, dateFrom),
     ]);
 
@@ -94,22 +98,55 @@ export async function GET() {
       );
     }
 
-    const rows = (snapshotData ?? []) as Array<{ product_code?: string; product_name?: string; quantity?: unknown; pack_size?: unknown; total_price?: unknown; dest_warehouse?: string }>;
+    const allRows = (snapshotData ?? []) as Array<{ product_code?: string; product_name?: string; quantity?: unknown; pack_size?: unknown; total_price?: unknown; unit_cost?: unknown; dest_warehouse?: string; category?: string; snapshot_date?: string }>;
+    const productsData = (productsRes?.data ?? []) as Array<{ product_code?: string; group_name?: string; category?: string }>;
+    const codeToCategory = new Map<string, string>();
+    for (const p of productsData) {
+      const rawCode = String(p.product_code ?? "").trim();
+      const code = normalizeCode(p.product_code) || rawCode;
+      if (!code) continue;
+      const raw = String(p.category ?? p.group_name ?? "").trim();
+      if (/^\d{10,}$/.test(raw)) continue;
+      const cat = normalizeCategory(raw) || (raw && raw !== "기타" && raw !== "전체" ? raw : "");
+      if (!cat) continue;
+      codeToCategory.set(code, cat);
+      codeToCategory.set(rawCode, cat);
+    }
+    // 최신 snapshot_date만 사용 (재고 자산은 가장 최신 데이터 기준)
+    const maxDate = allRows.length > 0
+      ? allRows.reduce((max, r) => {
+          const d = (r.snapshot_date ?? "").slice(0, 10);
+          return d > max ? d : max;
+        }, "1970-01-01")
+      : "";
+    const rows = maxDate ? allRows.filter((r) => (r.snapshot_date ?? "").slice(0, 10) === maxDate) : allRows;
     const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
-    const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string }> = {};
+    const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string; category: string }> = {};
+    const seenRow = new Set<string>();
 
     for (const r of rows) {
+      const code = String(r.product_code ?? "").trim();
+      const wh = String(r.dest_warehouse ?? "").trim();
+      const rowKey = `${code}|${wh}`;
+      if (seenRow.has(rowKey)) continue;
+      seenRow.add(rowKey);
+
       const qty = toNum(r.quantity);
       const pack = Math.max(1, toNum(r.pack_size));
-      const price = toNum(r.total_price);
-      const code = String(r.product_code ?? "").trim();
+      let price = toNum(r.total_price);
+      if (price <= 0 && qty > 0) price = qty * toNum(r.unit_cost);
+      const cat = String(r.category ?? "").trim();
+
       if (isCoupangStock(r.dest_warehouse)) {
         stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
       } else {
         stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;
       }
+      const validCat = cat && !/^\d{10,}$/.test(cat) && cat !== "기타" && cat !== "전체";
       if (!mergedByProduct[code]) {
-        mergedByProduct[code] = { qty: 0, price: 0, pack, name: String(r.product_name ?? "").trim() || code };
+        mergedByProduct[code] = { qty: 0, price: 0, pack, name: String(r.product_name ?? "").trim() || code, category: validCat ? cat : "" };
+      } else if (validCat) {
+        mergedByProduct[code].category = cat;
       }
       mergedByProduct[code].qty += qty;
       mergedByProduct[code].price += price;
@@ -126,6 +163,12 @@ export async function GET() {
       totalValue += price;
       totalQuantity += qty;
       totalSku += sku;
+      const normCode = normalizeCode(code);
+      const fromSnapshot = (data.category && data.category !== "기타" && data.category !== "전체" && !/^\d{10,}$/.test(data.category)) ? data.category : "";
+      const fromProducts = codeToCategory.get(code) ?? codeToCategory.get(normCode) ?? codeToCategory.get(String(code).trim()) ?? "";
+      let rawCat = fromSnapshot || fromProducts;
+      if (/^\d{10,}$/.test(String(rawCat ?? "").trim())) rawCat = "";
+      const cat = normalizeCategory(rawCat) || (rawCat && rawCat !== "기타" && rawCat !== "전체" ? rawCat : "");
       return {
         product_code: code,
         product_name: data.name || undefined,
@@ -133,6 +176,7 @@ export async function GET() {
         pack_size: pack,
         total_price: price,
         sku,
+        category: cat || "생활용품",
       };
     });
 
@@ -166,7 +210,8 @@ export async function GET() {
     };
 
     const uniqueProductCount = new Set(items.map((i) => i.product_code)).size;
-    return NextResponse.json({
+    return NextResponse.json(
+      {
       items,
       totalValue: Math.round(totalValue),
       totalQuantity,
@@ -177,7 +222,9 @@ export async function GET() {
       dailyVelocityByProductGeneral,
       outboundByChannel,
       stockByChannel,
-    });
+    },
+    { headers: { "Cache-Control": "no-store, max-age=0" } }
+    );
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     return NextResponse.json(

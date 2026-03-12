@@ -3,9 +3,9 @@
  * GET /api/category-trend
  * - inventory_outbound quantity 합산 (판매량)
  * - inventory_inbound quantity 합산 (입고량)
- * - 카테고리: inventory_products.group_name 컬럼 기준 (DB 데이터 그대로 사용)
+ * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
  */
-
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";
@@ -15,7 +15,7 @@ const emptyResponse = {
   categories: [] as string[],
   chartData: [] as Record<string, string | number>[],
   momRates: {} as Record<string, Record<string, number | null>>,
-  monthlyTotals: {} as Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; inboundCoupang: number; inboundGeneral: number }>,
+  monthlyTotals: {} as Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundCoupang: number; inboundGeneral: number }>,
   momIndicators: {
     outbound: null as number | null,
     inbound: null as number | null,
@@ -30,7 +30,7 @@ const emptyResponse = {
   },
 };
 
-const PAGE_SIZE = 1000;
+const PAGE_SIZE = 2000;
 
 async function fetchAllRows<T>(
   supabase: SupabaseClient,
@@ -75,6 +75,16 @@ function isGeneralInbound(dest: string | null | undefined): boolean {
   return s.includes("제이에스");
 }
 
+/** 카테고리 정규화: 캡슐세제 사은품 → 캡슐사은품 */
+function normalizeCategoryName(cat: string): string {
+  const s = String(cat ?? "").trim();
+  if (s === "캡슐세제 사은품" || (s.includes("캡슐세제") && s.includes("사은품"))) return "캡슐사은품";
+  return s;
+}
+
+/** 표시용 카테고리 순서 (기타 제외) */
+const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품", "캡슐사은품"];
+
 export async function GET() {
   try {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -86,10 +96,12 @@ export async function GET() {
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth();
-    const dateFrom = `${year - 2}-01-01`;
+    // 최근 14개월 기간으로 조회 (25년 3월~ 데이터 포함)
+    const fourteenMonthsAgo = new Date(year, month - 13, 1);
+    const dateFrom = `${fourteenMonthsAgo.getFullYear()}-${String(fourteenMonthsAgo.getMonth() + 1).padStart(2, "0")}-01`;
 
-    const [productsRes, outbound, inbound] = await Promise.all([
-      supabase.from("inventory_products").select("product_code,product_name,unit_cost,group_name").limit(5000),
+    const [productsRes, outbound, inbound, snapshotRes] = await Promise.all([
+      supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
       fetchAllRows<{ product_code: string; quantity: number; outbound_date: string; sales_channel?: string; product_name?: string; category?: string }>(
         supabase,
         "inventory_outbound",
@@ -104,19 +116,37 @@ export async function GET() {
         "inbound_date",
         dateFrom
       ),
+      supabase.from("inventory_stock_snapshot").select("product_code,category,snapshot_date").limit(10000),
     ]);
 
-    const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; group_name?: string }[];
-    const codeToGroup = new Map<string, string>();
+    /** product_code → category(품목구분): inventory_stock_snapshot 우선 */
+    const codeToCategory = new Map<string, string>();
+    const snapData = (snapshotRes.data ?? []) as { product_code: string; category?: string; snapshot_date?: string }[];
+    const byCodeDate = new Map<string, { category: string; date: string }>();
+    for (const row of snapData) {
+      const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
+      const cat = String(row.category ?? "").trim();
+      const date = (row.snapshot_date ?? "").slice(0, 10);
+      if (!code) continue;
+      const existing = byCodeDate.get(code);
+      const useCat = cat || (existing?.category ?? "");
+      if (!existing || date >= existing.date) byCodeDate.set(code, { category: useCat, date });
+    }
+    for (const [code, v] of byCodeDate.entries()) {
+      if (v.category) codeToCategory.set(code, v.category);
+    }
+
+    const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
     const codeToCost = new Map<string, number>();
-    const categoriesSet = new Set<string>(["생활용품"]);
+    const categoriesSet = new Set<string>();
     for (const p of products) {
       const k = normalizeCode(p.product_code) || String(p.product_code).trim();
-      const raw = String(p.group_name ?? "").trim();
-      const group = raw && raw !== "기타" ? raw : "생활용품";
-      codeToGroup.set(k, group);
-      codeToGroup.set(String(p.product_code).trim(), group);
-      categoriesSet.add(group);
+      const fromProduct = String(p.category ?? p.group_name ?? "").trim();
+      const catFromSnapshot = codeToCategory.get(k) ?? codeToCategory.get(String(p.product_code).trim());
+      const group = (fromProduct && fromProduct !== "기타") ? fromProduct : (catFromSnapshot || "기타");
+      if (!codeToCategory.has(k)) codeToCategory.set(k, group);
+      if (!codeToCategory.has(String(p.product_code).trim())) codeToCategory.set(String(p.product_code).trim(), group);
+      if (group !== "기타") categoriesSet.add(normalizeCategoryName(group));
       const c = Number(p.unit_cost ?? 0);
       if (c > 0 && c <= 500_000) {
         codeToCost.set(k, c);
@@ -124,31 +154,38 @@ export async function GET() {
       }
     }
     const byMonthCategory: Record<string, Record<string, number>> = {};
-    const monthsSet = new Set<string>();
 
+    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용 (인바운드 제외), 기타 제외
     for (const o of outbound) {
       const m = (o.outbound_date ?? "").slice(0, 7);
       if (!m) continue;
-      monthsSet.add(m);
       if (!byMonthCategory[m]) byMonthCategory[m] = {};
       const rowCat = (o.category ?? "").trim();
-      const cat =
+      let cat =
         (rowCat && rowCat !== "기타") ? rowCat :
-        codeToGroup.get(normalizeCode(o.product_code) || "") ||
-        codeToGroup.get(String(o.product_code).trim()) ||
-        "생활용품";
-      if (!categoriesSet.has(cat)) categoriesSet.add(cat);
+        codeToCategory.get(normalizeCode(o.product_code) || "") ||
+        codeToCategory.get(String(o.product_code).trim()) ||
+        "";
+      if (cat === "기타") continue;
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타") continue;
+      categoriesSet.add(cat);
       byMonthCategory[m][cat] = (byMonthCategory[m][cat] ?? 0) + Number(o.quantity ?? 0);
     }
-    for (const i of inbound) {
-      const m = (i.inbound_date ?? "").slice(0, 7);
-      if (!m) continue;
-      monthsSet.add(m);
-      if (!byMonthCategory[m]) byMonthCategory[m] = {};
-    }
 
-    const months = Array.from(monthsSet).sort();
-    const finalCategories = Array.from(categoriesSet).sort();
+    const ordered = [...categoriesSet];
+    const finalCategories = [
+      ...CATEGORY_ORDER.filter((c) => ordered.includes(c)),
+      ...ordered.filter((c) => !CATEGORY_ORDER.includes(c)).sort(),
+    ];
+
+    // 최근 14개월 슬롯 고정 (25년 3월~ 데이터 포함)
+    const fourteenMonthsSlots: string[] = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(year, month - i, 1);
+      fourteenMonthsSlots.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    }
+    const months = fourteenMonthsSlots;
 
     const chartData = months.map((month) => {
       const row: Record<string, string | number> = { month };
@@ -157,18 +194,24 @@ export async function GET() {
       return row;
     });
 
-    const monthlyTotals: Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; inboundCoupang: number; inboundGeneral: number }> = {};
-    for (const m of months) monthlyTotals[m] = { outbound: 0, inbound: 0, outboundValue: 0, inboundValue: 0, outboundCoupang: 0, outboundGeneral: 0, inboundCoupang: 0, inboundGeneral: 0 };
+    const monthlyTotals: Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundCoupang: number; inboundGeneral: number }> = {};
+    for (const m of months) monthlyTotals[m] = { outbound: 0, inbound: 0, outboundValue: 0, inboundValue: 0, outboundCoupang: 0, outboundGeneral: 0, outboundValueCoupang: 0, outboundValueGeneral: 0, inboundCoupang: 0, inboundGeneral: 0 };
     for (const o of outbound) {
       const m = (o.outbound_date ?? "").slice(0, 7);
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
       const cost = codeToCost.get(codeKey) ?? 0;
+      const val = qty * cost;
       monthlyTotals[m].outbound += qty;
-      monthlyTotals[m].outboundValue += qty * cost;
-      if (isCoupangChannel(o.sales_channel)) monthlyTotals[m].outboundCoupang += qty;
-      else monthlyTotals[m].outboundGeneral += qty;
+      monthlyTotals[m].outboundValue += val;
+      if (isCoupangChannel(o.sales_channel)) {
+        monthlyTotals[m].outboundCoupang += qty;
+        monthlyTotals[m].outboundValueCoupang += val;
+      } else {
+        monthlyTotals[m].outboundGeneral += qty;
+        monthlyTotals[m].outboundValueGeneral += val;
+      }
     }
     for (const i of inbound) {
       const m = (i.inbound_date ?? "").slice(0, 7);
@@ -181,6 +224,53 @@ export async function GET() {
       if (isCoupangInbound(i.dest_warehouse)) monthlyTotals[m].inboundCoupang += qty;
       else if (isGeneralInbound(i.dest_warehouse)) monthlyTotals[m].inboundGeneral += qty;
       else monthlyTotals[m].inboundGeneral += qty;
+    }
+
+    const byMonthCategoryInboundValue: Record<string, Record<string, number>> = {};
+    const byMonthCategoryOutboundValue: Record<string, Record<string, number>> = {};
+    for (const m of months) {
+      byMonthCategoryInboundValue[m] = {};
+      byMonthCategoryOutboundValue[m] = {};
+      for (const c of finalCategories) {
+        byMonthCategoryInboundValue[m][c] = 0;
+        byMonthCategoryOutboundValue[m][c] = 0;
+      }
+    }
+    for (const o of outbound) {
+      const m = (o.outbound_date ?? "").slice(0, 7);
+      if (!byMonthCategoryOutboundValue[m]) continue;
+      const rowCat = (o.category ?? "").trim();
+      let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(o.product_code) || "") || codeToCategory.get(String(o.product_code).trim()) || "";
+      if (cat === "기타") continue;
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타" || !finalCategories.includes(cat)) continue;
+      const qty = Number(o.quantity ?? 0);
+      const cost = codeToCost.get(normalizeCode(o.product_code) || "") ?? codeToCost.get(String(o.product_code).trim()) ?? 0;
+      byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + qty * cost;
+    }
+    for (const i of inbound) {
+      const m = (i.inbound_date ?? "").slice(0, 7);
+      if (!byMonthCategoryInboundValue[m]) continue;
+      const rowCat = (i.category ?? "").trim();
+      let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(i.product_code) || "") || codeToCategory.get(String(i.product_code).trim()) || "";
+      if (cat === "기타") continue;
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타" || !finalCategories.includes(cat)) continue;
+      const qty = Number(i.quantity ?? 0);
+      const cost = codeToCost.get(normalizeCode(i.product_code) || "") ?? codeToCost.get(String(i.product_code).trim()) ?? 0;
+      byMonthCategoryInboundValue[m][cat] = (byMonthCategoryInboundValue[m][cat] ?? 0) + qty * cost;
+    }
+    const monthlyValueByCategory: Record<string, Record<string, number>> = {};
+    const cumByCat: Record<string, number> = {};
+    for (const c of finalCategories) cumByCat[c] = 0;
+    for (const m of months) {
+      monthlyValueByCategory[m] = {};
+      for (const c of finalCategories) {
+        const inVal = byMonthCategoryInboundValue[m]?.[c] ?? 0;
+        const outVal = byMonthCategoryOutboundValue[m]?.[c] ?? 0;
+        cumByCat[c] = (cumByCat[c] ?? 0) + inVal - outVal;
+        monthlyValueByCategory[m][c] = Math.round(cumByCat[c]);
+      }
     }
 
     const momRates: Record<string, Record<string, number | null>> = {};
@@ -203,13 +293,15 @@ export async function GET() {
     const prevOut = monthlyTotals[prevMonthKey]?.outbound ?? 0;
     const prevIn = monthlyTotals[prevMonthKey]?.inbound ?? 0;
 
-    return NextResponse.json({
-      months,
-      categories: finalCategories,
-      chartData,
-      momRates,
-      monthlyTotals,
-      momIndicators: {
+    return NextResponse.json(
+      {
+        months,
+        categories: finalCategories,
+        chartData,
+        momRates,
+        monthlyTotals,
+        monthlyValueByCategory,
+        momIndicators: {
         outbound: prevOut > 0 ? Math.round(((thisOut - prevOut) / prevOut) * 1000) / 10 : null,
         inbound: prevIn > 0 ? Math.round(((thisIn - prevIn) / prevIn) * 1000) / 10 : null,
         thisMonthOutbound: thisOut,
@@ -221,8 +313,16 @@ export async function GET() {
         thisMonthInboundCoupang: monthlyTotals[thisMonthKey]?.inboundCoupang ?? 0,
         thisMonthInboundGeneral: monthlyTotals[thisMonthKey]?.inboundGeneral ?? 0,
       },
-    });
-  } catch {
-    return NextResponse.json(emptyResponse, { status: 200 });
+    },
+    {
+      headers: { "Cache-Control": "no-store, max-age=0" },
+    }
+    );
+  } catch (e) {
+    console.error("[category-trend] error:", e);
+    return NextResponse.json(
+      { ...emptyResponse, error: e instanceof Error ? e.message : "Unknown error" },
+      { status: 200 }
+    );
   }
 }

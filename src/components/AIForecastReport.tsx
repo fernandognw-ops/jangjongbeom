@@ -44,9 +44,12 @@ export interface ForecastResponse {
 const CATEGORY_COLORS: Record<string, string> = {
   마스크: "#22d3ee",
   캡슐: "#a78bfa",
+  캡슐세제: "#a78bfa",
   원단: "#f472b6",
   액상: "#34d399",
+  액상세제: "#34d399",
   리빙: "#fbbf24",
+  생활용품: "#fbbf24",
   기타: "#94a3b8",
 };
 
@@ -72,9 +75,12 @@ export function AIForecastReport() {
     const timeoutId = setTimeout(() => controller.abort(), 20_000);
     fetch("/api/forecast", { signal: controller.signal })
       .then(async (res) => {
-        if (!res.ok) throw new Error(res.statusText);
-        const json = await res.json();
-        if (json?.error) throw new Error(json.error);
+        const json = await res.json().catch(() => null);
+        if (!res.ok) {
+          const msg = (json?.error as string) || res.statusText || "서버 오류";
+          throw new Error(msg);
+        }
+        if (json?.error) throw new Error(String(json.error));
         return json as ForecastResponse;
       })
       .then((json) => {
@@ -146,6 +152,10 @@ export function AIForecastReport() {
     })
   );
 
+  const HIGH_VOLUME_THRESHOLD = 1_000_000;
+  const highVolumeData = categoryChartData.filter((r) => (r.production_needed as number) >= HIGH_VOLUME_THRESHOLD);
+  const lowVolumeData = categoryChartData.filter((r) => (r.production_needed as number) < HIGH_VOLUME_THRESHOLD);
+
   const topProducts = (data.product_forecasts ?? []).slice(0, 15);
 
   return (
@@ -188,55 +198,115 @@ export function AIForecastReport() {
         </div>
       </div>
 
-      {/* 카테고리별 예측 차트 */}
+      {/* 카테고리별 예측 차트: 왼쪽 100만 이상 / 오른쪽 100만 미만 */}
       {categoryChartData.length > 0 && (
         <div>
           <h3 className="mb-3 text-sm font-semibold text-zinc-300">
             카테고리별 3개월 예상 출고량
           </h3>
-          <div className="h-64 w-full min-w-0 md:h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={categoryChartData}
-                margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
-                <XAxis
-                  dataKey="category"
-                  stroke="#71717a"
-                  tick={{ fill: "#a1a1aa", fontSize: 11 }}
-                />
-                <YAxis
-                  stroke="#71717a"
-                  tick={{ fill: "#a1a1aa", fontSize: 11 }}
-                  tickFormatter={(v) => v.toLocaleString()}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "#18181b",
-                    border: "1px solid #3f3f46",
-                    borderRadius: "8px",
-                  }}
-                  formatter={(value) =>
-                    typeof value === "number"
-                      ? value.toLocaleString()
-                      : String(value ?? "")
-                  }
-                />
-                <Legend />
-                {[m1, m2, m3].map((label, idx) => (
-                  <Bar
-                    key={label}
-                    dataKey={label}
-                    name={label}
-                    fill={
-                      ["#22d3ee", "#a78bfa", "#f472b6"][idx % 3] ?? "#94a3b8"
-                    }
-                    radius={[4, 4, 0, 0]}
-                  />
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {highVolumeData.length > 0 && (
+              <div className="min-w-0 rounded-xl border border-zinc-600 bg-zinc-800/60 p-4">
+                <div className="mb-2 text-xs font-medium text-cyan-400">
+                  대량 (100만 개 이상)
+                </div>
+                <div className="h-56 w-full min-w-0 md:h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={highVolumeData}
+                      margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
+                      <XAxis
+                        dataKey="category"
+                        stroke="#71717a"
+                        tick={{ fill: "#a1a1aa", fontSize: 11 }}
+                      />
+                      <YAxis
+                        stroke="#71717a"
+                        tick={{ fill: "#a1a1aa", fontSize: 11 }}
+                        tickFormatter={(v) => v.toLocaleString()}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "#18181b",
+                          border: "1px solid #3f3f46",
+                          borderRadius: "8px",
+                        }}
+                        formatter={(value) =>
+                          typeof value === "number"
+                            ? value.toLocaleString()
+                            : String(value ?? "")
+                        }
+                      />
+                      <Legend />
+                      {[m1, m2, m3].map((label, idx) => (
+                        <Bar
+                          key={label}
+                          dataKey={label}
+                          name={label}
+                          fill={
+                            ["#22d3ee", "#a78bfa", "#f472b6"][idx % 3] ?? "#94a3b8"
+                          }
+                          radius={[4, 4, 0, 0]}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+            {lowVolumeData.length > 0 && (
+              <div className="min-w-0 rounded-xl border border-zinc-600 bg-zinc-800/60 p-4">
+                <div className="mb-2 text-xs font-medium text-amber-400">
+                  소량 (100만 개 미만)
+                </div>
+                <div className="h-56 w-full min-w-0 md:h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={lowVolumeData}
+                      margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
+                      <XAxis
+                        dataKey="category"
+                        stroke="#71717a"
+                        tick={{ fill: "#a1a1aa", fontSize: 11 }}
+                      />
+                      <YAxis
+                        stroke="#71717a"
+                        tick={{ fill: "#a1a1aa", fontSize: 11 }}
+                        tickFormatter={(v) => v.toLocaleString()}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "#18181b",
+                          border: "1px solid #3f3f46",
+                          borderRadius: "8px",
+                        }}
+                        formatter={(value) =>
+                          typeof value === "number"
+                            ? value.toLocaleString()
+                            : String(value ?? "")
+                        }
+                      />
+                      <Legend />
+                      {[m1, m2, m3].map((label, idx) => (
+                        <Bar
+                          key={label}
+                          dataKey={label}
+                          name={label}
+                          fill={
+                            ["#22d3ee", "#a78bfa", "#f472b6"][idx % 3] ?? "#94a3b8"
+                          }
+                          radius={[4, 4, 0, 0]}
+                        />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

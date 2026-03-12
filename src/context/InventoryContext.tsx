@@ -92,6 +92,8 @@ interface InventoryContextValue {
   avg14DayOutboundByProduct?: Record<string, number>;
   /** 제품별 일일 평균 판매량 (최근 30일 출고/30, 보유일수 계산용) */
   dailyVelocityByProduct?: Record<string, number>;
+  /** refresh() 성공 시 증가. CategoryTrendChart 등이 이 값 변경 시 재조회 */
+  dataRefreshKey?: number;
 }
 
 const InventoryContext = createContext<InventoryContextValue | null>(null);
@@ -105,7 +107,7 @@ function toProductMasterRow(p: InventoryProduct): ProductMasterRow {
   return {
     code: p.product_code,
     name: p.product_name,
-    group: p.group_name,
+    group: p.category ?? p.group_name,
     subGroup: p.sub_group,
     spec: p.spec,
     unitCost: p.unit_cost,
@@ -200,6 +202,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [supabaseFetchStatus, setSupabaseFetchStatus] = useState<SupabaseFetchStatus>("idle");
   const [supabaseFetchError, setSupabaseFetchError] = useState<string | undefined>();
   const [isSupabaseLoading, setIsSupabaseLoading] = useState(true);
+  const [dataRefreshKey, setDataRefreshKey] = useState(0);
   const [kpiData, setKpiData] = useState<{ productCount: number; totalValue: number; totalQuantity: number; totalSku: number } | null>(null);
   const [supabaseProducts, setSupabaseProducts] = useState<InventoryProduct[]>([]);
   const [supabaseInbound, setSupabaseInbound] = useState<InventoryInbound[]>([]);
@@ -238,20 +241,20 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 15_000);
-      const res = await Promise.race([
-        fetch("/api/inventory/snapshot", { signal: ctrl.signal }),
-        timeout(15_000),
-      ]) as Response;
+      const tid = setTimeout(() => ctrl.abort(), 20_000);
+      const cacheBust = `_t=${Date.now()}`;
+      const [snapshotRes, summaryRes] = await Promise.all([
+        fetch(`/api/inventory/snapshot?${cacheBust}`, { signal: ctrl.signal, cache: "no-store" }),
+        fetch(`/api/inventory/summary?${cacheBust}`, { signal: ctrl.signal, cache: "no-store" }),
+      ]);
       clearTimeout(tid);
 
-      if (!res.ok) throw new Error(res.statusText);
-      const data = (await res.json()) as {
-        items?: Array<{ product_code: string; product_name?: string; quantity: number; pack_size: number; total_price: number; sku: number }>;
+      if (!snapshotRes.ok) throw new Error(snapshotRes.statusText);
+      const data = (await snapshotRes.json()) as {
+        items?: Array<{ product_code: string; product_name?: string; quantity: number; pack_size: number; total_price: number; sku: number; category?: string }>;
         totalValue?: number;
         totalQuantity?: number;
         totalSku?: number;
-        productCount?: number;
         dailyVelocityByProduct?: Record<string, number>;
         stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
         error?: string;
@@ -265,6 +268,12 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      let summaryProducts: InventoryProduct[] = [];
+      if (summaryRes.ok) {
+        const summaryData = await summaryRes.json();
+        summaryProducts = (summaryData.products ?? []) as InventoryProduct[];
+      }
+
       const today = new Date().toISOString().slice(0, 10);
       const snapshot: StockSnapshotRow[] = items.map((i) => ({
         product_code: i.product_code,
@@ -272,6 +281,13 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         unit_cost: i.quantity > 0 ? Math.round((i.total_price / i.quantity) * 100) / 100 : 0,
         snapshot_date: today,
       }));
+
+      const codeToSummaryProduct = new Map<string, InventoryProduct>();
+      for (const p of summaryProducts) {
+        const code = String(p.product_code ?? "").trim();
+        if (code) codeToSummaryProduct.set(code, p);
+      }
+
       const seenCodes = new Set<string>();
       const products: InventoryProduct[] = items
         .filter((i) => {
@@ -279,18 +295,27 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
           seenCodes.add(i.product_code);
           return true;
         })
-        .map((i) => ({
-        id: i.product_code,
-        product_code: i.product_code,
-        product_name: (i.product_name && i.product_name.trim()) ? i.product_name : i.product_code,
-        group_name: "생활용품",
-        sub_group: "",
-        spec: "",
-        unit_cost: i.quantity > 0 ? i.total_price / i.quantity : 0,
-        pack_size: i.pack_size,
-        sales_channel: "general",
-        is_active: true,
-      }));
+        .map((i) => {
+          const fromSummary = codeToSummaryProduct.get(i.product_code) ?? codeToSummaryProduct.get(String(i.product_code).trim());
+          const raw = String(i.category ?? "").trim();
+          const validFromApi = raw && raw !== "전체" && raw !== "기타" && !/^\d{10,}$/.test(raw);
+          const fromSum = String(fromSummary?.category ?? "").trim();
+          const validFromSum = fromSum && fromSum !== "기타" && !/^\d{10,}$/.test(fromSum);
+          const cat = validFromApi ? raw : (validFromSum ? fromSum : "생활용품");
+          return {
+            id: i.product_code,
+            product_code: i.product_code,
+            product_name: (i.product_name && i.product_name.trim()) ? i.product_name : (fromSummary?.product_name ?? i.product_code),
+            group_name: cat,
+            category: cat,
+            sub_group: fromSummary?.sub_group ?? "",
+            spec: fromSummary?.spec ?? "",
+            unit_cost: i.quantity > 0 ? i.total_price / i.quantity : (fromSummary?.unit_cost ?? 0),
+            pack_size: i.pack_size ?? fromSummary?.pack_size ?? 1,
+            sales_channel: "general" as const,
+            is_active: fromSummary?.is_active ?? true,
+          } satisfies InventoryProduct;
+        });
       const stockByProduct: Record<string, number> = {};
       for (const i of items) stockByProduct[i.product_code] = i.quantity;
 
@@ -309,6 +334,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         totalQuantity: data.totalQuantity ?? 0,
         totalSku: data.totalSku ?? 0,
       });
+      setDataRefreshKey((k) => k + 1);
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       setSupabaseFetchStatus("fetch_error");
@@ -479,7 +505,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     const costsByItem: Record<string, number[]> = {};
     for (const p of supabaseProducts) {
       if (p.unit_cost == null || p.unit_cost <= 0) continue;
-      const itemId = mapGroupToItemId(p.group_name);
+      const itemId = mapGroupToItemId(p.category ?? p.group_name);
       if (!costsByItem[itemId]) costsByItem[itemId] = [];
       costsByItem[itemId].push(p.unit_cost);
     }
@@ -493,7 +519,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     const safetyStockMap = (() => {
       const byItem: Record<string, number> = {};
       for (const p of supabaseProducts) {
-        const itemId = mapGroupToItemId(p.group_name);
+        const itemId = mapGroupToItemId(p.category ?? p.group_name);
         const v = safetyByProduct[p.product_code] ?? safetyByProduct[normalizeCode(p.product_code)] ?? 0;
         byItem[itemId] = (byItem[itemId] ?? 0) + v;
       }
@@ -659,6 +685,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       recommendedOrderByProduct: supabaseDerived?.recommendedOrderByProduct,
       avg14DayOutboundByProduct: supabaseDerived?.avg14DayOutboundByProduct ?? {},
       dailyVelocityByProduct: useSupabaseInventory ? dailyVelocityByProduct : undefined,
+      dataRefreshKey,
     }),
     [
       stock,
@@ -695,6 +722,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       supabaseDerived?.recommendedOrderByProduct,
       supabaseDerived?.avg14DayOutboundByProduct,
       dailyVelocityByProduct,
+      dataRefreshKey,
     ]
   );
 

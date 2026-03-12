@@ -1,7 +1,7 @@
 /**
  * Supabase inventory API
  * 데이터 소스: inventory_current_products + inventory_stock_snapshot(재고·금액)
- * 카테고리: inventory_products.group_name 컬럼 기준 (DB 데이터 그대로 사용)
+ * 품목구분(category): inventory_products.category 또는 group_name → 없으면 inventory_stock_snapshot.category → 없으면 기타
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -34,11 +34,25 @@ export function normalizeCode(c: unknown): string {
   return s;
 }
 
+/** 품목구분 → 표준 카테고리 정규화 (필터 매칭용) */
+export const STANDARD_CATEGORIES = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품", "캡슐사은품"] as const;
+export function normalizeCategory(cat: string): string {
+  const s = String(cat ?? "").trim();
+  if (!s || s === "기타" || s === "전체") return "";
+  if (s === "캡슐세제 사은품" || (s.includes("캡슐세제") && s.includes("사은품"))) return "캡슐사은품";
+  for (const std of STANDARD_CATEGORIES) {
+    if (s === std || s.includes(std) || std.includes(s)) return std;
+  }
+  return s;
+}
+
 export interface InventoryProduct {
   id: string;
   product_code: string;
   product_name: string;
   group_name: string;
+  /** 품목구분 (마스크, 생활용품 등) - inventory_stock_snapshot.category 기준, 필터/분류용 */
+  category?: string;
   sub_group: string;
   spec: string;
   unit_cost: number;
@@ -54,6 +68,8 @@ export interface StockSnapshotRow {
   quantity: number;
   unit_cost: number;
   snapshot_date: string;
+  /** 품목구분 (마스크, 생활용품, 섬유유연제, 액상세제, 캡슐세제 등) */
+  category?: string | null;
 }
 
 export interface InventoryInbound {
@@ -106,22 +122,30 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     let stockSnapshot: StockSnapshotRow[] = [];
     const [currentRes, snapshotRes] = await Promise.all([
       supabase.from(TABLE_CURRENT_PRODUCTS).select("product_code").order("product_code").limit(10000),
-      supabase.from(TABLE_STOCK_SNAPSHOT).select("product_code,quantity,unit_cost,snapshot_date").limit(50000),
+      supabase.from(TABLE_STOCK_SNAPSHOT).select("product_code,quantity,unit_cost,snapshot_date,category").limit(50000),
     ]);
     currentCodes = currentRes.error ? [] : (currentRes.data ?? []).map((r: { product_code: string }) => r.product_code);
-    stockSnapshot = snapshotRes.error ? [] : ((snapshotRes.data ?? []) as StockSnapshotRow[]);
+    const allSnapshot = snapshotRes.error ? [] : ((snapshotRes.data ?? []) as StockSnapshotRow[]);
+    // 최신 snapshot_date만 사용 (재고 자산은 가장 최신 데이터 기준)
+    const maxSnapDate = allSnapshot.length > 0
+      ? allSnapshot.reduce((max, r) => {
+          const d = ((r as { snapshot_date?: string }).snapshot_date ?? "").toString().slice(0, 10);
+          return d > max ? d : max;
+        }, "1970-01-01")
+      : "";
+    stockSnapshot = maxSnapDate ? allSnapshot.filter((r) => ((r as { snapshot_date?: string }).snapshot_date ?? "").toString().slice(0, 10) === maxSnapDate) : allSnapshot;
     if (currentRes.error) console.warn("[inventory] inventory_current_products 조회 실패:", currentRes.error.message);
     if (snapshotRes.error) console.warn("[inventory] inventory_stock_snapshot 조회 실패:", snapshotRes.error.message);
 
-    // 최근 1개월만 조회 (성능 개선)
-    const oneMonthAgo = new Date();
-    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-    const oneMonthStr = oneMonthAgo.toISOString().slice(0, 10);
+    // 최근 6개월 조회 (누적 데이터: 1월·2월·3월 등)
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const dateFrom = sixMonthsAgo.toISOString().slice(0, 10);
     const t0 = Date.now();
     const [productsRes, inboundRes, outboundRes] = await Promise.all([
       supabase.from(TABLE_PRODUCTS).select("*").order("product_code").limit(5000),
-      supabase.from(TABLE_INBOUND).select("id,product_code,quantity,inbound_date,source_warehouse,dest_warehouse,note").gte("inbound_date", oneMonthStr).order("inbound_date", { ascending: false }).limit(10000),
-      supabase.from(TABLE_OUTBOUND).select("id,product_code,quantity,sales_channel,outbound_date,source_warehouse,dest_warehouse,note").gte("outbound_date", oneMonthStr).order("outbound_date", { ascending: false }).limit(10000),
+      supabase.from(TABLE_INBOUND).select("id,product_code,quantity,inbound_date,source_warehouse,dest_warehouse,note").gte("inbound_date", dateFrom).order("inbound_date", { ascending: false }).limit(50000),
+      supabase.from(TABLE_OUTBOUND).select("id,product_code,quantity,sales_channel,outbound_date,source_warehouse,dest_warehouse,note").gte("outbound_date", dateFrom).order("outbound_date", { ascending: false }).limit(50000),
     ]);
     console.log(`[inventoryApi] products/inbound/outbound 쿼리 완료 (${Date.now() - t0}ms)`);
 
@@ -135,39 +159,29 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
       return { ok: false, reason: "fetch_error", message: productsRes.error?.message ?? String(productsRes.error) };
     }
 
-    const allProducts = (productsRes.error ? [] : (productsRes.data ?? [])) as InventoryProduct[];
+    const allProducts = (productsRes.error ? [] : (productsRes.data ?? [])) as (InventoryProduct & { category?: string })[];
     const codeToProduct = new Map<string, InventoryProduct>();
     for (const p of allProducts) {
       const k = normalizeCode(p.product_code);
-      if (k && !codeToProduct.has(k)) codeToProduct.set(k, p);
       const k2 = String(p.product_code ?? "").trim();
+      if (k && !codeToProduct.has(k)) codeToProduct.set(k, p);
       if (k2 && !codeToProduct.has(k2)) codeToProduct.set(k2, p);
+    }
+
+    /** product_code → category: inventory_stock_snapshot (update-category로 반영) */
+    const codeToCategoryFromSnapshot = new Map<string, string>();
+    for (const row of stockSnapshot) {
+      const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
+      const cat = String((row as StockSnapshotRow & { category?: string }).category ?? "").trim();
+      if (!code || !cat || cat === "기타" || cat === "전체") continue;
+      codeToCategoryFromSnapshot.set(code, cat);
     }
 
     const inboundData = (inboundRes.data ?? []) as InventoryInbound[];
     const outboundData = (outboundRes.data ?? []) as InventoryOutbound[];
     const codesFromInOut = Array.from(
-      new Set([
-        ...inboundData.map((i) => i.product_code),
-        ...outboundData.map((o) => o.product_code),
-      ])
+      new Set([...inboundData.map((i) => i.product_code), ...outboundData.map((o) => o.product_code)])
     );
-    /** product_code → category(품목구분) 매칭: inventory_products.group_name 우선, 없으면 입출고 row.category */
-    const codeToCategoryFromInOut = new Map<string, string>();
-    for (const i of inboundData) {
-      const c = (i.category ?? "").trim();
-      if (c && c !== "기타") {
-        const k = normalizeCode(i.product_code) || String(i.product_code).trim();
-        if (k && !codeToCategoryFromInOut.has(k)) codeToCategoryFromInOut.set(k, c);
-      }
-    }
-    for (const o of outboundData) {
-      const c = (o.category ?? "").trim();
-      if (c && c !== "기타") {
-        const k = normalizeCode(o.product_code) || String(o.product_code).trim();
-        if (k && !codeToCategoryFromInOut.has(k)) codeToCategoryFromInOut.set(k, c);
-      }
-    }
     const products: InventoryProduct[] = [];
     const codesToUse =
       currentCodes.length > 0
@@ -181,17 +195,24 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     for (const code of codesToUse) {
       const key = normalizeCode(code);
       const p = codeToProduct.get(key) ?? codeToProduct.get(String(code ?? "").trim()) ?? codeToProduct.get(code);
+      /** category: inventory_stock_snapshot 우선 (엑셀 update-category 반영) → inventory_products → 기타 */
+      const fromSnapshot = codeToCategoryFromSnapshot.get(key) ?? codeToCategoryFromSnapshot.get(String(code ?? "").trim());
+      const fromProduct = p ? String((p as { category?: string }).category ?? (p as { group_name?: string }).group_name ?? "").trim() : "";
+      const useProduct = fromProduct && fromProduct !== "기타" && fromProduct !== "전체";
+      const category = fromSnapshot || (useProduct ? fromProduct : "기타");
+
       if (p) {
         (p as InventoryProduct & { is_active?: boolean }).is_active = true;
+        (p as InventoryProduct).category = category;
         products.push(p);
       } else {
-        const snap = stockSnapshot.find((s) => s.product_code === code);
-        const catFromInOut = codeToCategoryFromInOut.get(key) ?? codeToCategoryFromInOut.get(String(code ?? "").trim());
+        const snap = stockSnapshot.find((s) => normalizeCode(s.product_code) === key || String(s.product_code).trim() === String(code).trim());
         products.push({
           id: code,
           product_code: code,
           product_name: code,
-          group_name: catFromInOut || "생활용품",
+          group_name: "기타",
+          category,
           sub_group: "",
           spec: "",
           unit_cost: snap?.unit_cost ?? 0,
@@ -203,19 +224,25 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     }
 
     products.sort((a, b) => a.product_code.localeCompare(b.product_code));
-
     const finalProducts = products.length > 0 ? products : allProducts;
+
     for (const p of finalProducts) {
       (p as InventoryProduct & { is_active?: boolean }).is_active ??= true;
-      const raw = String(p.group_name ?? "").trim();
-      if (!raw || raw === "기타") {
-        const k = normalizeCode(p.product_code) || p.product_code;
-        const fromInOut = codeToCategoryFromInOut.get(k) ?? codeToCategoryFromInOut.get(String(p.product_code).trim());
-        (p as InventoryProduct).group_name = fromInOut || "생활용품";
-      }
+      const k = normalizeCode(p.product_code) || p.product_code;
+      const fromSnapshot = codeToCategoryFromSnapshot.get(k) ?? codeToCategoryFromSnapshot.get(String(p.product_code).trim());
+      const fromProduct = String((p as { category?: string }).category ?? (p as { group_name?: string }).group_name ?? "").trim();
+      const useProduct = fromProduct && fromProduct !== "기타" && fromProduct !== "전체";
+      (p as InventoryProduct).category = fromSnapshot || (useProduct ? fromProduct : "기타");
     }
+    const catMap = new Map<string, number>();
+    for (const p of finalProducts) {
+      const c = String(p.category ?? "기타").trim();
+      catMap.set(c, (catMap.get(c) ?? 0) + 1);
+    }
+    const catCount = Object.fromEntries([...catMap.entries()].sort((a, b) => b[1] - a[1]));
     console.log(
-      `[inventoryApi] DB에서 가져온 전체 품목 수: ${finalProducts.length}개, 입고: ${(inboundRes.data ?? []).length}건, 출고: ${(outboundRes.data ?? []).length}건, 스냅샷: ${stockSnapshot.length}건`
+      `[inventoryApi] 품목 ${finalProducts.length}개, 스냅샷 ${stockSnapshot.length}건, category별:`,
+      catCount
     );
 
     return {
@@ -250,11 +277,14 @@ export function getLatestSnapshotByProduct(
     const date = ((r.snapshot_date ?? row.snapshot_date) ?? "").toString().slice(0, 10);
     const qty = toNumber(r.quantity ?? row.quantity);
     const c = toNumber(r.unit_cost ?? row.unit_cost);
-    const existing = byCode.get(code);
-    if (!existing || date >= existing.date) {
-      byCode.set(code, { qty, cost: c, date });
-    }
     if (date > maxDate) maxDate = date;
+    const existing = byCode.get(code);
+    if (!existing) {
+      byCode.set(code, { qty, cost: c, date });
+    } else {
+      existing.qty += qty;
+      if (date >= existing.date && c > 0 && c <= MAX_UNIT_COST_KRW) existing.cost = c;
+    }
   }
   Array.from(byCode.entries()).forEach(([code, v]) => {
     stock[code] = v.qty;
@@ -542,8 +572,9 @@ export function toTransactions(
   const codeToName = new Map<string, string>();
   for (const p of products) {
     const k = normalizeCode(p.product_code) || p.product_code;
-    codeToGroup.set(k, p.group_name);
-    codeToGroup.set(p.product_code, p.group_name);
+    const group = (p.category ?? p.group_name ?? "기타").trim();
+    codeToGroup.set(k, group);
+    codeToGroup.set(p.product_code, group);
     codeToName.set(k, p.product_name);
     codeToName.set(p.product_code, p.product_name);
   }
@@ -552,7 +583,7 @@ export function toTransactions(
   for (const i of inbound) {
     const k = normalizeCode(i.product_code) || String(i.product_code).trim();
     const rowCat = (i.category ?? "").trim();
-    const group = (rowCat && rowCat !== "기타") ? rowCat : (codeToGroup.get(k) ?? codeToGroup.get(i.product_code) ?? "생활용품");
+    const group = (rowCat && rowCat !== "기타") ? rowCat : (codeToGroup.get(k) ?? codeToGroup.get(i.product_code) ?? "기타");
     txs.push({
       id: i.id,
       date: i.inbound_date.slice(0, 10),
@@ -569,7 +600,7 @@ export function toTransactions(
   for (const o of outbound) {
     const k = normalizeCode(o.product_code) || String(o.product_code).trim();
     const rowCat = (o.category ?? "").trim();
-    const group = (rowCat && rowCat !== "기타") ? rowCat : (codeToGroup.get(k) ?? codeToGroup.get(o.product_code) ?? "생활용품");
+    const group = (rowCat && rowCat !== "기타") ? rowCat : (codeToGroup.get(k) ?? codeToGroup.get(o.product_code) ?? "기타");
     txs.push({
       id: o.id,
       date: o.outbound_date.slice(0, 10),
@@ -750,12 +781,12 @@ export function getDailyOutboundByProduct(
 }
 
 /**
- * 권장 입고 수량 = (안전재고 - 현재재고) + (최근 30일 일평균 출고량 × 리드타임)
- * 품절 임박·부족 품목에 대해서만 계산 (재고 > 안전재고 → 0)
+ * 권장 입고 수량 = (안전재고 - 현재재고) + (일평균 출고량 × 리드타임)
+ * 품절 임박(보유 ≤3일) 품목: 최소 14일분 보충 권장
  */
 export function computeRecommendedOrderByProduct(
   stockByProduct: Record<string, number>,
-  avg30DayOutbound: Record<string, number>,
+  avgDailyOutbound: Record<string, number>,
   products: InventoryProduct[],
   safetyStockByProduct?: Record<string, number>
 ): Record<string, number> {
@@ -763,12 +794,20 @@ export function computeRecommendedOrderByProduct(
   for (const p of products) {
     const code = normalizeCode(p.product_code) || p.product_code;
     const stock = Math.max(0, stockByProduct[code] ?? stockByProduct[p.product_code] ?? 0);
-    const avgDaily = avg30DayOutbound[code] ?? avg30DayOutbound[p.product_code] ?? 0;
+    const avgDaily = avgDailyOutbound[code] ?? avgDailyOutbound[p.product_code] ?? 0;
     const leadTime = p.lead_time_days ?? DEFAULT_LEAD_TIME_DAYS;
     const safety = toNumber(safetyStockByProduct?.[code] ?? safetyStockByProduct?.[p.product_code]);
     const shortfall = safety > 0 ? Math.max(0, safety - stock) : 0;
     const demandDuringLead = avgDaily * leadTime;
-    const recommended = Math.max(0, Math.ceil(shortfall + demandDuringLead));
+    let recommended = Math.max(0, Math.ceil(shortfall + demandDuringLead));
+    // 품절 임박(보유 ≤3일): 최소 14일분 수요 보충 권장
+    if (avgDaily > 0) {
+      const daysOfStock = stock / avgDaily;
+      if (daysOfStock <= 3) {
+        const minFor14Days = Math.ceil(avgDaily * 14 - stock);
+        recommended = Math.max(recommended, Math.max(0, minFor14Days));
+      }
+    }
     if (recommended > 0) result[p.product_code] = recommended;
   }
   return result;

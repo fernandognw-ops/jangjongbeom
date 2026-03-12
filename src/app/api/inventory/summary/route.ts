@@ -5,7 +5,7 @@
  * DB에서 SUM/GROUP BY로 집계 후 결과만 반환.
  * inbound/outbound Raw 50k건 대신 집계값만 전송 (데이터 1/100 수준)
  */
-
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -81,14 +81,25 @@ export async function GET() {
       ]);
 
     if (productsRes.error) {
+      console.error("[inventory/summary] products error:", productsRes.error);
       return NextResponse.json(
-        { error: productsRes.error.message },
-        { status: 500 }
+        { error: productsRes.error.message, products: [] },
+        { status: 200 }
       );
     }
 
     const products = (productsRes.data ?? []) as InventoryProduct[];
-    const stockSnapshotRows = (snapshotRes.data ?? []) as { product_code: string; quantity: unknown; unit_cost: unknown; snapshot_date: string; dest_warehouse?: string }[];
+    const allSnapshotRows = (snapshotRes.data ?? []) as { product_code: string; quantity: unknown; unit_cost: unknown; snapshot_date: string; dest_warehouse?: string }[];
+    // 최신 snapshot_date만 사용 (재고 자산은 가장 최신 데이터 기준)
+    const maxSnapshotDate = allSnapshotRows.length > 0
+      ? allSnapshotRows.reduce((max, r) => {
+          const d = (r.snapshot_date ?? "").slice(0, 10);
+          return d > max ? d : max;
+        }, "1970-01-01")
+      : "";
+    const stockSnapshotRows = maxSnapshotDate
+      ? allSnapshotRows.filter((r) => (r.snapshot_date ?? "").slice(0, 10) === maxSnapshotDate)
+      : allSnapshotRows;
     const currentCodes =
       currentRes.data != null
         ? (currentRes.data as { product_code: string }[]).map((r) => r.product_code)
@@ -163,20 +174,21 @@ export async function GET() {
     }
 
     const safetyStockByProduct: Record<string, number> = {};
-    const avg30DayOutbound: Record<string, number> = {};
+    const avgDailyOutbound: Record<string, number> = {};
     for (const p of products) {
       const code = normalizeCode(p.product_code) || p.product_code;
       const agg = outboundByCode[code] ?? outboundByCode[String(p.product_code).trim()];
       if (agg) {
         const total90 = agg.total;
+        const dayCount = Math.max(1, agg.days);
         safetyStockByProduct[code] = Math.max(0, Math.ceil(total90 * 0.1));
-        avg30DayOutbound[code] = total90 / 30;
+        avgDailyOutbound[code] = total90 / dayCount;
       }
     }
 
     const recommendedOrderByProduct = computeRecommendedOrderByProduct(
       stockByProduct,
-      avg30DayOutbound,
+      avgDailyOutbound,
       products,
       safetyStockByProduct
     );
@@ -223,8 +235,8 @@ export async function GET() {
       stockByProduct,
       stockByProductByChannel,
       safetyStockByProduct,
-      avg30DayOutbound,
-      avg60DayOutbound: avg30DayOutbound,
+      avg30DayOutbound: avgDailyOutbound,
+      avg60DayOutbound: avgDailyOutbound,
       todayInOutCount: {
         inbound: toNumber(todayRow.inbound_count),
         outbound: toNumber(todayRow.outbound_count),
@@ -237,8 +249,8 @@ export async function GET() {
   } catch (e) {
     console.error("[inventory/summary] error:", e);
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Unknown error" },
-      { status: 500 }
+      { error: e instanceof Error ? e.message : "Unknown error", products: [] },
+      { status: 200 }
     );
   }
 }

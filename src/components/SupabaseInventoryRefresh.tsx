@@ -10,8 +10,28 @@ export function SupabaseInventoryRefresh() {
   const [alertResult, setAlertResult] = useState<string | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
   const [diagResult, setDiagResult] = useState<string | null>(null);
+  const [syncCatLoading, setSyncCatLoading] = useState(false);
 
   if (!useSupabaseInventory) return null;
+
+  const handleSyncCategory = async () => {
+    setSyncCatLoading(true);
+    setDiagResult(null);
+    try {
+      const res = await fetch("/api/inventory/sync-category");
+      const d = await res.json();
+      if (d.ok) {
+        setDiagResult(`카테고리 ${d.updated}건 동기화됨. 새로고침 버튼을 눌러주세요.`);
+        setTimeout(() => refresh(), 500);
+      } else {
+        setDiagResult(d.error ?? "동기화 실패");
+      }
+    } catch (e) {
+      setDiagResult(e instanceof Error ? e.message : "오류");
+    } finally {
+      setSyncCatLoading(false);
+    }
+  };
 
   const handleRefresh = async () => {
     setLoading(true);
@@ -78,6 +98,15 @@ export function SupabaseInventoryRefresh() {
         className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-[10px] font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 md:text-xs"
       >
         {loading ? "새로고침 중..." : "새로고침"}
+      </button>
+      <button
+        type="button"
+        onClick={handleSyncCategory}
+        disabled={syncCatLoading}
+        className="rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 md:text-xs"
+        title="inventory_products.group_name → 재고스냅샷.category 동기화"
+      >
+        {syncCatLoading ? "동기화 중..." : "카테고리 동기화"}
       </button>
       <button
         type="button"

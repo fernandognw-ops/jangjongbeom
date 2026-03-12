@@ -72,10 +72,10 @@ export default function DashboardPage() {
       >
         <div className="mx-auto max-w-6xl px-3 py-2 md:px-6 md:py-3">
           <h1 className="text-sm font-semibold leading-tight text-slate-800 md:text-xl">
-            실시간 통합 수불관리 시스템
+            클라 물류 관리 시스템 (AI 기반 데이터 분석)
           </h1>
           <p className="mt-0.5 text-[10px] text-slate-500 md:text-sm">
-            제조·유통 재고 자산 및 입출고 관리
+            PC & 모바일 멀티 사용 가능 (모바일은 구글외 인터넷 상에서 보기에 편함)
           </p>
         </div>
       </header>
