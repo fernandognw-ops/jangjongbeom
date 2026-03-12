@@ -16,6 +16,9 @@ const TABLE_PRODUCTS = "inventory_products";
 const TABLE_OUTBOUND = "inventory_outbound";
 const PAGE_SIZE = 5000;
 
+/** 임시로 예측 비활성화 (true = 빈 데이터만 반환) */
+const SKIP_FORECAST = true;
+
 type MonthlyOutbound = Record<string, number>;
 
 function toNumber(v: unknown): number {
@@ -92,6 +95,15 @@ function forecastNext3Months(monthlyValues: number[]): number[] {
 }
 
 export async function GET() {
+  if (SKIP_FORECAST) {
+    return NextResponse.json({
+      forecast_month_labels: [],
+      product_forecasts: [],
+      category_forecast: {},
+      summary: { total_products_forecasted: 0, total_production_needed_3m: 0 },
+    });
+  }
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) {
