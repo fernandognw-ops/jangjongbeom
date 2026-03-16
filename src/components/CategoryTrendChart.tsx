@@ -2,11 +2,11 @@
 
 import { useMemo, useState, useEffect, useCallback } from "react";
 import { useInventory } from "@/context/InventoryContext";
+import { NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 import {
-  AreaChart,
-  Area,
-  BarChart,
+  ComposedChart,
   Bar,
+  BarChart,
   Cell,
   Line,
   XAxis,
@@ -81,68 +81,36 @@ export interface CategoryTrendData {
     thisMonthInboundValue?: number;
     thisMonthOutboundCoupang?: number;
     thisMonthOutboundGeneral?: number;
-    thisMonthInboundCoupang?: number;
-    thisMonthInboundGeneral?: number;
+    thisMonthInboundByWarehouse?: Record<string, number>;
   };
 }
 
 type YearFilter = "all" | "2025" | "2026";
 
 export function CategoryTrendChart() {
-  const { dataRefreshKey } = useInventory() ?? {};
+  const { categoryTrendData: contextCategoryTrend, isSupabaseLoading, categoryTrendLoaded, refresh } = useInventory() ?? {};
   const [data, setData] = useState<CategoryTrendData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
   const [yearFilter, setYearFilter] = useState<YearFilter>("all");
-  const [showTrendLine, setShowTrendLine] = useState(true);
-  const [showMovingAvg, setShowMovingAvg] = useState(true);
-
-  const loadData = useCallback(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15_000);
-    fetch(`/api/category-trend?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" })
-      .then(async (res) => {
-        const json = await res.json().catch(() => null);
-        if (!res.ok) {
-          const msg = (json?.error as string) || res.statusText || "서버 오류";
-          throw new Error(msg);
-        }
-        if (json == null || typeof json !== "object") throw new Error("API 응답 형식 오류");
-        if (json.error) throw new Error(String(json.error));
-        return json as CategoryTrendData;
-      })
-      .then((json: CategoryTrendData) => {
-        if (!cancelled) {
-          setData(json);
-          setSelectedCategories(new Set(json?.categories ?? []));
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) {
-          const msg = e instanceof Error && e.name === "AbortError"
-            ? "요청 시간 초과 (15초). 새로고침을 눌러 재시도하세요."
-            : e instanceof Error ? e.message : "Failed to load";
-          setError(msg);
-        }
-      })
-      .finally(() => {
-        clearTimeout(timeoutId);
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, []);
+  const [showTrendLine, setShowTrendLine] = useState(false);
+  const [showMovingAvg, setShowMovingAvg] = useState(false);
+  const [showNaverSearch, setShowNaverSearch] = useState(true);
+  const [focusedActionCategory, setFocusedActionCategory] = useState<string | null>(null);
 
   useEffect(() => {
-    const cleanup = loadData();
-    return () => (typeof cleanup === "function" ? cleanup() : undefined);
-  }, [loadData, dataRefreshKey ?? 0]);
+    if (contextCategoryTrend) {
+      setData(contextCategoryTrend as CategoryTrendData);
+      setSelectedCategories(new Set(contextCategoryTrend?.categories ?? []));
+      setError(null);
+      setLoading(false);
+    } else if (contextCategoryTrend === null && categoryTrendLoaded === true) {
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+  }, [contextCategoryTrend, categoryTrendLoaded]);
 
   const toggleCategory = (cat: string) => {
     setSelectedCategories((prev) => {
@@ -151,6 +119,7 @@ export function CategoryTrendChart() {
         next.delete(cat);
       } else {
         next.add(cat);
+        if (NAVER_CATEGORIES.includes(cat)) setFocusedActionCategory(cat);
       }
       return next;
     });
@@ -184,6 +153,11 @@ export function CategoryTrendChart() {
         const val = (row[cat] as number) ?? 0;
         filtered[cat] = val;
         total += val;
+      });
+      Object.keys(row).filter((k) => k.startsWith("naver_")).forEach((k) => {
+        const v = row[k];
+        const num = typeof v === "number" ? v : parseFloat(String(v ?? 0)) || 0;
+        filtered[k] = Math.min(100, Math.max(0, num));
       });
       filtered._total = total;
       return filtered;
@@ -220,7 +194,7 @@ export function CategoryTrendChart() {
       base[i].ma3 = count > 0 ? Math.round(sum / count) : 0;
     }
 
-    return base.map(({ _total, ...rest }) => rest);
+    return base.map(({ _total, ...rest }) => ({ ...rest, outboundTotal: _total ?? 0 }));
   }, [data?.chartData, selectedCategories, yearFilter]);
 
   const filteredMomTable = useMemo(() => {
@@ -267,6 +241,11 @@ export function CategoryTrendChart() {
           filtered[cat] = val;
           total += val;
         });
+        Object.keys(row).filter((k) => k.startsWith("naver_")).forEach((k) => {
+          const v = row[k];
+          const num = typeof v === "number" ? v : parseFloat(String(v ?? 0)) || 0;
+          filtered[k] = Math.min(100, Math.max(0, num));
+        });
         filtered._total = total;
         return filtered;
       });
@@ -297,7 +276,7 @@ export function CategoryTrendChart() {
         }
         base[i].ma3 = count > 0 ? Math.round(sum / count) : 0;
       }
-      return base.map(({ _total, ...rest }) => rest);
+      return base.map(({ _total, ...rest }) => ({ ...rest, outboundTotal: _total ?? 0 }));
     };
 
     return {
@@ -307,6 +286,216 @@ export function CategoryTrendChart() {
       chartDataLow: buildChartData(lowVolCats),
     };
   }, [data?.chartData, selectedCategories, yearFilter]);
+
+  /** 네이버 검색 지수 Y축 자동 스케일 (선택된 카테고리 min~max, 여유 10%) */
+  const computeNaverDomain = (chartData: Record<string, string | number>[], naverCats: string[]): [number, number] => {
+    if (!chartData?.length || naverCats.length === 0) return [0, 100];
+    let min = Infinity;
+    let max = -Infinity;
+    for (const row of chartData) {
+      for (const cat of naverCats) {
+        const v = (row[`naver_${cat}`] as number) ?? 0;
+        if (typeof v === "number" && !isNaN(v)) {
+          min = Math.min(min, v);
+          max = Math.max(max, v);
+        }
+      }
+    }
+    if (min === Infinity || max === -Infinity) return [0, 100];
+    const padding = Math.max((max - min) * 0.1, 2);
+    const domainMin = Math.max(0, min - padding);
+    const domainMax = Math.min(100, max + padding);
+    return min === max ? [Math.max(0, min - 5), Math.min(100, max + 5)] : [domainMin, domainMax];
+  };
+
+  const naverDomainHigh = useMemo(
+    () => computeNaverDomain(chartDataHigh, highVolCats.filter((c) => NAVER_CATEGORIES.includes(c))),
+    [chartDataHigh, highVolCats]
+  );
+  const naverDomainLow = useMemo(
+    () => computeNaverDomain(chartDataLow, lowVolCats.filter((c) => NAVER_CATEGORIES.includes(c))),
+    [chartDataLow, lowVolCats]
+  );
+  const naverDomainSingle = useMemo(
+    () =>
+      computeNaverDomain(
+        filteredChartData,
+        Array.from(selectedCategories).filter((c) => NAVER_CATEGORIES.includes(c))
+      ),
+    [filteredChartData, selectedCategories]
+  );
+
+  /** 검색어-판매량 상관계수 + 액션플랜 (월별 데이터 1:1 매칭) */
+  const correlationAnalysis = useMemo(() => {
+    if (!data?.chartData || selectedCategories.size === 0) return [];
+    const naverCats = NAVER_CATEGORIES.filter((c) => selectedCategories.has(c));
+    if (naverCats.length === 0) return [];
+
+    let rows = data.chartData;
+    if (yearFilter !== "all") rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
+
+    const pearson = (x: number[], y: number[]): number => {
+      const n = Math.min(x.length, y.length);
+      if (n < 3) return 0;
+      const xm = x.slice(0, n).reduce((a, b) => a + b, 0) / n;
+      const ym = y.slice(0, n).reduce((a, b) => a + b, 0) / n;
+      let num = 0, dx2 = 0, dy2 = 0;
+      for (let i = 0; i < n; i++) {
+        const dx = x[i] - xm, dy = y[i] - ym;
+        num += dx * dy;
+        dx2 += dx * dx;
+        dy2 += dy * dy;
+      }
+      const den = Math.sqrt(dx2 * dy2);
+      return den > 0 ? num / den : 0;
+    };
+
+    const recentAvg = (arr: number[], k: number) => {
+      const slice = arr.slice(-k).filter((v) => v > 0);
+      return slice.length > 0 ? slice.reduce((a, b) => a + b, 0) / slice.length : 0;
+    };
+
+    return naverCats.map((cat) => {
+      const searchVals = rows.map((r) => (r[`naver_${cat}`] as number) ?? 0);
+      const salesVals = rows.map((r) => (r[cat] as number) ?? 0);
+      let bestR = pearson(searchVals, salesVals);
+      let bestLag = 0;
+      for (let lag = 1; lag <= 2; lag++) {
+        const r = pearson(searchVals.slice(0, -lag), salesVals.slice(lag));
+        if (Math.abs(r) > Math.abs(bestR)) {
+          bestR = r;
+          bestLag = lag;
+        }
+      }
+      const lagText = bestLag === 0 ? "동시" : bestLag === 1 ? "1개월 선행" : "2개월 선행";
+      const pct = Math.round(Math.abs(bestR) * 100);
+      const corrHigh = pct >= 70;
+      const corrLow = pct < 50;
+
+      const recentSearch = recentAvg(searchVals, 2);
+      const prevSearch = recentAvg(searchVals.slice(0, -2), 2);
+      const searchUp = recentSearch > prevSearch;
+      const searchDown = recentSearch < prevSearch && prevSearch > 0;
+
+      const recentSales = recentAvg(salesVals, 2);
+      const prevSales = recentAvg(salesVals.slice(0, -2), 2);
+      const salesUp = recentSales > prevSales;
+      const salesDown = recentSales < prevSales && prevSales > 0;
+
+      let actionType: "공격형" | "방어형" | "점검형" = "점검형";
+      let actionMessage = "검색어와 판매량이 따로 움직입니다. 외부 요인(광고, 가격 경쟁)을 점검하세요. 시장 트렌드보다는 내부 프로모션 영향이 큽니다.";
+      let actionColor = "amber";
+
+      if (corrLow) {
+        actionType = "점검형";
+        actionMessage = "검색어와 판매량이 따로 움직입니다. 외부 요인(광고, 가격 경쟁)을 점검하세요. 시장 트렌드보다는 내부 프로모션 영향이 큽니다.";
+        actionColor = "amber";
+      } else if (corrHigh) {
+        if (searchUp && salesUp) {
+          actionType = "공격형";
+          actionMessage = "전 키워드 검색량 동반 상승 중입니다. 1개월 뒤 품절 위험 80%! 즉시 추가 발주를 검토하세요.";
+          actionColor = "emerald";
+        } else if (searchDown && salesUp) {
+          actionType = "방어형";
+          actionMessage = "판매량은 높으나 네이버 관심도가 꺾였습니다. 다음 달 재고 과잉 위험! 신규 발주를 멈추고 재고 소진에 집중하세요.";
+          actionColor = "rose";
+        } else {
+          actionType = "점검형";
+          actionMessage = "검색어와 판매량이 따로 움직입니다. 외부 요인(광고, 가격 경쟁)을 점검하세요. 시장 트렌드보다는 내부 프로모션 영향이 큽니다.";
+          actionColor = "amber";
+        }
+      }
+
+      const showDataMismatchWarning = actionType === "방어형";
+
+      return {
+        category: cat,
+        correlation: bestR,
+        lag: bestLag,
+        lagText,
+        actionType,
+        actionMessage,
+        actionColor,
+          showDataMismatchWarning,
+      };
+    });
+  }, [data?.chartData, selectedCategories, yearFilter]);
+
+  const focusedAction = useMemo(() => {
+    if (!focusedActionCategory) return correlationAnalysis[0] ?? null;
+    return correlationAnalysis.find((a) => a.category === focusedActionCategory) ?? correlationAnalysis[0] ?? null;
+  }, [correlationAnalysis, focusedActionCategory]);
+
+  useEffect(() => {
+    if (focusedActionCategory && correlationAnalysis.length > 0 && !correlationAnalysis.some((a) => a.category === focusedActionCategory)) {
+      setFocusedActionCategory(null);
+    }
+  }, [focusedActionCategory, correlationAnalysis]);
+
+  /** 네이버 검색 지수 변화율 기반 액션플랜 (전월 대비 MoM + 작년 동월 대비 YoY) */
+  const naverIndexActionPlans = useMemo(() => {
+    if (!data?.chartData || selectedCategories.size === 0) return [];
+    const naverCats = NAVER_CATEGORIES.filter((c) => selectedCategories.has(c));
+    if (naverCats.length === 0) return [];
+
+    let rows = data.chartData;
+    if (yearFilter !== "all") rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
+    if (rows.length < 2) return [];
+
+    const lastRow = rows[rows.length - 1] as Record<string, string | number>;
+    const prevRow = rows[rows.length - 2] as Record<string, string | number>;
+    const lastMonth = String(lastRow.month ?? "");
+    const [y, m] = lastMonth.split("-").map(Number);
+    const lastYearSameMonth = `${y - 1}-${String(m).padStart(2, "0")}`;
+    const yoyRow = data.chartData.find((r) => String(r.month ?? "") === lastYearSameMonth) as Record<string, string | number> | undefined;
+
+    return naverCats.map((cat) => {
+      const currVal = (lastRow[`naver_${cat}`] as number) ?? 0;
+      const prevVal = (prevRow[`naver_${cat}`] as number) ?? 0;
+      const lastYearVal = yoyRow ? ((yoyRow[`naver_${cat}`] as number) ?? 0) : 0;
+
+      const changeRate = prevVal > 0 ? ((currVal - prevVal) / prevVal) * 100 : 0;
+      const changeRateRounded = Math.round(changeRate * 10) / 10;
+
+      const changeRateYoY = lastYearVal > 0 ? ((currVal - lastYearVal) / lastYearVal) * 100 : 0;
+      const changeRateYoYRounded = Math.round(changeRateYoY * 10) / 10;
+
+      const corrItem = correlationAnalysis.find((a) => a.category === cat);
+      const lag = corrItem?.lag ?? 0;
+      const lagText = lag === 0 ? "동시" : `${lag}개월 선행`;
+      const impactMonths = lag === 0 ? 1 : lag;
+
+      let variant: "하락" | "상승" | "보합" = "보합";
+      let message = "";
+      let cardColor = "zinc";
+
+      if (changeRate <= -10) {
+        variant = "하락";
+        cardColor = "rose";
+        message = `⚠️ [재고 방어] 시장 관심도가 ${Math.abs(changeRateRounded)}% 급감했습니다. ${lagText} 지표임을 고려할 때, ${impactMonths}개월 뒤 출고량 감소가 확실시됩니다. 신규 생산 및 발주량을 20% 이상 하향 조정하세요.`;
+      } else if (changeRate >= 10) {
+        variant = "상승";
+        cardColor = "emerald";
+        message = `🚀 [공격적 확보] 시장 관심도가 ${changeRateRounded}% 폭발했습니다. ${impactMonths}개월 뒤 주문 폭주가 예상됩니다. 품절 방지를 위해 선제적으로 재고를 15% 더 확보하세요.`;
+      } else {
+        variant = "보합";
+        cardColor = "zinc";
+        message = `✅ [현상 유지] 시장 수요가 안정적입니다. 현재의 Run-rate(판매 속도)에 맞춰 정기 발주를 유지하세요.`;
+      }
+
+      return {
+        category: cat,
+        changeRate: changeRateRounded,
+        changeRateYoY: changeRateYoYRounded,
+        currVal,
+        prevVal,
+        lastYearVal,
+        variant,
+        message,
+        cardColor,
+      };
+    });
+  }, [data?.chartData, selectedCategories, yearFilter, correlationAnalysis]);
 
   if (loading) {
     return (
@@ -323,7 +512,7 @@ export function CategoryTrendChart() {
         <p className="text-red-400">{error ?? "데이터를 불러올 수 없습니다."}</p>
         <button
           type="button"
-          onClick={() => loadData()}
+          onClick={() => refresh?.()}
           className="mt-3 rounded-lg bg-red-500/20 px-4 py-2 text-sm text-red-300 hover:bg-red-500/30"
         >
           다시 시도
@@ -405,7 +594,7 @@ export function CategoryTrendChart() {
                   <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
                   <Tooltip
                     contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px" }}
-                    formatter={(value: number) => value.toLocaleString()}
+                    formatter={(value) => (value != null ? Number(value).toLocaleString() : "")}
                     labelFormatter={(label) => <span className="text-cyan-400">{label}</span>}
                     content={({ active, payload, label }) => {
                       if (!active || !payload?.length) return null;
@@ -502,7 +691,7 @@ export function CategoryTrendChart() {
                   <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => `₩${(v / 10000).toFixed(0)}만`} />
                   <Tooltip
                     contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px" }}
-                    formatter={(value: number) => [`₩${(value ?? 0).toLocaleString()}`, ""]}
+                    formatter={(value) => [`₩${(value != null ? Number(value) : 0).toLocaleString()}`, ""]}
                     labelFormatter={(label) => <span className="text-cyan-400">{label}</span>}
                     content={({ active, payload, label }) => {
                       if (!active || !payload?.length) return null;
@@ -565,7 +754,7 @@ export function CategoryTrendChart() {
                   <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => `₩${(v / 10000).toFixed(0)}만`} />
                   <Tooltip
                     contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px" }}
-                    formatter={(value: number) => [`₩${(value ?? 0).toLocaleString()}`, ""]}
+                    formatter={(value) => [`₩${(value != null ? Number(value) : 0).toLocaleString()}`, ""]}
                     labelFormatter={(label) => <span className="text-cyan-400">{label}</span>}
                     content={({ active, payload, label }) => {
                       if (!active || !payload?.length) return null;
@@ -598,6 +787,17 @@ export function CategoryTrendChart() {
 
       {/* 주요 지표 + 전월 대비 증감율 */}
       {mom && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-zinc-500">데이터가 안 바뀌면</span>
+            <button
+              type="button"
+              onClick={() => refresh?.()}
+              className="rounded-lg bg-cyan-500/20 px-3 py-1.5 text-xs font-medium text-cyan-300 ring-1 ring-cyan-500/50 hover:bg-cyan-500/30"
+            >
+              전체 새로고침
+            </button>
+          </div>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
             <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">이번 달 총 판매</div>
@@ -640,11 +840,17 @@ export function CategoryTrendChart() {
               )}
             </div>
             <div className="mt-1 flex flex-wrap gap-x-4 text-[11px] text-zinc-400">
-              <span>쿠팡: {(mom.thisMonthInboundCoupang ?? 0).toLocaleString()}EA</span>
-              <span>일반: {(mom.thisMonthInboundGeneral ?? 0).toLocaleString()}EA</span>
+              {Object.entries(mom.thisMonthInboundByWarehouse ?? {}).length > 0
+                ? Object.entries(mom.thisMonthInboundByWarehouse ?? {})
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([wh, qty]) => (
+                      <span key={wh}>{wh}: {qty.toLocaleString()}EA</span>
+                    ))
+                : <span>창고별 데이터 없음</span>}
             </div>
-            <div className="mt-0.5 text-[10px] text-zinc-500">1일~오늘 누적 · 전월 대비</div>
+            <div className="mt-0.5 text-[10px] text-zinc-500">입고처(창고) 기준 · 1일~오늘 누적 · 전월 대비</div>
           </div>
+        </div>
         </div>
       )}
 
@@ -686,7 +892,7 @@ export function CategoryTrendChart() {
               onChange={(e) => setShowTrendLine(e.target.checked)}
               className="h-3.5 w-3.5 rounded border-zinc-500 text-amber-500 focus:ring-amber-500"
             />
-            <span className="text-xs text-zinc-300">추세선</span>
+            <span className="text-xs text-zinc-300">추세선 (분석용)</span>
           </label>
           <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-600 bg-zinc-800/60 px-3 py-1.5">
             <input
@@ -695,14 +901,23 @@ export function CategoryTrendChart() {
               onChange={(e) => setShowMovingAvg(e.target.checked)}
               className="h-3.5 w-3.5 rounded border-zinc-500 text-cyan-500 focus:ring-cyan-500"
             />
-            <span className="text-xs text-zinc-300">3개월 이동평균</span>
+            <span className="text-xs text-zinc-300">3M평균 (분석용)</span>
+          </label>
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-zinc-600 bg-zinc-800/60 px-3 py-1.5">
+            <input
+              type="checkbox"
+              checked={showNaverSearch}
+              onChange={(e) => setShowNaverSearch(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border-zinc-500 text-slate-400 focus:ring-slate-400"
+            />
+            <span className="text-xs text-zinc-300">네이버 검색 트렌드 표시</span>
           </label>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex overflow-x-auto gap-2 pb-1 -mx-1 px-1 md:overflow-visible md:mx-0 md:px-0 touch-pan-x">
           {data.categories.map((cat, idx) => (
             <label
               key={cat}
-              className="flex max-w-[7rem] cursor-pointer items-center gap-2 truncate rounded-xl border border-zinc-600 bg-zinc-800/80 px-2.5 py-1.5 transition-colors hover:bg-zinc-700/80"
+              className="flex shrink-0 max-w-[7rem] cursor-pointer items-center gap-2 truncate rounded-xl border border-zinc-600 bg-zinc-800/80 px-2.5 py-1.5 transition-colors hover:bg-zinc-700/80"
             >
               <input
                 type="checkbox"
@@ -720,6 +935,51 @@ export function CategoryTrendChart() {
         </div>
       </div>
 
+      {/* 액션플랜 카드 (상관계수 기반) */}
+      {showNaverSearch && correlationAnalysis.length > 0 && focusedAction && (
+        <div
+          className={`rounded-xl border-2 px-5 py-4 ${
+            focusedAction.actionColor === "emerald"
+              ? "border-emerald-500/60 bg-emerald-500/10"
+              : focusedAction.actionColor === "rose"
+                ? "border-rose-500/60 bg-rose-500/10"
+                : "border-amber-500/60 bg-amber-500/10"
+          }`}
+        >
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span
+              className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold uppercase ${
+                focusedAction.actionColor === "emerald"
+                  ? "bg-emerald-500/30 text-emerald-300"
+                  : focusedAction.actionColor === "rose"
+                    ? "bg-rose-500/30 text-rose-300"
+                    : "bg-amber-500/30 text-amber-300"
+              }`}
+            >
+              {focusedAction.actionType}
+            </span>
+            <span
+              className="cursor-pointer rounded-md px-2 py-0.5 text-sm font-medium transition-colors hover:bg-zinc-700/80"
+              style={{ color: getColorForCategory(focusedAction.category, data.categories.indexOf(focusedAction.category)) }}
+              onClick={() => setFocusedActionCategory(focusedAction.category)}
+              onKeyDown={(e) => e.key === "Enter" && setFocusedActionCategory(focusedAction.category)}
+              role="button"
+              tabIndex={0}
+            >
+              {focusedAction.category}
+            </span>
+          </div>
+          <p className="text-base font-semibold leading-relaxed text-white md:text-lg">
+            {focusedAction.actionMessage}
+          </p>
+          {focusedAction.showDataMismatchWarning && (
+            <p className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm font-medium text-rose-200">
+              ⚠️ 현재 시장 트렌드와 무관한 판매가 일어나고 있으니 과잉 생산에 주의하세요.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* 누적 영역 차트: 왼쪽 100만 이상 / 오른쪽 100만 미만 (스케일 분리) */}
       {selectedCategories.size === 0 ? (
         <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-zinc-600 bg-zinc-800/30 text-zinc-500 md:h-96">
@@ -729,168 +989,267 @@ export function CategoryTrendChart() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <div className="min-w-0 rounded-xl border border-zinc-600 bg-zinc-800/60 p-4">
             <div className="mb-2 text-xs font-medium text-cyan-400">대량 (100만 개 이상)</div>
-            <div className="h-64 w-full min-w-0 md:h-80">
+            <div className="overflow-x-auto overscroll-x-contain touch-pan-x -mx-2 px-2 md:mx-0 md:px-0">
+              <div className="h-64 min-w-[520px] w-full md:h-80 md:min-w-0">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartDataHigh} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    {highVolCats.map((cat, idx) => (
-                      <linearGradient key={cat} id={`gradient-high-${cat}`} x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={getColorForCategory(cat, idx)} stopOpacity={0.8} />
-                        <stop offset="100%" stopColor={getColorForCategory(cat, idx)} stopOpacity={0.2} />
-                      </linearGradient>
-                    ))}
-                  </defs>
+                <ComposedChart data={chartDataHigh} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                   <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} interval={0} />
                   <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
-                  <Tooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px" }} labelStyle={{ color: "#fafafa" }}
-                    formatter={(value, name) => [typeof value === "number" ? value.toLocaleString() : String(value ?? "-"), shortCategoryLabel(String(name ?? ""))]}
-                    labelFormatter={(label) => <span className="text-cyan-400">{label}</span>} />
-                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{shortCategoryLabel(value)}</span>} />
-                  {highVolCats.map((cat, idx) => (
-                    <Area key={cat} type="monotone" dataKey={cat} stackId="1" stroke={getColorForCategory(cat, idx)} fill={`url(#gradient-high-${cat})`} strokeWidth={1.5} />
+                  <YAxis yAxisId="search" orientation="right" stroke="#94a3b8" tick={{ fill: "#94a3b8", fontSize: 10 }} domain={naverDomainHigh} allowDataOverflow name="월간평균" />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px", minWidth: 240 }}
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length || !label) return null;
+                      const p = payload[0]?.payload as Record<string, string | number>;
+                      const outboundCats = highVolCats.filter((c) => !String(c).startsWith("naver_"));
+                      const naverCats = highVolCats.filter((c) => NAVER_CATEGORIES.includes(c));
+                      return (
+                        <div className="rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-3">
+                          <div className="mb-3 text-base font-bold text-cyan-400">{label}</div>
+                          <div className="space-y-3">
+                            <div>
+                              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">판매량</div>
+                              {outboundCats.map((cat) => (
+                                <div key={cat} className="flex justify-between gap-6 text-sm" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
+                                  <span>{shortCategoryLabel(cat)}</span>
+                                  <span className="tabular-nums font-semibold text-white">{(p[cat] as number)?.toLocaleString() ?? "-"} EA</span>
+                                </div>
+                              ))}
+                            </div>
+                            {showNaverSearch && naverCats.length > 0 && (
+                              <div>
+                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">네이버 검색 지수</div>
+                                {naverCats.map((cat) => {
+                                  const raw = p[`naver_${cat}`];
+                                  const num = typeof raw === "number" ? raw : parseFloat(String(raw ?? ""));
+                                  const display = !isNaN(num) ? Math.round(num) : "-";
+                                  return (
+                                    <div key={cat} className="flex justify-between gap-6 text-sm font-semibold" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
+                                      <span>{cat}</span>
+                                      <span className="tabular-nums text-white">{display}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${value.replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
+                  <Bar dataKey="outboundTotal" fill="#52525b" fillOpacity={0.35} radius={[4, 4, 0, 0]} name="출고량" />
+                  {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="추세선" />}
+                  {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#64748b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="3M평균" />}
+                  {showNaverSearch && highVolCats.filter((c) => NAVER_CATEGORIES.includes(c)).map((cat) => (
+                    <Line key={cat} type="monotone" dataKey={`naver_${cat}`} yAxisId="search" stroke={getColorForCategory(cat, data.categories.indexOf(cat))} strokeWidth={3} dot={{ r: 3 }} name={`naver_${cat}`} />
                   ))}
-                  {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={2} dot={false} name="추세선" />}
-                  {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#22d3ee" strokeWidth={1.5} strokeDasharray="4 4" dot={false} name="3M평균" />}
-                </AreaChart>
+                </ComposedChart>
               </ResponsiveContainer>
+              </div>
             </div>
           </div>
           <div className="min-w-0 rounded-xl border border-zinc-600 bg-zinc-800/60 p-4">
             <div className="mb-2 text-xs font-medium text-amber-400">소량 (100만 개 미만)</div>
-            <div className="h-64 w-full min-w-0 md:h-80">
+            <div className="overflow-x-auto overscroll-x-contain touch-pan-x -mx-2 px-2 md:mx-0 md:px-0">
+              <div className="h-64 min-w-[520px] w-full md:h-80 md:min-w-0">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartDataLow} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    {lowVolCats.map((cat, idx) => (
-                      <linearGradient key={cat} id={`gradient-low-${cat}`} x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={getColorForCategory(cat, data.categories.indexOf(cat))} stopOpacity={0.8} />
-                        <stop offset="100%" stopColor={getColorForCategory(cat, data.categories.indexOf(cat))} stopOpacity={0.2} />
-                      </linearGradient>
-                    ))}
-                  </defs>
+                <ComposedChart data={chartDataLow} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                   <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} interval={0} />
                   <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
-                  <Tooltip contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px" }} labelStyle={{ color: "#fafafa" }}
-                    formatter={(value, name) => [typeof value === "number" ? value.toLocaleString() : String(value ?? "-"), shortCategoryLabel(String(name ?? ""))]}
-                    labelFormatter={(label) => <span className="text-cyan-400">{label}</span>} />
-                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{shortCategoryLabel(value)}</span>} />
-                  {lowVolCats.map((cat, idx) => (
-                    <Area key={cat} type="monotone" dataKey={cat} stackId="1" stroke={getColorForCategory(cat, data.categories.indexOf(cat))} fill={`url(#gradient-low-${cat})`} strokeWidth={1.5} />
+                  <YAxis yAxisId="search" orientation="right" stroke="#94a3b8" tick={{ fill: "#94a3b8", fontSize: 10 }} domain={naverDomainLow} allowDataOverflow name="월간평균" />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px", minWidth: 240 }}
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length || !label) return null;
+                      const p = payload[0]?.payload as Record<string, string | number>;
+                      const outboundCats = lowVolCats.filter((c) => !String(c).startsWith("naver_"));
+                      const naverCats = lowVolCats.filter((c) => NAVER_CATEGORIES.includes(c));
+                      return (
+                        <div className="rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-3">
+                          <div className="mb-3 text-base font-bold text-cyan-400">{label}</div>
+                          <div className="space-y-3">
+                            <div>
+                              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">판매량</div>
+                              {outboundCats.map((cat) => (
+                                <div key={cat} className="flex justify-between gap-6 text-sm" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
+                                  <span>{shortCategoryLabel(cat)}</span>
+                                  <span className="tabular-nums font-semibold text-white">{(p[cat] as number)?.toLocaleString() ?? "-"} EA</span>
+                                </div>
+                              ))}
+                            </div>
+                            {showNaverSearch && naverCats.length > 0 && (
+                              <div>
+                                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">네이버 검색 지수</div>
+                                {naverCats.map((cat) => {
+                                  const raw = p[`naver_${cat}`];
+                                  const num = typeof raw === "number" ? raw : parseFloat(String(raw ?? ""));
+                                  const display = !isNaN(num) ? Math.round(num) : "-";
+                                  return (
+                                    <div key={cat} className="flex justify-between gap-6 text-sm font-semibold" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
+                                      <span>{cat}</span>
+                                      <span className="tabular-nums text-white">{display}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${value.replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
+                  <Bar dataKey="outboundTotal" fill="#52525b" fillOpacity={0.35} radius={[4, 4, 0, 0]} name="출고량" />
+                  {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="추세선" />}
+                  {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#64748b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="3M평균" />}
+                  {showNaverSearch && lowVolCats.filter((c) => NAVER_CATEGORIES.includes(c)).map((cat) => (
+                    <Line key={cat} type="monotone" dataKey={`naver_${cat}`} yAxisId="search" stroke={getColorForCategory(cat, data.categories.indexOf(cat))} strokeWidth={3} dot={{ r: 3 }} name={`naver_${cat}`} />
                   ))}
-                  {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={2} dot={false} name="추세선" />}
-                  {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#22d3ee" strokeWidth={1.5} strokeDasharray="4 4" dot={false} name="3M평균" />}
-                </AreaChart>
+                </ComposedChart>
               </ResponsiveContainer>
+              </div>
             </div>
           </div>
         </div>
       ) : (
-        <div className="h-72 w-full min-w-0 md:h-[400px]">
+        <div className="overflow-x-auto overscroll-x-contain touch-pan-x -mx-2 px-2 md:mx-0 md:px-0">
+        <div className="h-72 min-w-[520px] w-full md:h-[400px] md:min-w-0">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart
-            data={filteredChartData}
-            margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
-          >
-            <defs>
-              {data.categories
-                .filter((c) => selectedCategories.has(c))
-                .map((cat, idx) => (
-                  <linearGradient
-                    key={cat}
-                    id={`gradient-${cat}`}
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
-                    <stop
-                      offset="0%"
-                      stopColor={getColorForCategory(cat, idx)}
-                      stopOpacity={0.8}
-                    />
-                    <stop
-                      offset="100%"
-                      stopColor={getColorForCategory(cat, idx)}
-                      stopOpacity={0.2}
-                    />
-                  </linearGradient>
-                ))}
-            </defs>
+          <ComposedChart data={filteredChartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
-            <XAxis
-              dataKey="month"
-              stroke="#71717a"
-              tick={{ fill: "#a1a1aa", fontSize: 11 }}
-              tickFormatter={(v) => (v ? String(v).slice(2) : "")}
-              interval={0}
-            />
-            <YAxis
-              stroke="#71717a"
-              tick={{ fill: "#a1a1aa", fontSize: 11 }}
-              tickFormatter={(v) => v.toLocaleString()}
-            />
+            <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} interval={0} />
+            <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
+            <YAxis yAxisId="search" orientation="right" stroke="#94a3b8" tick={{ fill: "#94a3b8", fontSize: 10 }} domain={naverDomainSingle} allowDataOverflow name="월간평균" />
             <Tooltip
-              contentStyle={{
-                backgroundColor: "#18181b",
-                border: "1px solid #3f3f46",
-                borderRadius: "8px",
+              contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px", minWidth: 240 }}
+              content={({ active, payload, label }) => {
+                if (!active || !payload?.length || !label) return null;
+                const p = payload[0]?.payload as Record<string, string | number>;
+                const outboundCats = data.categories.filter((c) => selectedCategories.has(c) && !String(c).startsWith("naver_"));
+                const naverCats = Array.from(selectedCategories).filter((c) => NAVER_CATEGORIES.includes(c));
+                return (
+                  <div className="rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-3">
+                    <div className="mb-3 text-base font-bold text-cyan-400">{label}</div>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">판매량</div>
+                        {outboundCats.map((cat) => (
+                          <div key={cat} className="flex justify-between gap-6 text-sm" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
+                            <span>{shortCategoryLabel(cat)}</span>
+                            <span className="tabular-nums font-semibold text-white">{(p[cat] as number)?.toLocaleString() ?? "-"} EA</span>
+                          </div>
+                        ))}
+                      </div>
+                      {showNaverSearch && naverCats.length > 0 && (
+                        <div>
+                          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">네이버 검색 지수</div>
+                          {naverCats.map((cat) => {
+                            const raw = p[`naver_${cat}`];
+                            const num = typeof raw === "number" ? raw : parseFloat(String(raw ?? ""));
+                            const display = !isNaN(num) ? Math.round(num) : "-";
+                            return (
+                              <div key={cat} className="flex justify-between gap-6 text-sm font-semibold" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
+                                <span>{cat}</span>
+                                <span className="tabular-nums text-white">{display}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
               }}
-              labelStyle={{ color: "#fafafa" }}
-              formatter={(value, name) => [
-                typeof value === "number" ? value.toLocaleString() : String(value ?? "-"),
-                shortCategoryLabel(String(name ?? "")),
-              ]}
-              labelFormatter={(label) => (
-                <span className="text-cyan-400">{label}</span>
-              )}
             />
-            <Legend
-              wrapperStyle={{ paddingTop: 8 }}
-              formatter={(value) => (
-                <span className="text-sm text-zinc-300" title={value}>{shortCategoryLabel(value)}</span>
-              )}
-            />
-            {data.categories
-              .filter((c) => selectedCategories.has(c))
-              .map((cat, idx) => (
-                <Area
-                  key={cat}
-                  type="monotone"
-                  dataKey={cat}
-                  stackId="1"
-                  stroke={getColorForCategory(cat, idx)}
-                  fill={`url(#gradient-${cat})`}
-                  strokeWidth={1.5}
-                />
-              ))}
-            {showTrendLine && (
-              <Line
-                type="monotone"
-                dataKey="trend"
-                stroke="#f59e0b"
-                strokeWidth={2}
-                strokeDasharray="6 4"
-                dot={false}
-                name="추세선"
-                connectNulls
-              />
-            )}
-            {showMovingAvg && (
-              <Line
-                type="monotone"
-                dataKey="ma3"
-                stroke="#22d3ee"
-                strokeWidth={2}
-                strokeDasharray="4 4"
-                dot={false}
-                name="3개월 이동평균"
-                connectNulls
-              />
-            )}
-          </AreaChart>
+            <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${String(value).replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
+            <Bar dataKey="outboundTotal" fill="#52525b" fillOpacity={0.35} radius={[4, 4, 0, 0]} name="출고량" />
+            {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="추세선" connectNulls />}
+            {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#64748b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="3개월 이동평균" connectNulls />}
+            {showNaverSearch && NAVER_CATEGORIES.filter((c) => selectedCategories.has(c)).map((cat) => (
+              <Line key={cat} type="monotone" dataKey={`naver_${cat}`} yAxisId="search" stroke={getColorForCategory(cat, data.categories.indexOf(cat))} strokeWidth={3} dot={{ r: 3 }} name={`naver_${cat}`} connectNulls />
+            ))}
+          </ComposedChart>
         </ResponsiveContainer>
+        </div>
+        </div>
+      )}
+
+      {/* 네이버 검색 지수 변화율 액션플랜 (차트 하단) - 모바일: 한 줄에 하나씩 크게 */}
+      {showNaverSearch && naverIndexActionPlans.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-3 lg:grid-cols-4">
+          {naverIndexActionPlans.map((plan) => (
+            <div
+              key={plan.category}
+              className={`rounded-xl border-2 px-5 py-4 sm:px-4 sm:py-3 ${
+                plan.cardColor === "rose"
+                  ? "border-rose-500/60 bg-rose-500/10"
+                  : plan.cardColor === "emerald"
+                    ? "border-emerald-500/60 bg-emerald-500/10"
+                    : "border-zinc-600 bg-zinc-800/60"
+              }`}
+            >
+              <div className="mb-2 flex items-center justify-between sm:mb-1.5">
+                <span
+                  className="text-base font-bold sm:text-sm"
+                  style={{ color: getColorForCategory(plan.category, data.categories.indexOf(plan.category)) }}
+                >
+                  {plan.category}
+                </span>
+                <div className="flex flex-col items-end gap-0.5 text-right">
+                  <span
+                    className={`tabular-nums text-sm sm:text-xs ${
+                      plan.changeRate < -10 ? "text-rose-400" : plan.changeRate >= 10 ? "text-emerald-400" : "text-zinc-400"
+                    }`}
+                  >
+                    전월 {plan.changeRate > 0 ? "+" : ""}{plan.changeRate}%
+                  </span>
+                  <span
+                    className={`tabular-nums text-xs sm:text-[10px] ${
+                      plan.changeRateYoY < -10 ? "text-rose-300/80" : plan.changeRateYoY >= 10 ? "text-emerald-300/80" : "text-zinc-500"
+                    }`}
+                    title="작년 동월 대비"
+                  >
+                    YoY {plan.changeRateYoY > 0 ? "+" : ""}{plan.changeRateYoY}%
+                  </span>
+                </div>
+              </div>
+              <p className="text-base leading-relaxed text-zinc-200 sm:text-sm">{plan.message}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 검색어-판매량 상관계수 (클릭 시 액션플랜 포커스) */}
+      {showNaverSearch && correlationAnalysis.length > 0 && (
+        <div className="rounded-xl border border-zinc-600 bg-zinc-800/40 px-4 py-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-zinc-400">검색어-판매량 상관계수</span>
+            <span className="text-[10px] text-zinc-500">(클릭 시 액션플랜 표시 · 월별 1:1 매칭)</span>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-4 text-sm">
+            {correlationAnalysis.map((item) => {
+              const { category, correlation, lagText, actionType } = item;
+              const pct = Math.round(Math.abs(correlation) * 100);
+              const trustColor = pct >= 70 ? "text-emerald-400" : pct >= 50 ? "text-zinc-300" : "text-amber-400";
+              const trustLabel = pct >= 70 ? "신뢰도 높음" : pct >= 50 ? "보통" : "참고용";
+              const isFocused = focusedActionCategory === category || (!focusedActionCategory && correlationAnalysis[0]?.category === category);
+              return (
+                <button
+                  key={category}
+                  type="button"
+                  onClick={() => setFocusedActionCategory(category)}
+                  className={`cursor-pointer rounded-lg px-2 py-1 text-left transition-colors hover:bg-zinc-700/60 ${trustColor} ${isFocused ? "ring-1 ring-cyan-500/50 bg-zinc-700/40" : ""}`}
+                >
+                  <span style={{ color: getColorForCategory(category, data.categories.indexOf(category)) }} className="font-medium">{category}</span>
+                  <span className="ml-1 text-zinc-400">({actionType})</span>
+                  : 검색 트렌드와 판매량이 <span className="font-bold">{pct}%</span> 일치 ({trustLabel}). 검색어가 <span className="font-medium">{lagText}</span>하는 경향.
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

@@ -144,8 +144,8 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     const t0 = Date.now();
     const [productsRes, inboundRes, outboundRes] = await Promise.all([
       supabase.from(TABLE_PRODUCTS).select("*").order("product_code").limit(5000),
-      supabase.from(TABLE_INBOUND).select("id,product_code,quantity,inbound_date,source_warehouse,dest_warehouse,note").gte("inbound_date", dateFrom).order("inbound_date", { ascending: false }).limit(50000),
-      supabase.from(TABLE_OUTBOUND).select("id,product_code,quantity,sales_channel,outbound_date,source_warehouse,dest_warehouse,note").gte("outbound_date", dateFrom).order("outbound_date", { ascending: false }).limit(50000),
+      supabase.from(TABLE_INBOUND).select("id,product_code,quantity,inbound_date,source_warehouse,dest_warehouse").gte("inbound_date", dateFrom).order("inbound_date", { ascending: false }).limit(50000),
+      supabase.from(TABLE_OUTBOUND).select("id,product_code,quantity,sales_channel,outbound_date,source_warehouse,dest_warehouse").gte("outbound_date", dateFrom).order("outbound_date", { ascending: false }).limit(50000),
     ]);
     console.log(`[inventoryApi] products/inbound/outbound 쿼리 완료 (${Date.now() - t0}ms)`);
 
@@ -735,6 +735,12 @@ export function computeAvg30DayOutboundByProduct(
   return computeAvg60DayOutboundByProduct(outbound);
 }
 
+/** sales_channel(매출구분)이 쿠팡인지 판별. 출고 시트 매출구분 → DB sales_channel */
+function isCoupangSalesChannel(ch: string | null | undefined): boolean {
+  const s = String(ch ?? "").trim().toLowerCase();
+  return s === "coupang" || s === "쿠팡" || s.includes("쿠팡") || s.includes("coupang");
+}
+
 /** 최근 N일 일평균 출고량 - 캘린더 일수 기준 (수요 예측용) */
 export function computeAvgNDayOutboundByProduct(
   outbound: InventoryOutbound[],
@@ -757,6 +763,38 @@ export function computeAvgNDayOutboundByProduct(
     result[code] = total / days;
   }
   return result;
+}
+
+/** 최근 N일 일평균 출고량 - 채널별 (쿠팡/일반 판매 기준) */
+export function computeAvgNDayOutboundByProductByChannel(
+  outbound: InventoryOutbound[],
+  days: number = 30
+): { coupang: Record<string, number>; general: Record<string, number> } {
+  const now = new Date();
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - days);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  const coupang: Record<string, number> = {};
+  const general: Record<string, number> = {};
+  for (const o of outbound) {
+    if (o.outbound_date < cutoffStr) continue;
+    const code = o.product_code;
+    if (isCoupangSalesChannel(o.sales_channel)) {
+      coupang[code] = (coupang[code] ?? 0) + o.quantity;
+    } else {
+      general[code] = (general[code] ?? 0) + o.quantity;
+    }
+  }
+  const resultCoupang: Record<string, number> = {};
+  const resultGeneral: Record<string, number> = {};
+  for (const [code, total] of Object.entries(coupang)) {
+    resultCoupang[code] = total / days;
+  }
+  for (const [code, total] of Object.entries(general)) {
+    resultGeneral[code] = total / days;
+  }
+  return { coupang: resultCoupang, general: resultGeneral };
 }
 
 /** 일자별 출고 집계 (분석용) */

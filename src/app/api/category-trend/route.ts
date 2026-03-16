@@ -9,13 +9,15 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";
+import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 
 const emptyResponse = {
   months: [] as string[],
   categories: [] as string[],
   chartData: [] as Record<string, string | number>[],
+  naverSearchTrend: {} as Record<string, Record<string, number>>,
   momRates: {} as Record<string, Record<string, number | null>>,
-  monthlyTotals: {} as Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundCoupang: number; inboundGeneral: number }>,
+  monthlyTotals: {} as Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundByWarehouse: Record<string, number> }>,
   momIndicators: {
     outbound: null as number | null,
     inbound: null as number | null,
@@ -25,8 +27,7 @@ const emptyResponse = {
     thisMonthInboundValue: 0,
     thisMonthOutboundCoupang: 0,
     thisMonthOutboundGeneral: 0,
-    thisMonthInboundCoupang: 0,
-    thisMonthInboundGeneral: 0,
+    thisMonthInboundByWarehouse: {} as Record<string, number>,
   },
 };
 
@@ -63,18 +64,6 @@ function isCoupangChannel(ch: string | null | undefined): boolean {
   return s === "coupang" || s === "쿠팡" || s.includes("쿠팡");
 }
 
-/** dest_warehouse(입고처)가 쿠팡 입고인지. 테이칼튼, 테이칼튼 1공장 → 쿠팡 */
-function isCoupangInbound(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim();
-  return s.includes("테이칼튼");
-}
-
-/** dest_warehouse(입고처)가 일반 입고인지. 제이에스 → 일반 */
-function isGeneralInbound(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim();
-  return s.includes("제이에스");
-}
-
 /** 카테고리 정규화: 캡슐세제 사은품 → 캡슐사은품 */
 function normalizeCategoryName(cat: string): string {
   const s = String(cat ?? "").trim();
@@ -100,7 +89,7 @@ export async function GET() {
     const fourteenMonthsAgo = new Date(year, month - 13, 1);
     const dateFrom = `${fourteenMonthsAgo.getFullYear()}-${String(fourteenMonthsAgo.getMonth() + 1).padStart(2, "0")}-01`;
 
-    const [productsRes, outbound, inbound, snapshotRes] = await Promise.all([
+    const [productsRes, outbound, inbound, snapshotRes, naverMonthly] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
       fetchAllRows<{ product_code: string; quantity: number; outbound_date: string; sales_channel?: string; product_name?: string; category?: string }>(
         supabase,
@@ -116,7 +105,8 @@ export async function GET() {
         "inbound_date",
         dateFrom
       ),
-      supabase.from("inventory_stock_snapshot").select("product_code,category,snapshot_date").limit(10000),
+      supabase.from("inventory_stock_snapshot").select("product_code,category,snapshot_date,quantity,unit_cost,total_price").limit(10000),
+      fetchNaverSearchTrendMonthly(),
     ]);
 
     /** product_code → category(품목구분): inventory_stock_snapshot 우선 */
@@ -187,15 +177,33 @@ export async function GET() {
     }
     const months = fourteenMonthsSlots;
 
+    /** 월간 평균 검색 지수 (월별 출고량과 1:1 대응) */
+    const naverByMonth: Record<string, Record<string, number>> = {};
+    for (const [kw, data] of Object.entries(naverMonthly ?? {})) {
+      for (const d of data) {
+        const m = (d.period ?? "").slice(0, 7);
+        if (!m || m.length < 7) continue;
+        if (!naverByMonth[m]) naverByMonth[m] = {};
+        const ratio = typeof d.ratio === "number" ? d.ratio : parseFloat(String(d.ratio ?? 0)) || 0;
+        naverByMonth[m][`naver_${kw}`] = Math.min(100, Math.max(0, ratio));
+      }
+    }
+
     const chartData = months.map((month) => {
       const row: Record<string, string | number> = { month };
       const cats = byMonthCategory[month] ?? {};
       for (const c of finalCategories) row[c] = cats[c] ?? 0;
+      const naverRow = naverByMonth[month] ?? {};
+      for (const kw of NAVER_CATEGORIES) {
+        if (!finalCategories.includes(kw)) continue;
+        const v = naverRow[`naver_${kw}`];
+        row[`naver_${kw}`] = typeof v === "number" ? Math.min(100, Math.max(0, v)) : 0;
+      }
       return row;
     });
 
-    const monthlyTotals: Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundCoupang: number; inboundGeneral: number }> = {};
-    for (const m of months) monthlyTotals[m] = { outbound: 0, inbound: 0, outboundValue: 0, inboundValue: 0, outboundCoupang: 0, outboundGeneral: 0, outboundValueCoupang: 0, outboundValueGeneral: 0, inboundCoupang: 0, inboundGeneral: 0 };
+    const monthlyTotals: Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundByWarehouse: Record<string, number> }> = {};
+    for (const m of months) monthlyTotals[m] = { outbound: 0, inbound: 0, outboundValue: 0, inboundValue: 0, outboundCoupang: 0, outboundGeneral: 0, outboundValueCoupang: 0, outboundValueGeneral: 0, inboundByWarehouse: {} };
     for (const o of outbound) {
       const m = (o.outbound_date ?? "").slice(0, 7);
       if (!monthlyTotals[m]) continue;
@@ -221,9 +229,8 @@ export async function GET() {
       const cost = codeToCost.get(codeKey) ?? 0;
       monthlyTotals[m].inbound += qty;
       monthlyTotals[m].inboundValue += qty * cost;
-      if (isCoupangInbound(i.dest_warehouse)) monthlyTotals[m].inboundCoupang += qty;
-      else if (isGeneralInbound(i.dest_warehouse)) monthlyTotals[m].inboundGeneral += qty;
-      else monthlyTotals[m].inboundGeneral += qty;
+      const wh = String(i.dest_warehouse ?? "").trim() || "미지정";
+      monthlyTotals[m].inboundByWarehouse[wh] = (monthlyTotals[m].inboundByWarehouse[wh] ?? 0) + qty;
     }
 
     const byMonthCategoryInboundValue: Record<string, Record<string, number>> = {};
@@ -260,18 +267,59 @@ export async function GET() {
       const cost = codeToCost.get(normalizeCode(i.product_code) || "") ?? codeToCost.get(String(i.product_code).trim()) ?? 0;
       byMonthCategoryInboundValue[m][cat] = (byMonthCategoryInboundValue[m][cat] ?? 0) + qty * cost;
     }
+
+    // 월별 재고 자산: 당월말 기준. 현재월=최신 snapshot, 과거월=역산(다음월말 - 다음월 입고 + 다음월 출고)
+    const thisMonthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+    const snapRows = (snapshotRes.data ?? []) as { product_code: string; category?: string; snapshot_date?: string; quantity?: number; unit_cost?: number; total_price?: number }[];
+    const latestSnapshotDate = snapRows.length > 0
+      ? snapRows.reduce((max, r) => {
+          const d = (r.snapshot_date ?? "").slice(0, 10);
+          return d > max ? d : max;
+        }, "")
+      : "";
+    const valueByCategoryFromSnapshot: Record<string, number> = {};
+    for (const c of finalCategories) valueByCategoryFromSnapshot[c] = 0;
+    for (const row of snapRows) {
+      const rowDate = (row.snapshot_date ?? "").slice(0, 10);
+      if (rowDate !== latestSnapshotDate) continue;
+      const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
+      let cat = String(row.category ?? "").trim();
+      if (!cat || cat === "기타") cat = codeToCategory.get(code) ?? codeToCategory.get(String(row.product_code ?? "").trim()) ?? "";
+      if (!cat) cat = "기타";
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타" || !finalCategories.includes(cat)) continue;
+      const qty = Number(row.quantity ?? 0);
+      const cost = Number(row.unit_cost ?? 0);
+      const totalPrice = Number(row.total_price ?? 0);
+      const val = totalPrice > 0 ? totalPrice : qty * (cost > 0 ? cost : (codeToCost.get(code) ?? codeToCost.get(String(row.product_code ?? "").trim()) ?? 0));
+      valueByCategoryFromSnapshot[cat] = (valueByCategoryFromSnapshot[cat] ?? 0) + val;
+    }
+    for (const c of finalCategories) {
+      valueByCategoryFromSnapshot[c] = Math.round(valueByCategoryFromSnapshot[c] ?? 0);
+    }
+
     const monthlyValueByCategory: Record<string, Record<string, number>> = {};
-    const cumByCat: Record<string, number> = {};
-    for (const c of finalCategories) cumByCat[c] = 0;
-    for (const m of months) {
-      monthlyValueByCategory[m] = {};
-      for (const c of finalCategories) {
-        const inVal = byMonthCategoryInboundValue[m]?.[c] ?? 0;
-        const outVal = byMonthCategoryOutboundValue[m]?.[c] ?? 0;
-        cumByCat[c] = (cumByCat[c] ?? 0) + inVal - outVal;
-        monthlyValueByCategory[m][c] = Math.round(cumByCat[c]);
+    for (let i = months.length - 1; i >= 0; i--) {
+      const m = months[i];
+      if (m === thisMonthKey) {
+        monthlyValueByCategory[m] = { ...valueByCategoryFromSnapshot };
+      } else {
+        const nextIdx = i + 1;
+        const nextMonth = months[nextIdx];
+        const prevVal = nextMonth ? monthlyValueByCategory[nextMonth] ?? {} : {};
+        monthlyValueByCategory[m] = {};
+        for (const c of finalCategories) {
+          const nextVal = prevVal[c] ?? 0;
+          const inVal = byMonthCategoryInboundValue[nextMonth]?.[c] ?? 0;
+          const outVal = byMonthCategoryOutboundValue[nextMonth]?.[c] ?? 0;
+          monthlyValueByCategory[m][c] = Math.round(nextVal - inVal + outVal);
+        }
       }
     }
+
+    /** 증감률 표시 상한: ±50% (비정상 수치 방지) */
+    const MOM_RATE_CLAMP = 50;
+    const clampMomRate = (r: number) => Math.max(-MOM_RATE_CLAMP, Math.min(MOM_RATE_CLAMP, r));
 
     const momRates: Record<string, Record<string, number | null>> = {};
     for (const cat of finalCategories) {
@@ -281,41 +329,50 @@ export async function GET() {
         if (i === 0) momRates[cat][months[i]] = null;
         else {
           const prev = (byMonthCategory[months[i - 1]] ?? {})[cat] ?? 0;
-          momRates[cat][months[i]] = prev > 0 ? Math.round(((curr - prev) / prev) * 1000) / 10 : (curr > 0 ? 100 : 0);
+          const raw = prev > 0 ? Math.round(((curr - prev) / prev) * 1000) / 10 : (curr > 0 ? 100 : 0);
+          momRates[cat][months[i]] = clampMomRate(raw);
         }
       }
     }
 
-    const thisMonthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
     const prevMonthKey = month === 0 ? `${year - 1}-12` : `${year}-${String(month).padStart(2, "0")}`;
     const thisOut = monthlyTotals[thisMonthKey]?.outbound ?? 0;
     const thisIn = monthlyTotals[thisMonthKey]?.inbound ?? 0;
     const prevOut = monthlyTotals[prevMonthKey]?.outbound ?? 0;
     const prevIn = monthlyTotals[prevMonthKey]?.inbound ?? 0;
 
+    const naverSearchTrend: Record<string, Record<string, number>> = {};
+    for (const [kw, data] of Object.entries(naverMonthly ?? {})) {
+      for (const d of data) {
+        const m = d.period.slice(0, 7);
+        if (!naverSearchTrend[m]) naverSearchTrend[m] = {};
+        naverSearchTrend[m][kw] = d.ratio;
+      }
+    }
+
     return NextResponse.json(
       {
         months,
         categories: finalCategories,
         chartData,
+        naverSearchTrend,
         momRates,
         monthlyTotals,
         monthlyValueByCategory,
         momIndicators: {
-        outbound: prevOut > 0 ? Math.round(((thisOut - prevOut) / prevOut) * 1000) / 10 : null,
-        inbound: prevIn > 0 ? Math.round(((thisIn - prevIn) / prevIn) * 1000) / 10 : null,
+        outbound: prevOut > 0 ? clampMomRate(Math.round(((thisOut - prevOut) / prevOut) * 1000) / 10) : null,
+        inbound: prevIn > 0 ? clampMomRate(Math.round(((thisIn - prevIn) / prevIn) * 1000) / 10) : null,
         thisMonthOutbound: thisOut,
         thisMonthInbound: thisIn,
         thisMonthOutboundValue: Math.round(monthlyTotals[thisMonthKey]?.outboundValue ?? 0),
         thisMonthInboundValue: Math.round(monthlyTotals[thisMonthKey]?.inboundValue ?? 0),
         thisMonthOutboundCoupang: monthlyTotals[thisMonthKey]?.outboundCoupang ?? 0,
         thisMonthOutboundGeneral: monthlyTotals[thisMonthKey]?.outboundGeneral ?? 0,
-        thisMonthInboundCoupang: monthlyTotals[thisMonthKey]?.inboundCoupang ?? 0,
-        thisMonthInboundGeneral: monthlyTotals[thisMonthKey]?.inboundGeneral ?? 0,
+        thisMonthInboundByWarehouse: monthlyTotals[thisMonthKey]?.inboundByWarehouse ?? {},
       },
     },
     {
-      headers: { "Cache-Control": "no-store, max-age=0" },
+      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" },
     }
     );
   } catch (e) {

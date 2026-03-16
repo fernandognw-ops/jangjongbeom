@@ -71,6 +71,8 @@ interface InventoryContextValue {
   setDailyStock: (dailyStock: StockMap) => void;
   resetAll: () => void;
   refresh: () => void;
+  /** 로딩 중 Supabase 대기 없이 로컬(localStorage) 모드로 전환 */
+  switchToLocalMode?: () => void;
   useSupabaseInventory: boolean;
   /** Supabase fetch 실패 시 원인 (localStorage 모드일 때만 의미 있음) */
   supabaseFetchStatus: SupabaseFetchStatus;
@@ -85,6 +87,8 @@ interface InventoryContextValue {
   inventoryOutbound?: InventoryOutbound[];
   stockSnapshot?: StockSnapshotRow[];
   stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
+  /** 창고별 재고 수량 (테이칼튼, 제이에스 등) */
+  stockByWarehouse?: Record<string, number>;
   todayInOutCount?: { inbound: number; outbound: number };
   /** 수요 예측: 제품별 권장 발주량 (부족분만) */
   recommendedOrderByProduct?: Record<string, number>;
@@ -92,8 +96,36 @@ interface InventoryContextValue {
   avg14DayOutboundByProduct?: Record<string, number>;
   /** 제품별 일일 평균 판매량 (최근 30일 출고/30, 보유일수 계산용) */
   dailyVelocityByProduct?: Record<string, number>;
+  /** 제품별 일평균 출고 - 쿠팡 채널 판매 기준 */
+  dailyVelocityByProductCoupang?: Record<string, number>;
+  /** 제품별 일평균 출고 - 일반 채널 판매 기준 */
+  dailyVelocityByProductGeneral?: Record<string, number>;
   /** refresh() 성공 시 증가. CategoryTrendChart 등이 이 값 변경 시 재조회 */
   dataRefreshKey?: number;
+  /** 통합 새로고침 시 한 번에 로드 (판매·입고 추세) */
+  categoryTrendData?: {
+    months: string[];
+    categories: string[];
+    chartData: Record<string, string | number>[];
+    momRates: Record<string, Record<string, number | null>>;
+    monthlyTotals?: Record<string, { outbound: number; inbound: number; outboundValue?: number; inboundValue?: number; outboundValueCoupang?: number; outboundValueGeneral?: number }>;
+    monthlyValueByCategory?: Record<string, Record<string, number>>;
+    momIndicators?: {
+      outbound: number | null;
+      inbound: number | null;
+      thisMonthOutbound: number;
+      thisMonthInbound: number;
+      thisMonthOutboundValue?: number;
+      thisMonthInboundValue?: number;
+      thisMonthOutboundCoupang?: number;
+      thisMonthOutboundGeneral?: number;
+      thisMonthInboundByWarehouse?: Record<string, number>;
+    };
+  } | null;
+  /** 통합 새로고침 시 한 번에 로드 (AI 수요 예측) */
+  aiForecastByProduct?: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
+  /** 판매·입고 백그라운드 로드 완료 여부 (null=로딩중, true=완료) */
+  categoryTrendLoaded?: boolean | null;
 }
 
 const InventoryContext = createContext<InventoryContextValue | null>(null);
@@ -209,7 +241,13 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [supabaseOutbound, setSupabaseOutbound] = useState<InventoryOutbound[]>([]);
   const [supabaseStockSnapshot, setSupabaseStockSnapshot] = useState<StockSnapshotRow[]>([]);
   const [dailyVelocityByProduct, setDailyVelocityByProduct] = useState<Record<string, number>>({});
+  const [dailyVelocityByProductCoupang, setDailyVelocityByProductCoupang] = useState<Record<string, number>>({});
+  const [dailyVelocityByProductGeneral, setDailyVelocityByProductGeneral] = useState<Record<string, number>>({});
   const [stockByChannelFromApi, setStockByChannelFromApi] = useState<{ coupang: Record<string, number>; general: Record<string, number> }>({ coupang: {}, general: {} });
+  const [stockByWarehouse, setStockByWarehouse] = useState<Record<string, number>>({});
+  const [categoryTrendData, setCategoryTrendData] = useState<InventoryContextValue["categoryTrendData"]>(null);
+  const [categoryTrendLoaded, setCategoryTrendLoaded] = useState<boolean | null>(null);
+  const [aiForecastByProduct, setAiForecastByProduct] = useState<Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>>({});
   const [supabaseSummary, setSupabaseSummary] = useState<{
     stockByProduct: Record<string, number>;
     stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
@@ -233,6 +271,9 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     setSupabaseFetchError(undefined);
     setIsSupabaseLoading(true);
     setKpiData(null);
+    setCategoryTrendData(null);
+    setCategoryTrendLoaded(null);
+    setAiForecastByProduct({});
 
     const timeout = (ms: number) =>
       new Promise<never>((_, reject) =>
@@ -240,18 +281,31 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       );
 
     try {
-      const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 20_000);
       const cacheBust = `_t=${Date.now()}`;
-      const [snapshotRes, summaryRes] = await Promise.all([
-        fetch(`/api/inventory/snapshot?${cacheBust}`, { signal: ctrl.signal, cache: "no-store" }),
-        fetch(`/api/inventory/summary?${cacheBust}`, { signal: ctrl.signal, cache: "no-store" }),
-      ]);
+      const opts = { cache: "no-store" as RequestCache, headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" } };
+
+      // 1단계: quick(초고속) → 실패 시 snapshot?lite=1 (각 5초 타임아웃)
+      let snapshotRes: Response | null = null;
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 5_000);
+      try {
+        snapshotRes = await fetch(`/api/inventory/quick?${cacheBust}`, { ...opts, signal: ctrl.signal });
+      } catch {
+        clearTimeout(tid);
+        const ctrl2 = new AbortController();
+        const tid2 = setTimeout(() => ctrl2.abort(), 5_000);
+        try {
+          snapshotRes = await fetch(`/api/inventory/snapshot?lite=1&${cacheBust}`, { ...opts, signal: ctrl2.signal });
+        } finally {
+          clearTimeout(tid2);
+        }
+      }
       clearTimeout(tid);
 
-      if (!snapshotRes.ok) throw new Error(snapshotRes.statusText);
+      if (!snapshotRes?.ok) throw new Error(snapshotRes?.statusText ?? "API 오류");
       const data = (await snapshotRes.json()) as {
         items?: Array<{ product_code: string; product_name?: string; quantity: number; pack_size: number; total_price: number; sku: number; category?: string }>;
+        productCount?: number;
         totalValue?: number;
         totalQuantity?: number;
         totalSku?: number;
@@ -265,13 +319,20 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       if (items.length === 0 && (data.totalValue ?? 0) === 0) {
         setSupabaseFetchStatus("empty_data");
         setUseSupabaseInventory(false);
+        setIsSupabaseLoading(false);
         return;
       }
 
       let summaryProducts: InventoryProduct[] = [];
-      if (summaryRes.ok) {
-        const summaryData = await summaryRes.json();
-        summaryProducts = (summaryData.products ?? []) as InventoryProduct[];
+      try {
+        const summaryPromise = fetch(`/api/inventory/summary?${cacheBust}`, opts).then((r) => r.ok ? r.json() : null);
+        const summaryData = await Promise.race([
+          summaryPromise,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+        ]);
+        if (summaryData?.products) summaryProducts = summaryData.products as InventoryProduct[];
+      } catch {
+        /* summary 실패해도 snapshot만으로 진행 */
       }
 
       const today = new Date().toISOString().slice(0, 10);
@@ -323,6 +384,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setSupabaseStockSnapshot(snapshot);
       setDailyVelocityByProduct(data.dailyVelocityByProduct ?? {});
       setStockByChannelFromApi(data.stockByChannel ?? { coupang: {}, general: {} });
+      setStockByWarehouse((data as { stockByWarehouse?: Record<string, number> }).stockByWarehouse ?? {});
       setSupabaseInbound([]);
       setSupabaseOutbound([]);
       setSupabaseSummary(null);
@@ -335,6 +397,56 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         totalSku: data.totalSku ?? 0,
       });
       setDataRefreshKey((k) => k + 1);
+      setIsSupabaseLoading(false);
+
+      // 2단계: 전체 snapshot(dailyVelocity) + 판매·입고·예측 백그라운드
+      fetch(`/api/inventory/snapshot?${cacheBust}`, opts)
+        .then((r) => r.ok ? r.json() : null)
+        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; stockByWarehouse?: Record<string, number> } | null) => {
+          if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
+          if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
+          if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
+          if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
+          if (fullData?.stockByWarehouse) setStockByWarehouse(fullData.stockByWarehouse);
+        })
+        .catch(() => {});
+
+      // 3단계: 판매·입고·예측 백그라운드
+      Promise.all([
+        fetch(`/api/category-trend?${cacheBust}`, opts),
+        fetch(`/api/forecast?${cacheBust}`, opts),
+      ]).then(async ([categoryTrendRes, forecastRes]) => {
+        let categoryTrend: InventoryContextValue["categoryTrendData"] = null;
+        if (categoryTrendRes.ok) {
+          const ctJson = await categoryTrendRes.json().catch(() => null);
+          if (ctJson && typeof ctJson === "object" && !ctJson.error) {
+            categoryTrend = ctJson as InventoryContextValue["categoryTrendData"];
+          }
+        }
+        let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
+        if (forecastRes.ok) {
+          const fJson = await forecastRes.json().catch(() => null);
+          const forecasts = (fJson?.product_forecasts ?? []) as Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
+          for (const row of forecasts) {
+            const code = String(row.product_code ?? "").trim();
+            if (code) {
+              const v = {
+                forecast_month1: Number(row.forecast_month1) || 0,
+                forecast_month2: Number(row.forecast_month2) || 0,
+                forecast_month3: Number(row.forecast_month3) || 0,
+              };
+              forecastMap[code] = v;
+              forecastMap[normalizeCode(code) || code] = v;
+            }
+          }
+        }
+        setCategoryTrendData(categoryTrend);
+        setAiForecastByProduct(forecastMap);
+        setCategoryTrendLoaded(true);
+        setDataRefreshKey((k) => k + 1);
+      }).catch(() => {
+        setCategoryTrendLoaded(true);
+      });
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       setSupabaseFetchStatus("fetch_error");
@@ -367,9 +479,48 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const switchToLocalMode = useCallback(async () => {
+    setSupabaseFetchStatus("fetch_error");
+    setSupabaseFetchError("로컬 모드로 전환됨. Supabase 데이터는 '새로고침'으로 다시 불러올 수 있습니다.");
+    setUseSupabaseInventory(false);
+    try {
+      const defaultWorkspace = getDefaultWorkspaceId();
+      const syncCode = getStoredSyncCode();
+      if (defaultWorkspace) {
+        const r = await fetchDefaultWorkspace();
+        if (r.ok && r.data) storage.restoreFromBackup(r.data);
+      } else if (syncCode) {
+        const r = await fetchFromCloud(syncCode);
+        if (r.ok && r.data) storage.restoreFromBackup(r.data);
+      }
+    } catch {
+      /* ignore */
+    }
+    const tx = storage.loadTransactions();
+    const base = storage.loadBaseStock();
+    const baseByProduct = storage.loadBaseStockByProduct();
+    const daily = storage.loadDailyStock();
+    setTransactions(tx);
+    setBaseStockState(base);
+    setBaseStockByProductState(baseByProduct);
+    setProductsState(storage.loadProducts() as ProductMasterRow[]);
+    setIsSupabaseLoading(false);
+  }, []);
+
   useEffect(() => {
     if (supabaseFetchStatus !== "idle") setIsSupabaseLoading(false);
   }, [supabaseFetchStatus]);
+
+  // 로딩 10초 초과 시 강제 해제 (fetch가 응답하지 않을 때)
+  useEffect(() => {
+    if (!isSupabaseLoading || supabaseFetchStatus !== "idle") return;
+    const t = setTimeout(() => {
+      setSupabaseFetchStatus("fetch_error");
+      setSupabaseFetchError("요청 시간 초과 (10초). Supabase 연결·테이블 확인 후 새로고침하세요.");
+      setIsSupabaseLoading(false);
+    }, 10_000);
+    return () => clearTimeout(t);
+  }, [isSupabaseLoading, supabaseFetchStatus]);
 
   useEffect(() => {
     refresh();
@@ -417,6 +568,8 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener("storage", handler);
     return () => window.removeEventListener("storage", handler);
   }, [refresh, useSupabaseInventory]);
+
+  // Supabase 사용 시: 자동 새로고침 비활성화. 새로고침 버튼 클릭 시에만 refresh
 
   const addTransaction = useCallback(
     (tx: Omit<Transaction, "id" | "createdAt">) => {
@@ -671,6 +824,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setDailyStock,
       resetAll,
       refresh,
+      switchToLocalMode,
       useSupabaseInventory,
       supabaseFetchStatus,
       supabaseFetchError,
@@ -681,11 +835,17 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       inventoryOutbound: useSupabaseInventory ? supabaseOutbound : undefined,
       stockSnapshot: useSupabaseInventory ? supabaseStockSnapshot : undefined,
       stockByProductByChannel: supabaseDerived?.stockByProductByChannel,
+      stockByWarehouse: useSupabaseInventory ? stockByWarehouse : undefined,
       todayInOutCount: supabaseDerived?.todayInOutCount,
       recommendedOrderByProduct: supabaseDerived?.recommendedOrderByProduct,
       avg14DayOutboundByProduct: supabaseDerived?.avg14DayOutboundByProduct ?? {},
       dailyVelocityByProduct: useSupabaseInventory ? dailyVelocityByProduct : undefined,
+      dailyVelocityByProductCoupang: useSupabaseInventory ? dailyVelocityByProductCoupang : undefined,
+      dailyVelocityByProductGeneral: useSupabaseInventory ? dailyVelocityByProductGeneral : undefined,
       dataRefreshKey,
+      categoryTrendData: useSupabaseInventory ? categoryTrendData : null,
+      aiForecastByProduct: useSupabaseInventory ? aiForecastByProduct : undefined,
+      categoryTrendLoaded: useSupabaseInventory ? categoryTrendLoaded : null,
     }),
     [
       stock,
@@ -708,6 +868,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setDailyStock,
       resetAll,
       refresh,
+      switchToLocalMode,
       useSupabaseInventory,
       supabaseFetchStatus,
       supabaseFetchError,
@@ -718,11 +879,17 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       supabaseOutbound,
       supabaseStockSnapshot,
       supabaseDerived?.stockByProductByChannel,
+      stockByWarehouse,
       supabaseDerived?.todayInOutCount,
       supabaseDerived?.recommendedOrderByProduct,
       supabaseDerived?.avg14DayOutboundByProduct,
       dailyVelocityByProduct,
+      dailyVelocityByProductCoupang,
+      dailyVelocityByProductGeneral,
       dataRefreshKey,
+      categoryTrendData,
+      aiForecastByProduct,
+      categoryTrendLoaded,
     ]
   );
 

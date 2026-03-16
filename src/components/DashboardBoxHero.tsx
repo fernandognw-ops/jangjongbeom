@@ -7,6 +7,7 @@ import { SupabaseInventoryRefresh } from "./SupabaseInventoryRefresh";
 import {
   computeTotalValue,
   computeAvgNDayOutboundByProduct,
+  computeAvgNDayOutboundByProductByChannel,
   normalizeCategory,
   normalizeCode,
   STANDARD_CATEGORIES,
@@ -101,7 +102,10 @@ export function DashboardBoxHero() {
     inventoryOutbound = [],
     avg14DayOutboundByProduct: contextAvg14 = {},
     dailyVelocityByProduct: contextDailyVelocity = {},
+    dailyVelocityByProductCoupang: contextDailyVelocityCoupang = {},
+    dailyVelocityByProductGeneral: contextDailyVelocityGeneral = {},
     stockByProductByChannel,
+    stockByWarehouse = {},
     stockSnapshot = [],
     safetyStockByProduct = {},
     todayInOutCount = { inbound: 0, outbound: 0 },
@@ -109,7 +113,9 @@ export function DashboardBoxHero() {
     lastMonthEndValue,
     valueVariance,
     recommendedOrderByProduct = {},
-  } = useInventory();
+    categoryTrendData,
+    aiForecastByProduct: contextAiForecast,
+  } = useInventory() ?? {};
 
   const [channel, setChannel] = useState<Channel>("all");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -119,55 +125,9 @@ export function DashboardBoxHero() {
   );
   const [showDataErrors, setShowDataErrors] = useState(false);
   const [visibleCount, setVisibleCount] = useState(50);
-  const [momIndicators, setMomIndicators] = useState<{
-    outbound: number | null;
-    inbound: number | null;
-    thisMonthOutbound: number;
-    thisMonthInbound: number;
-    thisMonthOutboundCoupang?: number;
-    thisMonthOutboundGeneral?: number;
-    thisMonthInboundCoupang?: number;
-    thisMonthInboundGeneral?: number;
-  } | null>(null);
 
-  const [aiForecastByProduct, setAiForecastByProduct] = useState<
-    Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>
-  >({});
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/category-trend?t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (!cancelled && d.momIndicators) setMomIndicators(d.momIndicators);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/forecast?t=${Date.now()}`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (cancelled || !d?.product_forecasts) return;
-        const map: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
-        for (const row of d.product_forecasts as { product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }[]) {
-          const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
-          if (code) {
-            map[code] = {
-              forecast_month1: Number(row.forecast_month1) || 0,
-              forecast_month2: Number(row.forecast_month2) || 0,
-              forecast_month3: Number(row.forecast_month3) || 0,
-            };
-            map[String(row.product_code ?? "").trim()] = map[code];
-          }
-        }
-        setAiForecastByProduct(map);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
+  const momIndicators = categoryTrendData?.momIndicators ?? null;
+  const aiForecastByProduct = contextAiForecast ?? {};
 
   const stockByProductRaw = useMemo(
     () => getStockByChannel(stockByProductByChannel, channel),
@@ -208,8 +168,8 @@ export function DashboardBoxHero() {
     const merged = new Set([...CATEGORY_ORDER, ...fromData]);
     const filtered = Array.from(merged).filter((c) => c !== "기타" && c !== "전체" && !/^\d{10,}$/.test(c));
     return filtered.sort((a, b) => {
-      const ia = CATEGORY_ORDER.indexOf(a);
-      const ib = CATEGORY_ORDER.indexOf(b);
+      const ia = (CATEGORY_ORDER as readonly string[]).indexOf(a);
+      const ib = (CATEGORY_ORDER as readonly string[]).indexOf(b);
       if (ia >= 0 && ib >= 0) return ia - ib;
       if (ia >= 0) return -1;
       if (ib >= 0) return 1;
@@ -224,7 +184,7 @@ export function DashboardBoxHero() {
     [contextAvg14, inventoryOutbound]
   );
 
-  const dailyVelocityByProduct = useMemo(
+  const dailyVelocityByProductAll = useMemo(
     () => (contextDailyVelocity && Object.keys(contextDailyVelocity).length > 0)
       ? contextDailyVelocity
       : (() => {
@@ -234,6 +194,35 @@ export function DashboardBoxHero() {
           return out;
         })(),
     [contextDailyVelocity, inventoryOutbound]
+  );
+
+  const dailyVelocityByProductCoupang = useMemo(
+    () => (contextDailyVelocityCoupang && Object.keys(contextDailyVelocityCoupang).length > 0)
+      ? contextDailyVelocityCoupang
+      : (() => {
+          const { coupang } = computeAvgNDayOutboundByProductByChannel(inventoryOutbound, 30);
+          return coupang;
+        })(),
+    [contextDailyVelocityCoupang, inventoryOutbound]
+  );
+
+  const dailyVelocityByProductGeneral = useMemo(
+    () => (contextDailyVelocityGeneral && Object.keys(contextDailyVelocityGeneral).length > 0)
+      ? contextDailyVelocityGeneral
+      : (() => {
+          const { general } = computeAvgNDayOutboundByProductByChannel(inventoryOutbound, 30);
+          return general;
+        })(),
+    [contextDailyVelocityGeneral, inventoryOutbound]
+  );
+
+  const dailyVelocityByProduct = useMemo(
+    () => (channel === "coupang")
+      ? dailyVelocityByProductCoupang
+      : (channel === "general")
+        ? dailyVelocityByProductGeneral
+        : dailyVelocityByProductAll,
+    [channel, dailyVelocityByProductAll, dailyVelocityByProductCoupang, dailyVelocityByProductGeneral]
   );
 
   const productsWithStatus = useMemo(() => {
@@ -415,6 +404,21 @@ export function DashboardBoxHero() {
           <span>쿠팡: <span className="font-semibold text-orange-600">{coupangStockTotal.toLocaleString()}EA</span></span>
           <span>일반: <span className="font-semibold text-sky-600">{generalStockTotal.toLocaleString()}EA</span></span>
         </div>
+        {Object.keys(stockByWarehouse).length > 0 && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 min-w-0">
+            <div className="text-xs font-medium uppercase tracking-wider text-slate-500">창고별 재고</div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+              {Object.entries(stockByWarehouse)
+                .sort(([, a], [, b]) => b - a)
+                .map(([wh, qty]) => (
+                  <div key={wh} className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
+                    <span className="text-sm text-slate-600">{wh}</span>
+                    <span className="font-bold tabular-nums text-slate-800">{qty.toLocaleString()}EA</span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 마이너스 재고 경고 */}
@@ -598,10 +602,15 @@ export function DashboardBoxHero() {
                 )}
               </div>
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-600">
-                <span>쿠팡: {(momIndicators.thisMonthInboundCoupang ?? 0).toLocaleString()}EA</span>
-                <span>일반: {(momIndicators.thisMonthInboundGeneral ?? 0).toLocaleString()}EA</span>
+                {Object.entries(momIndicators.thisMonthInboundByWarehouse ?? {}).length > 0
+                  ? Object.entries(momIndicators.thisMonthInboundByWarehouse ?? {})
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([wh, qty]) => (
+                        <span key={wh}>{wh}: {qty.toLocaleString()}EA</span>
+                      ))
+                  : <span>창고별 데이터 없음</span>}
               </div>
-              <div className="mt-0.5 text-[10px] text-slate-500">전월 대비</div>
+              <div className="mt-0.5 text-[10px] text-slate-500">입고처(창고) 기준 · 전월 대비</div>
             </div>
           </>
         )}
@@ -676,8 +685,14 @@ export function DashboardBoxHero() {
             ?? aiForecastByProduct[normalizeCode(item.product.product_code) ?? ""];
           const f1 = fc?.forecast_month1 ?? 0;
           const stock = item.stock;
+          const dailyVelocity = dailyVelocityByProduct[item.product.product_code] ?? 0;
+          // 부족 수량: 원래대로 (AI 있으면 f1-재고, 없으면 안전재고-현재재고)
           const aiShortfall = f1 > 0 && stock < f1 ? Math.max(0, Math.ceil(f1 - stock)) : undefined;
-          const aiRecommendedOrder = f1 > 0 && stock < f1 ? Math.max(0, Math.ceil(f1 - stock)) : undefined;
+          // 권장 입고 수량: 1주일 판매 부족 수량 (일평균×7 - 재고)
+          const oneWeekShortage =
+            dailyVelocity > 0 && stock < dailyVelocity * 7
+              ? Math.max(0, Math.ceil(dailyVelocity * 7 - stock))
+              : undefined;
           return (
             <ProductCard
               key={item.product.id}
@@ -687,9 +702,8 @@ export function DashboardBoxHero() {
               hasNegativeWarning={item.hasWarning}
               status={item.status}
               daysOfStock={item.daysOfStock}
-              recommendedOrder={recommendedOrderByProduct[item.product.product_code]}
               aiShortfall={aiShortfall}
-              aiRecommendedOrder={aiRecommendedOrder}
+              recommendedOrder={oneWeekShortage ?? recommendedOrderByProduct[item.product.product_code]}
             />
           );
         })}
@@ -755,7 +769,6 @@ function ProductCard({
   daysOfStock,
   recommendedOrder,
   aiShortfall,
-  aiRecommendedOrder,
 }: {
   product: InventoryProduct;
   stock: number;
@@ -765,7 +778,6 @@ function ProductCard({
   daysOfStock?: number | null;
   recommendedOrder?: number;
   aiShortfall?: number;
-  aiRecommendedOrder?: number;
 }) {
   const cfg = STATUS_CONFIG[status];
   const displayStock = Number.isFinite(stock) ? Math.floor(stock) : 0;
@@ -825,8 +837,8 @@ function ProductCard({
           )}
         </div>
 
-        {/* 부족 수량 · 권장 입고 수량 (AI 기반 우선, SKU 단위: 개) */}
-        {((shortfall > 0 || aiShortfall != null) || (recommendedOrder != null && recommendedOrder > 0) || (aiRecommendedOrder != null && aiRecommendedOrder > 0)) && (
+        {/* 부족 수량(원래대로) · 권장 입고 수량(1주일 판매 부족) */}
+        {((shortfall > 0 || (aiShortfall != null && aiShortfall > 0)) || (recommendedOrder != null && recommendedOrder > 0)) && (
           <div className="flex flex-wrap gap-x-4 gap-y-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
             {(shortfall > 0 || (aiShortfall != null && aiShortfall > 0)) && (
               <div className="flex items-baseline gap-1.5">
@@ -837,31 +849,18 @@ function ProductCard({
                   )}
                 </span>
                 <span className="font-semibold tabular-nums text-red-600">
-                  {(aiShortfall != null && aiShortfall > 0 ? aiShortfall : shortfall).toLocaleString()}개
+                  {Math.ceil((aiShortfall != null && aiShortfall > 0 ? aiShortfall : shortfall) / (packSize || 1)).toLocaleString()}박스
                 </span>
-                {packSize > 0 && (
-                  <span className="text-xs text-slate-500">
-                    ({Math.ceil((aiShortfall != null && aiShortfall > 0 ? aiShortfall : shortfall) / packSize).toLocaleString()}박스)
-                  </span>
-                )}
               </div>
             )}
-            {((recommendedOrder != null && recommendedOrder > 0) || (aiRecommendedOrder != null && aiRecommendedOrder > 0)) && (
+            {(recommendedOrder != null && recommendedOrder > 0) && (
               <div className="flex items-baseline gap-1.5">
                 <span className={`text-xs font-medium ${needsAction ? "text-rose-600" : "text-indigo-600"}`}>
                   권장 입고 수량
-                  {aiRecommendedOrder != null && aiRecommendedOrder > 0 && (
-                    <span className="ml-1 rounded bg-cyan-100 px-1 py-0.5 text-[10px] font-medium text-cyan-700">AI</span>
-                  )}
                 </span>
                 <span className={`font-bold tabular-nums ${needsAction ? "text-rose-700" : "text-indigo-700"}`}>
-                  {(aiRecommendedOrder != null && aiRecommendedOrder > 0 ? aiRecommendedOrder : (recommendedOrder ?? 0)).toLocaleString()}개
+                  {Math.ceil((recommendedOrder ?? 0) / (packSize || 1)).toLocaleString()}박스
                 </span>
-                {packSize > 0 && (
-                  <span className="text-xs text-slate-500">
-                    ({Math.ceil((aiRecommendedOrder != null && aiRecommendedOrder > 0 ? aiRecommendedOrder : (recommendedOrder ?? 0)) / packSize).toLocaleString()}박스)
-                  </span>
-                )}
               </div>
             )}
           </div>

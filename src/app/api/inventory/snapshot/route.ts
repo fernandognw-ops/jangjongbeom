@@ -62,7 +62,7 @@ async function fetchAllOutbound(
   return all;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) {
@@ -71,6 +71,9 @@ export async function GET() {
       { status: 200 }
     );
   }
+
+  const { searchParams } = new URL(request.url);
+  const lite = searchParams.get("lite") === "1";
 
   const supabase = createClient(url, key);
 
@@ -87,7 +90,7 @@ export async function GET() {
         .order("product_code")
         .limit(10000),
       supabase.from("inventory_products").select("product_code,category").order("product_code").limit(10000),
-      fetchAllOutbound(supabase, dateFrom),
+      lite ? Promise.resolve([] as { product_code: string; quantity: number; sales_channel?: string }[]) : fetchAllOutbound(supabase, dateFrom),
     ]);
 
     const { data: snapshotData, error } = snapshotRes;
@@ -121,12 +124,13 @@ export async function GET() {
       : "";
     const rows = maxDate ? allRows.filter((r) => (r.snapshot_date ?? "").slice(0, 10) === maxDate) : allRows;
     const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
+    const stockByWarehouse: Record<string, number> = {};
     const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string; category: string }> = {};
     const seenRow = new Set<string>();
 
     for (const r of rows) {
       const code = String(r.product_code ?? "").trim();
-      const wh = String(r.dest_warehouse ?? "").trim();
+      const wh = String(r.dest_warehouse ?? "").trim() || "제이에스";
       const rowKey = `${code}|${wh}`;
       if (seenRow.has(rowKey)) continue;
       seenRow.add(rowKey);
@@ -136,6 +140,8 @@ export async function GET() {
       let price = toNum(r.total_price);
       if (price <= 0 && qty > 0) price = qty * toNum(r.unit_cost);
       const cat = String(r.category ?? "").trim();
+
+      stockByWarehouse[wh] = (stockByWarehouse[wh] ?? 0) + qty;
 
       if (isCoupangStock(r.dest_warehouse)) {
         stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
@@ -222,8 +228,9 @@ export async function GET() {
       dailyVelocityByProductGeneral,
       outboundByChannel,
       stockByChannel,
+      stockByWarehouse,
     },
-    { headers: { "Cache-Control": "no-store, max-age=0" } }
+    { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" } }
     );
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);

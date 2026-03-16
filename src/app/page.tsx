@@ -59,7 +59,7 @@ function SupabaseDiagnosticBanner() {
 }
 
 export default function DashboardPage() {
-  const { totalValue, useSupabaseInventory, isSupabaseLoading, supabaseFetchStatus, refresh, kpiData } = useInventory();
+  const { totalValue, useSupabaseInventory, isSupabaseLoading, supabaseFetchStatus, refresh, switchToLocalMode, kpiData } = useInventory() ?? {};
 
   return (
     <div
@@ -80,24 +80,44 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl min-w-0 px-3 py-3 md:px-6 md:py-8 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <main className="mx-auto max-w-6xl min-w-0 px-3 py-3 md:px-6 md:py-8 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-x-hidden">
         {isSupabaseLoading && supabaseFetchStatus === "idle" ? (
-          <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center shadow-card">
+          <div className="rounded-2xl border border-slate-200 bg-white py-16 px-4 text-center shadow-card">
             <p className="text-slate-600">데이터 로딩 중입니다…</p>
             <p className="mt-2 text-xs text-slate-500">15초 이상 걸리면 자동으로 종료됩니다. 아래 버튼으로 재시도할 수 있습니다.</p>
-            <button
-              type="button"
-              onClick={() => refresh()}
-              className="mt-4 rounded-xl bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600 shadow-sm"
-            >
-              새로고침
-            </button>
+            <div className="mt-4 flex flex-col sm:flex-row gap-3 justify-center">
+              <button
+                type="button"
+                onClick={() => refresh()}
+                className="rounded-xl bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600 shadow-sm"
+              >
+                새로고침
+              </button>
+              <button
+                type="button"
+                onClick={() => switchToLocalMode?.()}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 shadow-sm"
+              >
+                로컬 모드로 전환
+              </button>
+            </div>
           </div>
         ) : useSupabaseInventory ? (
           /* 박스히어로 스타일 대시보드 (Supabase inventory_* 연동 시) */
           <>
             {/* KPI 카드: snapshot 단일 출처 (재고 금액, 품목 수, 수량 EA, SKU 박스) */}
             {(kpiData || totalValue > 0) && (
+              <>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs text-slate-500">데이터가 안 바뀌면 →</span>
+                <button
+                  type="button"
+                  onClick={() => refresh()}
+                  className="rounded-lg bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600"
+                >
+                  데이터 새로고침
+                </button>
+              </div>
               <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 md:gap-4">
                 <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
                   <div className="text-[10px] font-medium uppercase tracking-wider text-indigo-600 md:text-xs">
@@ -137,6 +157,7 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </div>
+              </>
             )}
             <div className="mb-6">
               <ProductionSheetUploader />

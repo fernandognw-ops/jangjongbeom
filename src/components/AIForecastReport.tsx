@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useInventory } from "@/context/InventoryContext";
 import {
   BarChart,
   Bar,
@@ -18,27 +19,36 @@ export interface ForecastItem {
   group_name: string;
   lead_time_days: number;
   past_12m_total: number;
+  forecast_this_month?: number;
   forecast_month1: number;
   forecast_month2: number;
   forecast_month3: number;
   production_needed: number;
+  yoy_pct?: number;
+  last_year_base?: number;
 }
 
 export interface CategoryForecast {
+  forecast_this_month?: number;
   forecast_month1: number;
   forecast_month2: number;
   forecast_month3: number;
   production_needed: number;
+  yoy_pct?: number;
+  last_year_base?: number;
 }
 
 export interface ForecastResponse {
+  forecast_this_month_label?: string;
   forecast_month_labels: string[];
   product_forecasts: ForecastItem[];
   category_forecast: Record<string, CategoryForecast>;
   summary: {
     total_products_forecasted: number;
     total_production_needed_3m: number;
+    excluded_categories?: string[];
   };
+  category_avg_yoy?: Record<string, number>;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -63,6 +73,7 @@ function getColorForCategory(cat: string, index: number): string {
 }
 
 export function AIForecastReport() {
+  const { dataRefreshKey, refresh } = useInventory() ?? {};
   const [data, setData] = useState<ForecastResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +84,7 @@ export function AIForecastReport() {
     setError(null);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20_000);
-    fetch("/api/forecast", { signal: controller.signal })
+    fetch(`/api/forecast?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" })
       .then(async (res) => {
         const json = await res.json().catch(() => null);
         if (!res.ok) {
@@ -107,17 +118,18 @@ export function AIForecastReport() {
     };
   }, []);
 
+  const refreshKey = dataRefreshKey ?? 0;
   useEffect(() => {
     const cleanup = loadData();
     return () => (typeof cleanup === "function" ? cleanup() : undefined);
-  }, [loadData]);
+  }, [loadData, refreshKey]);
 
   if (loading) {
     return (
       <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center">
         <p className="text-zinc-500">AI 예측 분석 중…</p>
         <p className="mt-2 text-xs text-zinc-600">
-          과거 1년 수불 데이터를 분석해 3개월 출고량을 예측합니다.
+          Run-rate 당월 + 3개월평균·추세 기반 수요 예측.
         </p>
       </div>
     );
@@ -129,7 +141,7 @@ export function AIForecastReport() {
         <p className="text-red-400">{error ?? "데이터를 불러올 수 없습니다."}</p>
         <button
           type="button"
-          onClick={() => loadData()}
+          onClick={() => refresh?.() ?? loadData()}
           className="mt-3 rounded-lg bg-red-500/20 px-4 py-2 text-sm text-red-300 hover:bg-red-500/30"
         >
           다시 시도
@@ -138,6 +150,7 @@ export function AIForecastReport() {
     );
   }
 
+  const thisMonthLabel = data.forecast_this_month_label ?? "";
   const labels = data.forecast_month_labels ?? ["M1", "M2", "M3"];
   const m1 = labels[0] ?? "M1";
   const m2 = labels[1] ?? "M2";
@@ -145,6 +158,7 @@ export function AIForecastReport() {
   const categoryChartData = Object.entries(data.category_forecast ?? {}).map(
     ([cat, v]) => ({
       category: cat,
+      ...(thisMonthLabel ? { [thisMonthLabel]: v.forecast_this_month ?? 0 } : {}),
       [m1]: v.forecast_month1,
       [m2]: v.forecast_month2,
       [m3]: v.forecast_month3,
@@ -174,12 +188,21 @@ export function AIForecastReport() {
       </div>
 
       <p className="text-sm text-zinc-400">
-        과거 1년(25년~26년) 수불 데이터 기반 선형 회귀 분석으로 향후 3개월
-        출고량을 예측합니다.
+        M0: Run-rate. 추세=M0−3개월평균. M1=3개월평균+추세, M2=M1+추세, M3=M2+추세. Clamping: 0~직전달×2.
       </p>
 
       {/* 요약 카드 */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        {thisMonthLabel && (
+          <div className="rounded-xl border border-slate-500/40 bg-slate-500/10 p-4">
+            <div className="text-xs font-medium uppercase tracking-wider text-slate-400">
+              당월 예측 ({thisMonthLabel})
+            </div>
+            <div className="mt-1 text-xl font-bold tabular-nums text-white md:text-2xl">
+              {Object.values(data.category_forecast ?? {}).reduce((s, c) => s + (c.forecast_this_month ?? 0), 0).toLocaleString()}개
+            </div>
+          </div>
+        )}
         <div className="rounded-xl border border-cyan-500/40 bg-cyan-500/10 p-4">
           <div className="text-xs font-medium uppercase tracking-wider text-cyan-400">
             예측 품목 수
@@ -196,13 +219,36 @@ export function AIForecastReport() {
             {(data.summary?.total_production_needed_3m ?? 0).toLocaleString()}개
           </div>
         </div>
+        {data.category_avg_yoy && Object.keys(data.category_avg_yoy).length > 0 && (
+          <div className="col-span-2 sm:col-span-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+            <div className="text-xs font-medium uppercase tracking-wider text-amber-400">
+              카테고리별 YoY (연평균 성장률)
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+              {Object.entries(data.category_avg_yoy).map(([cat, ratio]) => {
+                const pct = Math.round((ratio - 1) * 1000) / 10;
+                return (
+                  <span key={cat} className={pct >= 0 ? "text-emerald-300" : "text-red-400"}>
+                    {cat}: {pct >= 0 ? "+" : ""}{pct}%
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
+
+      {(data.summary?.excluded_categories?.length ?? 0) > 0 && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+          신규 카테고리(데이터 3개월 미만): {data.summary.excluded_categories!.join(", ")} — 수동 입력 모드
+        </p>
+      )}
 
       {/* 카테고리별 예측 차트: 왼쪽 100만 이상 / 오른쪽 100만 미만 */}
       {categoryChartData.length > 0 && (
         <div>
           <h3 className="mb-3 text-sm font-semibold text-zinc-300">
-            카테고리별 3개월 예상 출고량
+            카테고리별 예상 출고량 (당월 + 향후 3개월)
           </h3>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             {highVolumeData.length > 0 && (
@@ -240,6 +286,15 @@ export function AIForecastReport() {
                         }
                       />
                       <Legend />
+                      {thisMonthLabel && (
+                        <Bar
+                          key={thisMonthLabel}
+                          dataKey={thisMonthLabel}
+                          name={`${thisMonthLabel} (당월)`}
+                          fill="#64748b"
+                          radius={[4, 4, 0, 0]}
+                        />
+                      )}
                       {[m1, m2, m3].map((label, idx) => (
                         <Bar
                           key={label}
@@ -291,6 +346,15 @@ export function AIForecastReport() {
                         }
                       />
                       <Legend />
+                      {thisMonthLabel && (
+                        <Bar
+                          key={thisMonthLabel}
+                          dataKey={thisMonthLabel}
+                          name={`${thisMonthLabel} (당월)`}
+                          fill="#64748b"
+                          radius={[4, 4, 0, 0]}
+                        />
+                      )}
                       {[m1, m2, m3].map((label, idx) => (
                         <Bar
                           key={label}
@@ -326,6 +390,17 @@ export function AIForecastReport() {
                 <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-center text-xs font-medium text-zinc-400">
                   카테고리
                 </th>
+                <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-right text-xs font-medium text-zinc-400" title="전년 대비 예상 증감률">
+                  YoY %
+                </th>
+                <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-right text-xs font-medium text-zinc-400" title="작년 동월+3개월 합계">
+                  작년 기준
+                </th>
+                {thisMonthLabel && (
+                  <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-right text-xs font-medium text-zinc-400">
+                    {thisMonthLabel} (당월)
+                  </th>
+                )}
                 <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-right text-xs font-medium text-zinc-400">
                   {m1}
                 </th>
@@ -335,7 +410,7 @@ export function AIForecastReport() {
                 <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-right text-xs font-medium text-zinc-400">
                   {m3}
                 </th>
-                <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-right text-xs font-medium text-zinc-400">
+                <th className="border border-zinc-600 bg-zinc-800/80 px-2 py-2 text-right text-xs font-medium text-zinc-400" title="M1+M2+M3 합계">
                   합계
                 </th>
               </tr>
@@ -360,6 +435,19 @@ export function AIForecastReport() {
                       {row.group_name}
                     </span>
                   </td>
+                  <td className="border border-zinc-700 px-2 py-2 text-right tabular-nums">
+                    <span className={row.yoy_pct != null && row.yoy_pct >= 0 ? "text-emerald-400" : "text-red-400"}>
+                      {row.yoy_pct != null ? `${row.yoy_pct >= 0 ? "+" : ""}${row.yoy_pct}%` : "-"}
+                    </span>
+                  </td>
+                  <td className="border border-zinc-700 px-2 py-2 text-right tabular-nums text-zinc-500">
+                    {(row.last_year_base ?? 0).toLocaleString()}
+                  </td>
+                  {thisMonthLabel && (
+                    <td className="border border-zinc-700 px-2 py-2 text-right tabular-nums text-zinc-400">
+                      {(row.forecast_this_month ?? 0).toLocaleString()}
+                    </td>
+                  )}
                   <td className="border border-zinc-700 px-2 py-2 text-right tabular-nums text-zinc-300">
                     {row.forecast_month1.toLocaleString()}
                   </td>
@@ -369,7 +457,7 @@ export function AIForecastReport() {
                   <td className="border border-zinc-700 px-2 py-2 text-right tabular-nums text-zinc-300">
                     {row.forecast_month3.toLocaleString()}
                   </td>
-                  <td className="border border-zinc-700 px-2 py-2 text-right font-semibold tabular-nums text-cyan-400">
+                  <td className="border border-zinc-700 px-2 py-2 text-right font-semibold tabular-nums text-cyan-400" title="M1+M2+M3 합계 (3개월평균+추세 선형)">
                     {row.production_needed.toLocaleString()}
                   </td>
                 </tr>
