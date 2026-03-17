@@ -26,6 +26,7 @@ DECLARE
   v_category TEXT;
   v_quantity INT;
   v_unit_cost NUMERIC;
+  v_total_price NUMERIC;
   v_snapshot_date DATE;
   v_target_date DATE;
 BEGIN
@@ -58,6 +59,12 @@ BEGIN
       CONTINUE;
     END IF;
 
+    -- total_price: 입력값 우선, 없으면 quantity * unit_cost (재고금액 vs 재고원가 구분)
+    v_total_price := COALESCE((elem->>'total_price')::NUMERIC, 0);
+    IF v_total_price <= 0 AND v_quantity > 0 THEN
+      v_total_price := v_quantity * v_unit_cost;
+    END IF;
+
     INSERT INTO inventory_stock_snapshot (
       product_code,
       dest_warehouse,
@@ -75,7 +82,7 @@ BEGIN
       v_quantity,
       v_unit_cost,
       v_snapshot_date,
-      v_quantity * v_unit_cost
+      v_total_price
     );
     inserted_count := inserted_count + 1;
   END LOOP;

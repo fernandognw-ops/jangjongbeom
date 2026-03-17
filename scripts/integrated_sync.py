@@ -33,8 +33,21 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
+
+
+def get_current_month_range() -> tuple[str, str]:
+    """당월(현재 월) 첫날~마지막날. 당월 이전 데이터는 수정하지 않음."""
+    now = datetime.now()
+    y, m = now.year, now.month
+    first = f"{y}-{m:02d}-01"
+    if m == 12:
+        last = f"{y}-12-31"
+    else:
+        last_day = (datetime(y, m + 1, 1) - timedelta(days=1)).day
+        last = f"{y}-{m:02d}-{last_day:02d}"
+    return first, last
 
 # .env.local 로드
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env.local")
@@ -850,13 +863,12 @@ def main() -> None:
                 agg[k]["quantity"] = 0
             agg[k]["quantity"] += r["quantity"]
         inbound_merged = list(agg.values())
-        # 수불 교체: 해당 기간 기존 입고 삭제 후 upsert (마지막 수불로 전체 교체)
+        month_start, month_end = get_current_month_range()
+        # 수불 교체: 당월만 삭제 후 upsert (당월 이전 데이터는 유지)
         if not args.dry_run and inbound_merged:
-            dates = [r["inbound_date"][:10] for r in inbound_merged if r.get("inbound_date")]
-            if dates:
-                d_min, d_max = min(dates), max(dates)
-                if delete_by_date_range(supabase, TABLE_INBOUND, "inbound_date", d_min, d_max, args.dry_run):
-                    print(f"    {TABLE_INBOUND}: {d_min}~{d_max} 기존 삭제 후")
+            if delete_by_date_range(supabase, TABLE_INBOUND, "inbound_date", month_start, month_end, args.dry_run):
+                print(f"    {TABLE_INBOUND}: 당월 {month_start}~{month_end} 기존 삭제 후")
+        inbound_merged = [r for r in inbound_merged if month_start <= (r.get("inbound_date") or "")[:10] <= month_end]
         # unit_price/total_price가 0이면 inventory_products에서 보완
         if not args.dry_run and inbound_merged:
             codes = list({r["product_code"] for r in inbound_merged})
@@ -926,39 +938,26 @@ def main() -> None:
                     if (r.get("total_price") or 0) <= 0 and (r.get("unit_cost") or 0) > 0:
                         r["total_price"] = round(r["quantity"] * r["unit_cost"], 2)
 
-            if not args.dry_run:
-                n_del = truncate_table(supabase, TABLE_STOCK, "product_code")
-                if n_del != 0:
-                    msg = f"기존 {n_del}행 삭제" if n_del > 0 else "기존 데이터 삭제"
-                    print(f"    {TABLE_STOCK}: {msg}")
             merged_sum = sum(float(r.get("total_price") or 0) for r in stock_merged)
-            # (product_code, dest_warehouse) 복합 PK 있으면 upsert, 없으면 product_code별 합산 후 insert
-            try:
-                n = upsert_batch(supabase, TABLE_STOCK, stock_merged, ["product_code", "dest_warehouse"], args.dry_run)
-                print(f"    {TABLE_STOCK}: {n}건 upsert (창고별 {len(stock_merged)}건, 합계 {merged_sum:,.0f}원)")
-            except Exception as e:
-                err = str(e).lower()
-                if "on conflict" in err or "unique" in err or "constraint" in err or "pgrst" in err:
-                    # 복합 PK 미적용: product_code별 합산 후 insert (dest_warehouse=제이에스로 통합)
-                    print(f"    ⚠ (product_code, dest_warehouse) 복합 PK 없음 → 창고 구분 없이 제이에스로 통합 저장")
-                    print(f"    → Supabase SQL Editor에서 scripts/migrate_snapshot_channel_pk.sql 실행 후 재동기화하면 창고별 저장됩니다.")
-                    fallback: dict[str, dict] = {}
-                    for r in stock_merged:
-                        code = r["product_code"]
-                        if code not in fallback:
-                            fallback[code] = dict(r)
-                            fallback[code]["dest_warehouse"] = "제이에스"
-                            fallback[code]["quantity"] = 0
-                            fallback[code]["total_price"] = 0.0
-                        fallback[code]["quantity"] += r["quantity"]
-                        fallback[code]["total_price"] = (fallback[code].get("total_price") or 0) + float(r.get("total_price") or 0)
-                    for x in fallback.values():
-                        x["total_price"] = round(x.get("total_price") or 0, 2)
-                    stock_fallback = list(fallback.values())
-                    n = insert_batch(supabase, TABLE_STOCK, stock_fallback, args.dry_run)
-                    print(f"    {TABLE_STOCK}: {n}건 삽입 완료")
-                else:
+            if not args.dry_run:
+                today = datetime.now().strftime("%Y-%m-%d")
+                for r in stock_merged:
+                    r.setdefault("snapshot_date", today)
+                try:
+                    res = supabase.rpc(
+                        "replace_stock_snapshot",
+                        {"p_rows": stock_merged, "p_snapshot_date": today},
+                    ).execute()
+                    n = res.data.get("inserted", len(stock_merged)) if isinstance(res.data, dict) else len(stock_merged)
+                    print(f"    {TABLE_STOCK}: 당월만 교체 RPC 완료 {n}건 (창고별 {len(stock_merged)}건, 합계 {merged_sum:,.0f}원)")
+                except Exception as e:
+                    err = str(e).lower()
+                    if "replace_stock_snapshot" in err or "function" in err or "rpc" in err:
+                        print(f"    ⚠ RPC 없음 → Supabase SQL Editor에서 scripts/replace_stock_snapshot_rpc.sql 실행 후 재시도")
+                        raise
                     raise
+            else:
+                print(f"    [DRY-RUN] {TABLE_STOCK}: {len(stock_merged)}건 upsert 예정 (합계 {merged_sum:,.0f}원)")
         except TableNotFoundError as e:
             _exit_missing_tables(e.table)
 
@@ -972,13 +971,12 @@ def main() -> None:
                 agg[k]["quantity"] = 0
             agg[k]["quantity"] += r["quantity"]
         outbound_merged = list(agg.values())
-        # 수불 교체: 해당 기간 기존 출고 삭제 후 upsert (마지막 수불로 전체 교체)
+        month_start, month_end = get_current_month_range()
+        # 수불 교체: 당월만 삭제 후 upsert (당월 이전 데이터는 유지)
         if not args.dry_run and outbound_merged:
-            dates = [r["outbound_date"][:10] for r in outbound_merged if r.get("outbound_date")]
-            if dates:
-                d_min, d_max = min(dates), max(dates)
-                if delete_by_date_range(supabase, TABLE_OUTBOUND, "outbound_date", d_min, d_max, args.dry_run):
-                    print(f"    {TABLE_OUTBOUND}: {d_min}~{d_max} 기존 삭제 후")
+            if delete_by_date_range(supabase, TABLE_OUTBOUND, "outbound_date", month_start, month_end, args.dry_run):
+                print(f"    {TABLE_OUTBOUND}: 당월 {month_start}~{month_end} 기존 삭제 후")
+        outbound_merged = [r for r in outbound_merged if month_start <= (r.get("outbound_date") or "")[:10] <= month_end]
         # unit_price/total_price가 0이면 inventory_products에서 보완
         if not args.dry_run and outbound_merged:
             codes = list({r["product_code"] for r in outbound_merged})

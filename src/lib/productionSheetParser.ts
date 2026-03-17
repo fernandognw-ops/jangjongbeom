@@ -359,7 +359,8 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
-    const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
+    let idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
+    if (idxQty < 0) idxQty = findCol(h, ["입고수량"]);
     const idxDate = findCol(h, ["입고일자", "입고일", "일자"]);
     const idxCat = findCol(h, ["품목구분", "품목", "카테고리"], { exclude: ["품목코드", "품번"] });
     const idxName = findCol(h, ["제품명", "품목명", "품명"]);
@@ -425,7 +426,8 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
-    const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
+    let idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
+    if (idxQty < 0) idxQty = findCol(h, ["출고수량"]);
     const idxDate = findCol(h, ["출고일자", "출고일", "일자"]);
     const idxSc = findCol(h, ["매출구분", "판매처"]);
     const idxCat = findCol(h, ["품목구분", "품목", "카테고리"], { exclude: ["품목코드", "품번"] });
@@ -492,9 +494,12 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
-    const idxQty = findCol(h, ["수량", "재고", "재고수량"], { exclude: ["입수량"] });
+    let idxQty = findCol(h, ["수량", "재고수량"], { exclude: ["입수량", "재고금액", "재고원가", "금액", "원가", "일자", "날짜"] });
+    if (idxQty < 0) idxQty = findCol(h, ["재고"], { exclude: ["재고금액", "재고원가"] });
     const idxCost = findCol(h, ["단가", "원가", "제품원가표", "재고원가"]);
-    const idxAmount = findCol(h, ["재고 금액", "재고금액", "재고원가"]);
+    // 재고금액(합계) 우선. 재고원가는 단가일 수 있으므로 exclude. Python integrated_sync와 동일
+    let idxAmount = findCol(h, ["재고 금액", "재고금액"], { exclude: ["재고원가"] });
+    if (idxAmount < 0) idxAmount = findCol(h, ["재고원가"]);
     const idxWh = findCol(h, ["창고명", "창고", "보관장소", "입고처", "warehouse"]);
 
     if (idxCode < 0 || idxQty < 0) {

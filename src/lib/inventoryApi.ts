@@ -70,6 +70,8 @@ export interface StockSnapshotRow {
   snapshot_date: string;
   /** 품목구분 (마스크, 생활용품, 섬유유연제, 액상세제, 캡슐세제 등) */
   category?: string | null;
+  /** 재고금액 (수량×단가 합계). 재고원가(unit_cost)와 구분. 대시보드 총재고금액에 사용 */
+  total_price?: number | null;
 }
 
 export interface InventoryInbound {
@@ -122,7 +124,7 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     let stockSnapshot: StockSnapshotRow[] = [];
     const [currentRes, snapshotRes] = await Promise.all([
       supabase.from(TABLE_CURRENT_PRODUCTS).select("product_code").order("product_code").limit(10000),
-      supabase.from(TABLE_STOCK_SNAPSHOT).select("product_code,quantity,unit_cost,snapshot_date,category").limit(50000),
+      supabase.from(TABLE_STOCK_SNAPSHOT).select("product_code,quantity,unit_cost,total_price,snapshot_date,category").limit(50000),
     ]);
     currentCodes = currentRes.error ? [] : (currentRes.data ?? []).map((r: { product_code: string }) => r.product_code);
     const allSnapshot = snapshotRes.error ? [] : ((snapshotRes.data ?? []) as StockSnapshotRow[]);
@@ -260,37 +262,41 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
   }
 }
 
-/** product_code당 최신 snapshot_date 1건만 사용 */
+/** product_code당 최신 snapshot_date 기준 집계. total_price 합산(재고금액) 포함 */
 export function getLatestSnapshotByProduct(
   snapshot: StockSnapshotRow[] | null
-): { stock: Record<string, number>; cost: Record<string, number>; cutoffDate: string } {
+): { stock: Record<string, number>; cost: Record<string, number>; totalPriceByCode: Record<string, number>; cutoffDate: string } {
   const stock: Record<string, number> = {};
   const cost: Record<string, number> = {};
+  const totalPriceByCode: Record<string, number> = {};
   let maxDate = "1970-01-01";
   if (!snapshot || snapshot.length === 0) {
-    return { stock, cost, cutoffDate: maxDate };
+    return { stock, cost, totalPriceByCode, cutoffDate: maxDate };
   }
-  const byCode = new Map<string, { qty: number; cost: number; date: string }>();
+  const byCode = new Map<string, { qty: number; cost: number; totalPrice: number; date: string }>();
   for (const row of snapshot) {
     const r = row as unknown as Record<string, unknown>;
     const code = normalizeCode(r.product_code ?? row.product_code) || String(r.product_code ?? row.product_code ?? "").trim();
     const date = ((r.snapshot_date ?? row.snapshot_date) ?? "").toString().slice(0, 10);
     const qty = toNumber(r.quantity ?? row.quantity);
     const c = toNumber(r.unit_cost ?? row.unit_cost);
+    const tp = toNumber(r.total_price ?? (row as StockSnapshotRow).total_price);
     if (date > maxDate) maxDate = date;
     const existing = byCode.get(code);
     if (!existing) {
-      byCode.set(code, { qty, cost: c, date });
+      byCode.set(code, { qty, cost: c, totalPrice: tp, date });
     } else {
       existing.qty += qty;
+      existing.totalPrice += tp;
       if (date >= existing.date && c > 0 && c <= MAX_UNIT_COST_KRW) existing.cost = c;
     }
   }
   Array.from(byCode.entries()).forEach(([code, v]) => {
     stock[code] = v.qty;
     if (v.cost > 0 && v.cost <= MAX_UNIT_COST_KRW) cost[code] = v.cost;
+    if (v.totalPrice > 0) totalPriceByCode[code] = v.totalPrice;
   });
-  return { stock, cost, cutoffDate: maxDate };
+  return { stock, cost, totalPriceByCode, cutoffDate: maxDate };
 }
 
 /** inventory_stock_snapshot.quantity 우선 사용 (메인 화면 현재고) - 하위 호환 */
@@ -435,13 +441,15 @@ export function mergeStockWithSnapshot(
   return result;
 }
 
-/** 총 재고 금액 = 최신 스냅샷 기준 (수량 × 단가). 가장 최근 업로드된 수불 데이터만 사용 */
+/** 총 재고 금액 = SUM(total_price) 우선. total_price 없으면 수량×단가. 재고금액(재고금액) 사용, 재고원가(unit_cost)와 구분 */
 export function computeTotalValueFromSnapshot(
   snapshot: StockSnapshotRow[] | null,
   products?: InventoryProduct[]
 ): number {
   if (!snapshot || snapshot.length === 0) return 0;
-  const { stock, cost } = getLatestSnapshotByProduct(snapshot);
+  const { stock, cost, totalPriceByCode } = getLatestSnapshotByProduct(snapshot);
+  const sumFromTotalPrice = Object.values(totalPriceByCode).reduce((a, b) => a + b, 0);
+  if (sumFromTotalPrice > 0) return Math.round(sumFromTotalPrice);
   const codeToCost = new Map<string, number>();
   if (products) {
     for (const p of products) {

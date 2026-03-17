@@ -24,7 +24,18 @@ function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
   return "general";
 }
 
-/** Python integrated_sync와 동일: 해당 기간 데이터 삭제 후 upsert */
+/** 당월(현재 월) 첫날~마지막날. 당월 이전 데이터는 수정하지 않음 */
+function getCurrentMonthRange(): [string, string] {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const first = `${y}-${String(m).padStart(2, "0")}-01`;
+  const lastDay = new Date(y, m, 0).getDate();
+  const last = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  return [first, last];
+}
+
+/** 해당 기간 데이터 삭제 (당월만 삭제 시 사용) */
 async function deleteByDateRange(
   supabase: SupabaseClient,
   table: string,
@@ -180,13 +191,12 @@ export async function POST(request: Request) {
           });
         }
       }
-      const rows = Array.from(merged.values());
-      const dates = rows.map((r) => r.inbound_date.slice(0, 10)).filter(Boolean);
-      if (dates.length > 0) {
-        const dMin = dates.reduce((a, b) => (a < b ? a : b));
-        const dMax = dates.reduce((a, b) => (a > b ? a : b));
-        await deleteByDateRange(supabase, TABLE_INBOUND, "inbound_date", dMin, dMax);
-      }
+      const [monthStart, monthEnd] = getCurrentMonthRange();
+      await deleteByDateRange(supabase, TABLE_INBOUND, "inbound_date", monthStart, monthEnd);
+      const rows = Array.from(merged.values()).filter((r) => {
+        const d = r.inbound_date.slice(0, 10);
+        return d >= monthStart && d <= monthEnd;
+      });
       const codes = [...new Set(rows.map((r) => r.product_code))];
       const costRes = await supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes);
       const costMap = new Map<string, number>();
@@ -252,11 +262,7 @@ export async function POST(request: Request) {
           snapshot_date: today,
         };
       });
-      try {
-        await supabase.from(TABLE_SNAPSHOT).delete().neq("product_code", "__NONE__");
-      } catch (truncErr) {
-        console.warn("[production-sheet-upload] 재고 기존 삭제 실패 (계속 진행):", truncErr);
-      }
+      // RPC가 당월만 삭제 후 INSERT. 당월 이전 데이터는 유지
       const { error: rpcError } = await supabase.rpc("replace_stock_snapshot", {
         p_rows: snapshotRows,
         p_snapshot_date: today,
@@ -314,13 +320,12 @@ export async function POST(request: Request) {
           });
         }
       }
-      const rows = Array.from(merged.values());
-      const dates = rows.map((r) => r.outbound_date.slice(0, 10)).filter(Boolean);
-      if (dates.length > 0) {
-        const dMin = dates.reduce((a, b) => (a < b ? a : b));
-        const dMax = dates.reduce((a, b) => (a > b ? a : b));
-        await deleteByDateRange(supabase, TABLE_OUTBOUND, "outbound_date", dMin, dMax);
-      }
+      const [monthStart, monthEnd] = getCurrentMonthRange();
+      await deleteByDateRange(supabase, TABLE_OUTBOUND, "outbound_date", monthStart, monthEnd);
+      const rows = Array.from(merged.values()).filter((r) => {
+        const d = r.outbound_date.slice(0, 10);
+        return d >= monthStart && d <= monthEnd;
+      });
       const codes = [...new Set(rows.map((r) => r.product_code))];
       const costRes = await supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes);
       const costMap = new Map<string, number>();
