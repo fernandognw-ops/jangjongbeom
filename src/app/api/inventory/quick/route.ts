@@ -38,11 +38,31 @@ export async function GET() {
   const supabase = createClient(url, key);
 
   try {
+    const { data: maxDateRes, error: maxErr } = await supabase
+      .from("inventory_stock_snapshot")
+      .select("snapshot_date")
+      .order("snapshot_date", { ascending: false })
+      .limit(1);
+
+    if (maxErr || !maxDateRes?.length) {
+      return NextResponse.json(
+        { items: [], totalValue: 0, totalQuantity: 0, totalSku: 0, productCount: 0, error: maxErr?.message ?? "no_snapshot" },
+        { status: 200 }
+      );
+    }
+
+    const maxDate = (maxDateRes[0] as { snapshot_date?: string }).snapshot_date?.slice(0, 10) ?? "";
+    if (!maxDate) {
+      return NextResponse.json(
+        { items: [], totalValue: 0, totalQuantity: 0, totalSku: 0, productCount: 0, error: "invalid_date" },
+        { status: 200 }
+      );
+    }
+
     const { data, error } = await supabase
       .from("inventory_stock_snapshot")
       .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,category,snapshot_date")
-      .order("snapshot_date", { ascending: false })
-      .limit(10000);
+      .eq("snapshot_date", maxDate);
 
     if (error) {
       return NextResponse.json(
@@ -51,7 +71,7 @@ export async function GET() {
       );
     }
 
-    const allRows = (data ?? []) as Array<{
+    const rows = (data ?? []) as Array<{
       product_code?: string;
       product_name?: string;
       quantity?: unknown;
@@ -62,14 +82,6 @@ export async function GET() {
       category?: string;
       snapshot_date?: string;
     }>;
-
-    const maxDate = allRows.length > 0
-      ? allRows.reduce((max, r) => {
-          const d = (r.snapshot_date ?? "").slice(0, 10);
-          return d > max ? d : max;
-        }, "1970-01-01")
-      : "";
-    const rows = maxDate ? allRows.filter((r) => (r.snapshot_date ?? "").slice(0, 10) === maxDate) : allRows;
 
     const codesNeedingFallback = new Set<string>();
     for (const r of rows) {

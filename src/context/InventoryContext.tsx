@@ -430,7 +430,11 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       if (invData?.outbound) setSupabaseOutbound(invData.outbound);
 
       // KPI API가 최신 snapshot_date 기준 단일 출처 → 항상 우선 적용 (데이터 새로고침 시 갱신 보장)
-      const kpiDataRes = kpiRes as { productCount?: number; totalValue?: number; totalQuantity?: number; totalSku?: number; error?: string } | null;
+      let kpiDataRes = kpiRes as { productCount?: number; totalValue?: number; totalQuantity?: number; totalSku?: number; error?: string } | null;
+      if (!kpiDataRes || kpiDataRes.error) {
+        const retry = await fetch(`/api/inventory/kpi?${cacheBust}&retry=1`, opts).then((r) => (r.ok ? r.json() : null));
+        kpiDataRes = retry as typeof kpiDataRes;
+      }
       if (kpiDataRes && !kpiDataRes.error) {
         setKpiData({
           productCount: kpiDataRes.productCount ?? 0,

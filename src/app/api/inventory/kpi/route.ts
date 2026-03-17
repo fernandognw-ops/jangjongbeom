@@ -38,11 +38,33 @@ export async function GET() {
   const supabase = createClient(url, key);
 
   try {
+    // 1. 최신 snapshot_date만 조회 (limit 없이 해당 날짜만 필터)
+    const { data: maxDateRes, error: maxErr } = await supabase
+      .from(TABLE_SNAPSHOT)
+      .select("snapshot_date")
+      .order("snapshot_date", { ascending: false })
+      .limit(1);
+
+    if (maxErr || !maxDateRes?.length) {
+      log("KPI 에러 (날짜 조회)", { error: maxErr?.message ?? "empty" });
+      return NextResponse.json(
+        { productCount: 0, totalValue: 0, totalQuantity: 0, totalSku: 0, error: maxErr?.message ?? "no_snapshot" },
+        { status: 200, headers: NO_CACHE }
+      );
+    }
+
+    const maxDate = (maxDateRes[0] as { snapshot_date?: string }).snapshot_date?.slice(0, 10) ?? "";
+    if (!maxDate) {
+      return NextResponse.json(
+        { productCount: 0, totalValue: 0, totalQuantity: 0, totalSku: 0, error: "invalid_date" },
+        { status: 200, headers: NO_CACHE }
+      );
+    }
+
     const { data, error } = await supabase
       .from(TABLE_SNAPSHOT)
       .select("product_code,quantity,pack_size,total_price,unit_cost,dest_warehouse,snapshot_date")
-      .order("snapshot_date", { ascending: false })
-      .limit(50000);
+      .eq("snapshot_date", maxDate);
 
     if (error) {
       log("KPI 에러", { error: error.message });
@@ -52,7 +74,7 @@ export async function GET() {
       );
     }
 
-    const allRows = (data ?? []) as Array<{
+    const rows = (data ?? []) as Array<{
       product_code?: string;
       quantity?: unknown;
       pack_size?: unknown;
@@ -61,14 +83,6 @@ export async function GET() {
       dest_warehouse?: string;
       snapshot_date?: string;
     }>;
-
-    const maxDate = allRows.length > 0
-      ? allRows.reduce((max, r) => {
-          const d = (r.snapshot_date ?? "").slice(0, 10);
-          return d > max ? d : max;
-        }, "1970-01-01")
-      : "";
-    const rows = maxDate ? allRows.filter((r) => (r.snapshot_date ?? "").slice(0, 10) === maxDate) : allRows;
 
     const codes = [...new Set(rows.map((r) => String(r.product_code ?? "").trim()).filter(Boolean))];
     const packByCode = new Map<string, number>();

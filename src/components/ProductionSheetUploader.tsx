@@ -79,7 +79,7 @@ export function ProductionSheetUploader() {
         }
 
         setStatus("success");
-        setProgress("대시보드 새로고침 중…");
+        setProgress("DB 반영 대기 후 새로고침…");
         const parts: string[] = [];
         if ((json.rawProducts ?? 0) > 0) parts.push(`품목 ${json.rawProducts}건`);
         if ((json.inbound?.inserted ?? 0) > 0) parts.push(`입고 ${json.inbound.inserted}건`);
@@ -88,6 +88,8 @@ export function ProductionSheetUploader() {
         setMessage(`DB 갱신 완료. ${parts.join(", ")}`);
         setFile(null);
         try {
+          // DB 커밋·가시성 확보를 위해 잠시 대기 후 refresh
+          await new Promise((r) => setTimeout(r, 800));
           await refresh();
         } catch (e) {
           console.warn("[업로드] 대시보드 새로고침 실패:", e);
