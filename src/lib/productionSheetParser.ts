@@ -1,19 +1,19 @@
 /**
- * 생산수불현황.xlsx 파싱 (0316 형식)
+ * 생산수불현황.xlsx 파싱
  * 입고·출고·재고 시트 → Supabase 업로드용 데이터
  *
- * 규칙 (0316_생산수불현황.xlsx):
- * - 4행: 헤더 (품목코드, 수량, 입고일자/출고일자 등)
- * - 5행: 서브헤더 (일반/쿠팡 등)
- * - 6행부터: 실제 데이터
+ * 규칙:
+ * - 입고/출고: 4행(Index 3)부터 데이터 시작
+ * - 날짜: cellDates, Excel serial, "25-10" 형식 지원
+ * - 빈 품목코드/날짜 행은 건너뜀
  */
 
 import * as XLSX from "xlsx";
 
 const REQUIRED_SHEETS = ["입고", "출고", "재고"] as const;
 
-/** 헤더 다음 서브헤더 1행 건너뛰고 데이터 시작 */
-const DATA_ROW_OFFSET = 2;
+/** 입고/출고 시트: 4행(Index 3)부터 실제 데이터가 시작 */
+const DATA_START_ROW = 3;
 
 function findCol(
   row: unknown[],
@@ -24,8 +24,7 @@ function findCol(
   const excl = (opts?.exclude ?? []).map(normalize);
   for (let i = 0; i < row.length; i++) {
     const v = normalize(String(row[i] ?? ""));
-    if (!v) continue;
-    if (excl.some((e) => v === e)) continue;
+    if (excl.some((e) => v.includes(e) || e.includes(v))) continue;
     for (const n of names) {
       const nv = normalize(n);
       if (v === nv || v.includes(nv) || nv.includes(v)) return i;
@@ -55,16 +54,14 @@ function parseDate(val: unknown, year = new Date().getFullYear()): string | null
   if (val == null) return null;
 
   // 1. Date 객체 (cellDates: true) - Excel 수식입력줄 실제 날짜 최우선
-  // Vercel 등 UTC 서버에서 한국 날짜(2026-03-02 00:00 KST)가 2026-03-01 15:00 UTC로 해석되는 문제 방지
   if (typeof val === "object" && "getFullYear" in val) {
     const d = val as Date;
-    const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
-    let y = kst.getUTCFullYear();
+    let y = d.getFullYear();
     if (y < 2000 || y > 2030) y = year;
-    return `${y}-${String(kst.getUTCMonth() + 1).padStart(2, "0")}-${String(kst.getUTCDate()).padStart(2, "0")}`;
+    return `${y}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
 
-  // 2. Excel serial number - 수식입력줄 실제 날짜 데이터 (Python과 동일)
+  // 2. Excel serial number - 수식입력줄 실제 날짜 데이터
   if (typeof val === "number" && Number.isFinite(val) && val > 0) {
     try {
       const parsed = XLSX.SSF?.parse_date_code?.(val);
@@ -75,10 +72,9 @@ function parseDate(val: unknown, year = new Date().getFullYear()): string | null
       }
       const excelEpoch = new Date(1899, 11, 30);
       const jsDate = new Date(excelEpoch.getTime() + val * 86400 * 1000);
-      const kst = new Date(jsDate.getTime() + 9 * 60 * 60 * 1000);
-      let y = kst.getUTCFullYear();
+      let y = jsDate.getFullYear();
       if (y < 2000 || y > 2030) y = year;
-      return `${y}-${String(kst.getUTCMonth() + 1).padStart(2, "0")}-${String(kst.getUTCDate()).padStart(2, "0")}`;
+      return `${y}-${String(jsDate.getMonth() + 1).padStart(2, "0")}-${String(jsDate.getDate()).padStart(2, "0")}`;
     } catch {
       return null;
     }
@@ -142,75 +138,38 @@ function toSalesChannel(val: unknown): "coupang" | "general" {
   return "general";
 }
 
-/** Python integrated_sync와 동일: 창고명 정규화 */
-function normalizeWarehouse(w: string): string {
-  const s = String(w ?? "").trim();
-  if (!s) return "제이에스";
-  if (/테이칼튼1공장|테이칼튼1/.test(s)) return "테이칼튼1공장";
-  if (/테이칼튼/.test(s)) return "테이칼튼";
-  if (/제이에스/.test(s)) return "제이에스";
-  if (/컬리/.test(s)) return "컬리";
-  return "제이에스";
-}
-
-/** 입고에는 sales_channel 미사용 (출고만 사용) - Python integrated_sync와 동일 컬럼 */
+/** 입고에는 sales_channel 미사용 (출고만 사용) */
 export interface InboundRow {
   product_code: string;
-  product_name?: string;
   quantity: number;
   inbound_date: string;
+  /** 품목구분/품목 (Excel에 있으면 저장) */
   category?: string;
-  pack_size?: number;
-  dest_warehouse?: string;
-  unit_price?: number;
-  total_price?: number;
 }
 
 export interface OutboundRow {
   product_code: string;
-  product_name?: string;
   quantity: number;
   outbound_date: string;
   sales_channel: "coupang" | "general";
+  /** 품목구분/품목 (Excel에 있으면 저장) */
   category?: string;
-  pack_size?: number;
-  dest_warehouse?: string;
-  unit_price?: number;
-  total_price?: number;
 }
 
-/** Python integrated_sync와 동일: (product_code, dest_warehouse) 집계 */
 export interface StockSnapshotRow {
   product_code: string;
   quantity: number;
   unit_cost: number;
-  dest_warehouse?: string;
-  total_price?: number;
-  /** 입수량 (SKU = quantity/pack_size) */
-  pack_size?: number;
-}
-
-/** Python integrated_sync rawdata와 동일: inventory_products upsert용 */
-export interface RawProductRow {
-  product_code: string;
-  product_name: string;
-  unit_cost: number;
-  category: string;
-  pack_size: number;
 }
 
 export interface ProductionSheetParseResult {
   ok: true;
-  /** rawdata 시트 (있으면) → inventory_products */
-  rawProducts: RawProductRow[];
   inbound: InboundRow[];
   outbound: OutboundRow[];
   stockSnapshot: StockSnapshotRow[];
   currentProductCodes: string[];
   /** 파일명에서 추출한 연도 (25년/26년 등) */
   yearInferred?: number;
-  /** 업로드 대상 날짜 (YYYY-MM-DD). 재고일자 또는 파일명(예: 0317)에서 추출. 당월 삭제·교체 기준 */
-  targetSnapshotDate?: string;
 }
 
 export interface ProductionSheetParseError {
@@ -251,22 +210,6 @@ function yearFromFilename(filename: string | undefined): number {
   return new Date().getFullYear();
 }
 
-/** 파일명에서 MMDD 추출 (예: 0317_생산수불현황.xlsx → 03-17, 0315 → 03-15) */
-function dateFromFilename(filename: string | undefined, year: number): string | null {
-  if (!filename) return null;
-  const name = filename.split(/[/\\]/).pop() ?? "";
-  // 0317, 0315, 317, 315 등 패턴
-  const m = name.match(/^0?(\d{1,2})0?(\d{2})/);
-  if (m) {
-    const month = parseInt(m[1], 10);
-    const day = parseInt(m[2], 10);
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    }
-  }
-  return null;
-}
-
 function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): ProductionSheetParseOutput {
   const sheetNames = wb.SheetNames ?? [];
   const year = yearFromFilename(filename);
@@ -291,137 +234,42 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     return found ? wb.Sheets[found] : null;
   };
 
-  const findSheetByName = (want: string, fallbacks?: string[]): string | null => {
-    const norm = (s: string) => s.replace(/\s/g, "").toLowerCase();
-    const w = norm(want);
-    const found = sheetNames.find((s) => norm(s) === w);
-    if (found) return found;
-    for (const orig of sheetNames) {
-      if (norm(orig).includes(w) || w.includes(norm(orig))) return orig;
-    }
-    if (fallbacks) {
-      for (const fb of fallbacks) {
-        const fbNorm = norm(fb);
-        for (const orig of sheetNames) {
-          if (norm(orig).includes(fbNorm) || fbNorm.includes(norm(orig))) return orig;
-        }
-      }
-    }
-    return null;
-  };
-
-  /** Python integrated_sync와 동일: rawdata 시트 → inventory_products (있으면) */
-  const rawProducts: RawProductRow[] = [];
-  const rawSheetName = findSheetByName("rawdata", ["제품현황_일반", "제품현황_상세", "제품현황", "품절관리_일반", "품절관리"]);
-  if (rawSheetName) {
-    const rawSheet = wb.Sheets[rawSheetName];
-    if (rawSheet) {
-      const data = XLSX.utils.sheet_to_json(rawSheet, { header: 1, defval: "" }) as unknown[][];
-      const headerRow = findHeaderRow(rawSheet, [
-        ["품목코드", "품번", "제품코드", "SKU"],
-        ["품목명", "제품명", "품명"],
-      ]);
-      if (headerRow >= 0) {
-        const h = (data[headerRow] ?? []) as unknown[];
-        const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
-        const idxName = findCol(h, ["품목명", "제품명", "품명"]);
-        const idxCost = findCol(h, ["제품 원가표(개당)", "제품원가표(개당)", "제품원가표", "원가", "단가"]);
-        const idxCat = findCol(h, ["품목", "품목구분", "카테고리"], { exclude: ["품목코드", "품번"] });
-        const idxPack = findCol(h, ["입수량", "입수"]);
-        if (idxCode >= 0) {
-          const dataStart = headerRow + 1;
-          for (let r = dataStart; r < data.length; r++) {
-            const row = (data[r] ?? []) as unknown[];
-            const code = String(row[idxCode] ?? "").trim();
-            if (!code || code.toLowerCase() === "nan") continue;
-            const digits = (code.match(/\d/g) ?? []).length;
-            if (code.length < 5 || digits < code.length * 0.5) continue;
-            const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
-            const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
-            const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
-            const pack = idxPack >= 0 ? safeInt(row[idxPack]) || 1 : 1;
-            rawProducts.push({
-              product_code: code,
-              product_name: name || code,
-              unit_cost: cost,
-              category: cat || "기타",
-              pack_size: pack > 0 ? pack : 1,
-            });
-          }
-          if (rawProducts.length > 0) {
-            console.log(`[생산수불현황] rawdata: ${rawProducts.length}건`);
-          }
-        }
-      }
-    }
-  }
-
   const inbound: InboundRow[] = [];
   const outbound: OutboundRow[] = [];
   const stockSnapshot: StockSnapshotRow[] = [];
   const currentProductCodes = new Set<string>();
-  /** 업로드 대상 날짜 (재고일자/파일명에서 추출). 당월 삭제·교체 기준 */
-  let targetSnapshotDate: string = new Date().toISOString().slice(0, 10);
 
-  // 입고 시트 (4행 헤더, 6행부터 데이터)
+  // 입고 시트 (4행 Index 3부터 데이터)
   const inSheet = getSheet("입고");
   if (inSheet) {
     const data = XLSX.utils.sheet_to_json(inSheet, { header: 1, defval: "" }) as unknown[][];
-    const headerRow = findHeaderRow(inSheet, [
-      ["품목코드", "품번", "제품코드", "SKU"],
-      ["수량"],
-      ["입고일자", "입고일", "일자"],
-    ]);
-    if (headerRow < 0) {
-      return {
-        ok: false,
-        message: "입고 시트: 품목코드, 수량, 입고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
-        formatError: "입고",
-      };
-    }
+    const headerRow = Math.min(DATA_START_ROW - 1, 2);
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
-    let idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
-    if (idxQty < 0) idxQty = findCol(h, ["입고수량"]);
+    const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
     const idxDate = findCol(h, ["입고일자", "입고일", "일자"]);
-    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"], { exclude: ["품목코드", "품번"] });
-    const idxName = findCol(h, ["제품명", "품목명", "품명"]);
-    const idxPack = findCol(h, ["입수량", "입수"]);
-    const idxWh = findCol(h, ["입고처", "창고명", "dest_warehouse"]);
-    const idxUnit = findCol(h, ["원가", "단가"]);
-    const idxTotal = findCol(h, ["합계 원가", "합계원가", "원가합계", "합계"], { exclude: ["원가"] });
+    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"]);
 
     if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
       return {
         ok: false,
-        message: "입고 시트: 품목코드, 수량, 입고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
+        message: "입고 시트: 품목코드, 수량, 입고일자 열이 필요합니다. (3행 헤더, 4행부터 데이터)",
         formatError: "입고",
       };
     }
 
-    const dataStartRow = headerRow + DATA_ROW_OFFSET;
-    for (let r = dataStartRow; r < data.length; r++) {
+    for (let r = DATA_START_ROW; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
       const code = String(row[idxCode] ?? "").trim();
       const qty = safeInt(row[idxQty]);
       const dateStr = parseDate(row[idxDate], year);
       if (!code || code.toLowerCase() === "nan" || qty <= 0 || !dateStr) continue;
       const category = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : undefined;
-      const productName = idxName >= 0 ? String(row[idxName] ?? "").trim() : undefined;
-      const packSize = idxPack >= 0 ? safeInt(row[idxPack]) || 1 : undefined;
-      const destWarehouse = idxWh >= 0 ? String(row[idxWh] ?? "").trim() : undefined;
-      const unitPrice = idxUnit >= 0 ? safeFloat(row[idxUnit]) : undefined;
-      const totalPrice = idxTotal >= 0 ? safeFloat(row[idxTotal]) : undefined;
       inbound.push({
         product_code: code,
         quantity: qty,
         inbound_date: dateStr,
         ...(category && { category }),
-        ...(productName && { product_name: productName }),
-        ...(packSize && packSize > 0 && { pack_size: packSize }),
-        ...(destWarehouse && { dest_warehouse: destWarehouse }),
-        ...(unitPrice != null && unitPrice > 0 && { unit_price: unitPrice }),
-        ...(totalPrice != null && totalPrice > 0 && { total_price: totalPrice }),
       });
     }
     if (inbound.length > 0) {
@@ -430,67 +278,39 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
   }
 
-  // 출고 시트 (4행 헤더, 6행부터 데이터)
+  // 출고 시트 (4행 Index 3부터 데이터)
   const outSheet = getSheet("출고");
   if (outSheet) {
     const data = XLSX.utils.sheet_to_json(outSheet, { header: 1, defval: "" }) as unknown[][];
-    const headerRow = findHeaderRow(outSheet, [
-      ["품목코드", "품번", "제품코드", "SKU"],
-      ["수량"],
-      ["출고일자", "출고일", "일자"],
-    ]);
-    if (headerRow < 0) {
-      return {
-        ok: false,
-        message: "출고 시트: 품목코드, 수량, 출고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
-        formatError: "출고",
-      };
-    }
+    const headerRow = Math.min(DATA_START_ROW - 1, 2);
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
-    let idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
-    if (idxQty < 0) idxQty = findCol(h, ["출고수량"]);
+    const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
     const idxDate = findCol(h, ["출고일자", "출고일", "일자"]);
     const idxSc = findCol(h, ["매출구분", "판매처"]);
-    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"], { exclude: ["품목코드", "품번"] });
-    const idxName = findCol(h, ["제품명", "품목명", "품명"]);
-    const idxPack = findCol(h, ["입수량", "입수"]);
-    const idxWh = findCol(h, ["출고처", "창고명", "dest_warehouse"]);
-    const idxUnit = findCol(h, ["원가", "단가"]);
-    const idxTotal = findCol(h, ["합계", "합계원가", "원가합계"], { exclude: ["원가", "단가", "출고금액"] });
+    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"]);
 
     if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
       return {
         ok: false,
-        message: "출고 시트: 품목코드, 수량, 출고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
+        message: "출고 시트: 품목코드, 수량, 출고일자 열이 필요합니다. (3행 헤더, 4행부터 데이터)",
         formatError: "출고",
       };
     }
 
-    const dataStartRow = headerRow + DATA_ROW_OFFSET;
-    for (let r = dataStartRow; r < data.length; r++) {
+    for (let r = DATA_START_ROW; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
       const code = String(row[idxCode] ?? "").trim();
       const qty = safeInt(row[idxQty]);
       const dateStr = parseDate(row[idxDate], year);
       if (!code || code.toLowerCase() === "nan" || qty <= 0 || !dateStr) continue;
       const category = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : undefined;
-      const productName = idxName >= 0 ? String(row[idxName] ?? "").trim() : undefined;
-      const packSize = idxPack >= 0 ? safeInt(row[idxPack]) || 1 : undefined;
-      const destWarehouse = idxWh >= 0 ? String(row[idxWh] ?? "").trim() : undefined;
-      const unitPrice = idxUnit >= 0 ? safeFloat(row[idxUnit]) : undefined;
-      const totalPrice = idxTotal >= 0 ? safeFloat(row[idxTotal]) : undefined;
       outbound.push({
         product_code: code,
         quantity: qty,
         outbound_date: dateStr,
         sales_channel: idxSc >= 0 ? toSalesChannel(row[idxSc]) : "general",
         ...(category && { category }),
-        ...(productName && { product_name: productName }),
-        ...(packSize && packSize > 0 && { pack_size: packSize }),
-        ...(destWarehouse && { dest_warehouse: destWarehouse }),
-        ...(unitPrice != null && unitPrice > 0 && { unit_price: unitPrice }),
-        ...(totalPrice != null && totalPrice > 0 && { total_price: totalPrice }),
       });
     }
     if (outbound.length > 0) {
@@ -516,14 +336,9 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
-    let idxQty = findCol(h, ["수량", "재고수량"], { exclude: ["입수량", "재고금액", "재고원가", "금액", "원가", "일자", "날짜"] });
-    if (idxQty < 0) idxQty = findCol(h, ["재고"], { exclude: ["재고금액", "재고원가"] });
+    const idxQty = findCol(h, ["수량", "재고", "재고수량"], { exclude: ["입수량"] });
     const idxCost = findCol(h, ["단가", "원가", "제품원가표", "재고원가"]);
-    // 재고금액(합계)만 사용. 재고원가는 단가이므로 amount로 사용 금지 (엑셀 검증값과 불일치 방지)
-    const idxAmount = findCol(h, ["재고 금액", "재고금액"], { exclude: ["재고원가"] });
-    const idxWh = findCol(h, ["창고명", "창고", "보관장소", "입고처", "warehouse"]);
-    const idxStockDate = findCol(h, ["재고일자", "재고 일자", "재고일", "일자"]);
-    const idxPack = findCol(h, ["입수량", "입수"]);
+    const idxAmount = findCol(h, ["재고 금액", "재고금액"]);
 
     if (idxCode < 0 || idxQty < 0) {
       return {
@@ -533,68 +348,33 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       };
     }
 
-    /** Python integrated_sync와 동일: (product_code, dest_warehouse)별 집계 */
-    const agg: Record<string, { qty: number; cost: number; totalPrice: number; pack: number }> = {};
-    const stockDates: string[] = [];
-    const stockDataStart = headerRow + DATA_ROW_OFFSET;
-    for (let r = stockDataStart; r < data.length; r++) {
+    const agg: Record<string, { qty: number; cost: number }> = {};
+    for (let r = headerRow + 1; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
       const code = String(row[idxCode] ?? "").trim();
       if (!code || code.toLowerCase() === "nan") continue;
       const digits = (code.match(/\d/g) ?? []).length;
       if (code.length < 5 || digits < code.length * 0.5) continue;
 
-      if (idxStockDate >= 0) {
-        const parsed = parseDate(row[idxStockDate], year);
-        if (parsed) stockDates.push(parsed);
-      }
-
       const qty = safeInt(row[idxQty]);
       let cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
       const amount = idxAmount >= 0 ? safeFloat(row[idxAmount]) : 0;
       if (cost <= 0 && amount > 0 && qty > 0) cost = amount / qty;
-      const totalPrice = amount > 0 ? amount : qty * cost;
 
-      const whRaw = idxWh >= 0 ? String(row[idxWh] ?? "").trim() : "";
-      const wh = whRaw ? normalizeWarehouse(whRaw) : "제이에스";
-      const key = `${code}|${wh}`;
-      const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 0;
-
-      if (!agg[key]) agg[key] = { qty: 0, cost: 0, totalPrice: 0, pack: 0 };
-      agg[key].qty += qty;
-      agg[key].cost = cost > 0 ? cost : agg[key].cost;
-      agg[key].totalPrice += totalPrice;
-      if (pack > 0 && agg[key].pack <= 0) agg[key].pack = pack;
+      if (!agg[code]) agg[code] = { qty: 0, cost: 0 };
+      agg[code].qty += qty;
+      agg[code].cost = cost > 0 ? cost : agg[code].cost;
     }
 
-    // 엑셀 재고일자 우선: 가장 많이 등장한 날짜 사용 (실제 데이터 기반)
-    if (stockDates.length > 0) {
-      const countByDate = new Map<string, number>();
-      for (const d of stockDates) {
-        countByDate.set(d, (countByDate.get(d) ?? 0) + 1);
-      }
-      const sorted = [...countByDate.entries()].sort((a, b) => b[1] - a[1]);
-      const mostCommon = sorted[0]?.[0];
-      const latest = [...new Set(stockDates)].sort().pop();
-      targetSnapshotDate = mostCommon ?? latest ?? dateFromFilename(filename, year) ?? targetSnapshotDate;
-    } else {
-      targetSnapshotDate = dateFromFilename(filename, year) ?? targetSnapshotDate;
-    }
-    for (const [key, { qty, cost, totalPrice, pack }] of Object.entries(agg)) {
-      const [code, wh] = key.split("|");
+    const today = new Date().toISOString().slice(0, 10);
+    for (const [code, { qty, cost }] of Object.entries(agg)) {
       currentProductCodes.add(code);
       stockSnapshot.push({
         product_code: code,
         quantity: qty,
         unit_cost: Math.round(cost * 100) / 100,
-        dest_warehouse: wh,
-        total_price: Math.round(totalPrice * 100) / 100,
-        ...(pack > 0 && { pack_size: pack }),
       });
     }
-  }
-  if (stockSnapshot.length === 0) {
-    targetSnapshotDate = dateFromFilename(filename, year) ?? targetSnapshotDate;
   }
 
   const sampleIn = inbound[0]?.inbound_date;
@@ -602,16 +382,13 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
   if (sampleIn || sampleOut) {
     console.log(`[생산수불현황] 최종 파싱된 날짜 예시: 입고 ${sampleIn ?? "-"}, 출고 ${sampleOut ?? "-"}`);
   }
-  console.log(`[생산수불현황] targetSnapshotDate: ${targetSnapshotDate}`);
 
   return {
     ok: true,
-    rawProducts,
     inbound,
     outbound,
     stockSnapshot,
     currentProductCodes: Array.from(currentProductCodes),
     yearInferred: year,
-    targetSnapshotDate,
   };
 }

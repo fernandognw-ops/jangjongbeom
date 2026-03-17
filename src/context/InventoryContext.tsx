@@ -8,8 +8,6 @@ import {
   useMemo,
   useState,
 } from "react";
-import { useRouter } from "next/navigation";
-import { createClient } from "@supabase/supabase-js";
 import type { StockMap, Transaction } from "@/lib/types";
 import {
   getShortageItems,
@@ -231,12 +229,8 @@ function computeProductCostMap(products: ProductMasterRow[]): Record<string, num
   return result;
 }
 
-/** Supabase 강제 모드: env 설정 시 항상 Supabase만 사용, localStorage로 전환 불가 */
-const FORCE_SUPABASE = typeof process !== "undefined" && !!(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "");
-
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const [useSupabaseInventory, setUseSupabaseInventory] = useState(FORCE_SUPABASE);
+  const [useSupabaseInventory, setUseSupabaseInventory] = useState(false);
   const [supabaseFetchStatus, setSupabaseFetchStatus] = useState<SupabaseFetchStatus>("idle");
   const [supabaseFetchError, setSupabaseFetchError] = useState<string | undefined>();
   const [isSupabaseLoading, setIsSupabaseLoading] = useState(true);
@@ -290,16 +284,16 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       const cacheBust = `_t=${Date.now()}`;
       const opts = { cache: "no-store" as RequestCache, headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" } };
 
-      // 1단계: quick(초고속) → 실패 시 snapshot?lite=1 (각 20초 타임아웃 - 콜드스타트·대용량 대비)
+      // 1단계: quick(초고속) → 실패 시 snapshot?lite=1 (각 5초 타임아웃)
       let snapshotRes: Response | null = null;
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 20_000);
+      const tid = setTimeout(() => ctrl.abort(), 5_000);
       try {
         snapshotRes = await fetch(`/api/inventory/quick?${cacheBust}`, { ...opts, signal: ctrl.signal });
       } catch {
         clearTimeout(tid);
         const ctrl2 = new AbortController();
-        const tid2 = setTimeout(() => ctrl2.abort(), 20_000);
+        const tid2 = setTimeout(() => ctrl2.abort(), 5_000);
         try {
           snapshotRes = await fetch(`/api/inventory/snapshot?lite=1&${cacheBust}`, { ...opts, signal: ctrl2.signal });
         } finally {
@@ -324,7 +318,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       const items = data.items ?? [];
       if (items.length === 0 && (data.totalValue ?? 0) === 0) {
         setSupabaseFetchStatus("empty_data");
-        if (!FORCE_SUPABASE) setUseSupabaseInventory(false);
+        setUseSupabaseInventory(false);
         setIsSupabaseLoading(false);
         return;
       }
@@ -391,6 +385,8 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setDailyVelocityByProduct(data.dailyVelocityByProduct ?? {});
       setStockByChannelFromApi(data.stockByChannel ?? { coupang: {}, general: {} });
       setStockByWarehouse((data as { stockByWarehouse?: Record<string, number> }).stockByWarehouse ?? {});
+      setSupabaseInbound([]);
+      setSupabaseOutbound([]);
       setSupabaseSummary(null);
       setUseSupabaseInventory(true);
       setSupabaseFetchStatus("ok");
@@ -400,136 +396,90 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         totalQuantity: data.totalQuantity ?? 0,
         totalSku: data.totalSku ?? 0,
       });
-
-      // 2단계: inbound/outbound + snapshot + category-trend + forecast + KPI 모두 await (대시보드 완전 갱신)
-      const [snapshotApiRes, inventoryRes, categoryTrendRes, forecastRes, kpiRes] = await Promise.all([
-        fetch(`/api/inventory/snapshot?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/inventory?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/category-trend?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/forecast?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/inventory/kpi?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
-      ]);
-
-      const fullData = snapshotApiRes as { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; stockByWarehouse?: Record<string, number> } | null;
-      if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
-      if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
-      if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
-      if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
-      if (fullData?.stockByWarehouse) setStockByWarehouse(fullData.stockByWarehouse);
-
-      const invData = inventoryRes as {
-        inbound?: InventoryInbound[];
-        outbound?: InventoryOutbound[];
-        stockSnapshot?: StockSnapshotRow[];
-        products?: InventoryProduct[];
-      } | null;
-      // inventory API가 DB 직접 조회 결과 → stockSnapshot/products/inbound/outbound 모두 반영 (대시보드 완전 갱신)
-      if (invData?.stockSnapshot && invData.stockSnapshot.length > 0) {
-        setSupabaseStockSnapshot(invData.stockSnapshot);
-      }
-      if (invData?.products && invData.products.length > 0) {
-        setSupabaseProducts(invData.products);
-      }
-      if (invData?.inbound) setSupabaseInbound(invData.inbound);
-      if (invData?.outbound) setSupabaseOutbound(invData.outbound);
-
-      // KPI API가 최신 snapshot_date 기준 단일 출처 → 항상 우선 적용 (데이터 새로고침 시 갱신 보장)
-      let kpiDataRes = kpiRes as { productCount?: number; totalValue?: number; totalQuantity?: number; totalSku?: number; error?: string } | null;
-      if (!kpiDataRes || kpiDataRes.error) {
-        const retry = await fetch(`/api/inventory/kpi?${cacheBust}&retry=1`, opts).then((r) => (r.ok ? r.json() : null));
-        kpiDataRes = retry as typeof kpiDataRes;
-      }
-      if (kpiDataRes && !kpiDataRes.error) {
-        setKpiData({
-          productCount: kpiDataRes.productCount ?? 0,
-          totalValue: kpiDataRes.totalValue ?? 0,
-          totalQuantity: kpiDataRes.totalQuantity ?? 0,
-          totalSku: kpiDataRes.totalSku ?? 0,
-        });
-      } else if (invData?.stockSnapshot && invData.stockSnapshot.length > 0) {
-        const totalVal = computeTotalValueFromSnapshot(invData.stockSnapshot, invData.products ?? []);
-        const qtyByCode: Record<string, number> = {};
-        for (const r of invData.stockSnapshot) {
-          const code = String(r.product_code ?? "").trim();
-          if (!code) continue;
-          qtyByCode[code] = (qtyByCode[code] ?? 0) + (r.quantity ?? 0);
-        }
-        let totalSku = 0;
-        for (const code of Object.keys(qtyByCode)) {
-          const p = (invData.products ?? []).find((x) => String(x.product_code).trim() === code);
-          const pack = Math.max(1, p?.pack_size ?? 1);
-          totalSku += Math.floor((qtyByCode[code] ?? 0) / pack);
-        }
-        setKpiData({
-          productCount: Object.keys(qtyByCode).length,
-          totalValue: Math.round(totalVal),
-          totalQuantity: Object.values(qtyByCode).reduce((a, b) => a + b, 0),
-          totalSku,
-        });
-      }
-
-      let categoryTrend: InventoryContextValue["categoryTrendData"] = null;
-      if (categoryTrendRes && typeof categoryTrendRes === "object" && !(categoryTrendRes as { error?: string }).error) {
-        categoryTrend = categoryTrendRes as InventoryContextValue["categoryTrendData"];
-      }
-      let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
-      const forecasts = (forecastRes as { product_forecasts?: Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }> })?.product_forecasts ?? [];
-      for (const row of forecasts) {
-        const code = String(row.product_code ?? "").trim();
-        if (code) {
-          forecastMap[code] = {
-            forecast_month1: Number(row.forecast_month1) || 0,
-            forecast_month2: Number(row.forecast_month2) || 0,
-            forecast_month3: Number(row.forecast_month3) || 0,
-          };
-          forecastMap[normalizeCode(code) || code] = forecastMap[code];
-        }
-      }
-      setCategoryTrendData(categoryTrend);
-      setAiForecastByProduct(forecastMap);
-      setCategoryTrendLoaded(true);
       setDataRefreshKey((k) => k + 1);
       setIsSupabaseLoading(false);
-      router.refresh();
+
+      // 2단계: 전체 snapshot(dailyVelocity) + 판매·입고·예측 백그라운드
+      fetch(`/api/inventory/snapshot?${cacheBust}`, opts)
+        .then((r) => r.ok ? r.json() : null)
+        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; stockByWarehouse?: Record<string, number> } | null) => {
+          if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
+          if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
+          if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
+          if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
+          if (fullData?.stockByWarehouse) setStockByWarehouse(fullData.stockByWarehouse);
+        })
+        .catch(() => {});
+
+      // 3단계: 판매·입고·예측 백그라운드
+      Promise.all([
+        fetch(`/api/category-trend?${cacheBust}`, opts),
+        fetch(`/api/forecast?${cacheBust}`, opts),
+      ]).then(async ([categoryTrendRes, forecastRes]) => {
+        let categoryTrend: InventoryContextValue["categoryTrendData"] = null;
+        if (categoryTrendRes.ok) {
+          const ctJson = await categoryTrendRes.json().catch(() => null);
+          if (ctJson && typeof ctJson === "object" && !ctJson.error) {
+            categoryTrend = ctJson as InventoryContextValue["categoryTrendData"];
+          }
+        }
+        let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
+        if (forecastRes.ok) {
+          const fJson = await forecastRes.json().catch(() => null);
+          const forecasts = (fJson?.product_forecasts ?? []) as Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
+          for (const row of forecasts) {
+            const code = String(row.product_code ?? "").trim();
+            if (code) {
+              const v = {
+                forecast_month1: Number(row.forecast_month1) || 0,
+                forecast_month2: Number(row.forecast_month2) || 0,
+                forecast_month3: Number(row.forecast_month3) || 0,
+              };
+              forecastMap[code] = v;
+              forecastMap[normalizeCode(code) || code] = v;
+            }
+          }
+        }
+        setCategoryTrendData(categoryTrend);
+        setAiForecastByProduct(forecastMap);
+        setCategoryTrendLoaded(true);
+        setDataRefreshKey((k) => k + 1);
+      }).catch(() => {
+        setCategoryTrendLoaded(true);
+      });
     } catch (e) {
-      const raw = e instanceof Error ? e.message : String(e);
-      const errMsg = /abort|signal is aborted/i.test(raw)
-        ? "요청 시간 초과. 잠시 후 새로고침해 주세요."
-        : raw;
+      const errMsg = e instanceof Error ? e.message : String(e);
       setSupabaseFetchStatus("fetch_error");
       setSupabaseFetchError(errMsg);
-      if (!FORCE_SUPABASE) {
-        setUseSupabaseInventory(false);
-        try {
-          const defaultWorkspace = getDefaultWorkspaceId();
-          const syncCode = getStoredSyncCode();
-          if (defaultWorkspace) {
-            const r = await fetchDefaultWorkspace();
-            if (r.ok && r.data) storage.restoreFromBackup(r.data);
-          } else if (syncCode) {
-            const r = await fetchFromCloud(syncCode);
-            if (r.ok && r.data) storage.restoreFromBackup(r.data);
-          }
-        } catch {
-          /* ignore */
+      setUseSupabaseInventory(false);
+      try {
+        const defaultWorkspace = getDefaultWorkspaceId();
+        const syncCode = getStoredSyncCode();
+        if (defaultWorkspace) {
+          const r = await fetchDefaultWorkspace();
+          if (r.ok && r.data) storage.restoreFromBackup(r.data);
+        } else if (syncCode) {
+          const r = await fetchFromCloud(syncCode);
+          if (r.ok && r.data) storage.restoreFromBackup(r.data);
         }
-        const tx = storage.loadTransactions();
-        const base = storage.loadBaseStock();
-        const baseByProduct = storage.loadBaseStockByProduct();
-        const daily = storage.loadDailyStock();
-        setTransactions(tx);
-        setBaseStockState(base);
-        setBaseStockByProductState(baseByProduct);
-        setDailyStockState(daily);
-        setProductsState(storage.loadProducts() as ProductMasterRow[]);
+      } catch {
+        /* ignore */
       }
+      const tx = storage.loadTransactions();
+      const base = storage.loadBaseStock();
+      const baseByProduct = storage.loadBaseStockByProduct();
+      const daily = storage.loadDailyStock();
+      setTransactions(tx);
+      setBaseStockState(base);
+      setBaseStockByProductState(baseByProduct);
+      setDailyStockState(daily);
+      setProductsState(storage.loadProducts() as ProductMasterRow[]);
     } finally {
       setIsSupabaseLoading(false);
     }
-  }, [router]);
+  }, []);
 
   const switchToLocalMode = useCallback(async () => {
-    if (FORCE_SUPABASE) return; // Supabase 강제 모드: 로컬 전환 불가
     setSupabaseFetchStatus("fetch_error");
     setSupabaseFetchError("로컬 모드로 전환됨. Supabase 데이터는 '새로고침'으로 다시 불러올 수 있습니다.");
     setUseSupabaseInventory(false);
@@ -619,92 +569,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("storage", handler);
   }, [refresh, useSupabaseInventory]);
 
-  // Supabase 강제 모드: 탭 복귀 시 자동 새로고침 (Supabase에서 직접 수정 후 돌아올 때 반영)
-  useEffect(() => {
-    if (!FORCE_SUPABASE) return;
-    let hiddenAt = 0;
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        hiddenAt = Date.now();
-        return;
-      }
-      if (document.visibilityState === "visible" && hiddenAt > 0 && Date.now() - hiddenAt > 1500) {
-        refresh();
-        hiddenAt = 0;
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [refresh]);
-
-  // Supabase Realtime 구독: INSERT/UPDATE/DELETE 시 refresh (디바운스로 연속 갱신 방지)
-  useEffect(() => {
-    if (!FORCE_SUPABASE) return;
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !key) return;
-
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const debouncedRefresh = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => {
-        debounceTimer = null;
-        refresh();
-      }, 500);
-    };
-
-    const supabase = createClient(url, key);
-    const channel = supabase
-      .channel("inventory-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "inventory_stock_snapshot",
-        },
-        debouncedRefresh
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "inventory_inbound",
-        },
-        debouncedRefresh
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "inventory_outbound",
-        },
-        debouncedRefresh
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "inventory_products",
-        },
-        debouncedRefresh
-      )
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") {
-          console.log("[Realtime] inventory 테이블 구독 시작");
-        } else if (status === "CHANNEL_ERROR") {
-          console.warn("[Realtime] 구독 오류 - Replication 설정 확인");
-        }
-      });
-
-    return () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      supabase.removeChannel(channel);
-    };
-  }, [refresh]);
+  // Supabase 사용 시: 자동 새로고침 비활성화. 새로고침 버튼 클릭 시에만 refresh
 
   const addTransaction = useCallback(
     (tx: Omit<Transaction, "id" | "createdAt">) => {
