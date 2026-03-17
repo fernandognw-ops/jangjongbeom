@@ -11,7 +11,7 @@
 
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { normalizeCode, normalizeCategory, STANDARD_CATEGORIES } from "@/lib/inventoryApi";
+import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
 import { fetchNaverSearchTrend, fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 
 const TABLE_PRODUCTS = "inventory_products";
@@ -135,14 +135,10 @@ export async function GET() {
     const codeToProduct = new Map<string, { name: string; category: string }>();
     for (const p of (productsRes.data ?? []) as Array<{ product_code?: string; product_name?: string; category?: string; group_name?: string }>) {
       const code = String(p.product_code ?? "").trim();
-      const rawCat = String(p.category ?? p.group_name ?? "기타").trim() || "기타";
-      const normalized = normalizeCategory(rawCat);
-      const cat = normalized && (STANDARD_CATEGORIES as readonly string[]).includes(normalized)
-        ? normalized
-        : "기타";
+      const cat = String(p.category ?? p.group_name ?? "기타").trim() || "기타";
       codeToProduct.set(code, {
         name: String(p.product_name ?? p.product_code ?? code).trim() || code,
-        category: cat,
+        category: normalizeCategory(cat) || cat,
       });
     }
 

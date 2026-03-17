@@ -8,7 +8,7 @@
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
+import { normalizeCode } from "@/lib/inventoryApi";
 import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 
 const emptyResponse = {
@@ -71,15 +71,8 @@ function normalizeCategoryName(cat: string): string {
   return s;
 }
 
-/** 표시용 카테고리 순서 (기타 제외) - 표준 카테고리만 표시 */
+/** 표시용 카테고리 순서 (기타 제외) */
 const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품", "캡슐사은품"];
-
-/** 품목구분 → 표준 카테고리만 반환 (매핑 불가 시 null) */
-function toStandardCategory(cat: string): string | null {
-  const n = normalizeCategory(normalizeCategoryName(cat));
-  if (!n || !CATEGORY_ORDER.includes(n)) return null;
-  return n;
-}
 
 export async function GET() {
   try {
@@ -116,32 +109,26 @@ export async function GET() {
       fetchNaverSearchTrendMonthly(),
     ]);
 
-    /** product_code → category(품목구분): rawdata(품목) 우선, snapshot 보조 */
+    /** product_code → category(품목구분): inventory_stock_snapshot 우선 */
     const codeToCategory = new Map<string, string>();
-    const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
-    for (const p of products) {
-      const k = normalizeCode(p.product_code) || String(p.product_code ?? "").trim();
-      const cat = String(p.category ?? p.group_name ?? "").trim();
-      if (!k || !cat || cat === "기타" || cat === "전체") continue;
-      codeToCategory.set(k, cat);
-      codeToCategory.set(String(p.product_code ?? "").trim(), cat);
-    }
     const snapData = (snapshotRes.data ?? []) as { product_code: string; category?: string; snapshot_date?: string }[];
     const byCodeDate = new Map<string, { category: string; date: string }>();
     for (const row of snapData) {
       const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
       const cat = String(row.category ?? "").trim();
       const date = (row.snapshot_date ?? "").slice(0, 10);
-      if (!code || !cat || cat === "기타" || cat === "전체") continue;
+      if (!code) continue;
       const existing = byCodeDate.get(code);
-      if (!existing || date >= existing.date) byCodeDate.set(code, { category: cat, date });
+      const useCat = cat || (existing?.category ?? "");
+      if (!existing || date >= existing.date) byCodeDate.set(code, { category: useCat, date });
     }
     for (const [code, v] of byCodeDate.entries()) {
-      if (v.category && !codeToCategory.has(code)) codeToCategory.set(code, v.category);
+      if (v.category) codeToCategory.set(code, v.category);
     }
+
+    const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
     const codeToCost = new Map<string, number>();
     const categoriesSet = new Set<string>();
-    const valueCategoriesSet = new Set<string>();
     for (const p of products) {
       const k = normalizeCode(p.product_code) || String(p.product_code).trim();
       const fromProduct = String(p.category ?? p.group_name ?? "").trim();
@@ -149,9 +136,7 @@ export async function GET() {
       const group = (fromProduct && fromProduct !== "기타") ? fromProduct : (catFromSnapshot || "기타");
       if (!codeToCategory.has(k)) codeToCategory.set(k, group);
       if (!codeToCategory.has(String(p.product_code).trim())) codeToCategory.set(String(p.product_code).trim(), group);
-      const std = toStandardCategory(group);
-      if (std) categoriesSet.add(std);
-      if (group !== "기타") valueCategoriesSet.add(normalizeCategoryName(group));
+      if (group !== "기타") categoriesSet.add(normalizeCategoryName(group));
       const c = Number(p.unit_cost ?? 0);
       if (c > 0 && c <= 500_000) {
         codeToCost.set(k, c);
@@ -160,7 +145,7 @@ export async function GET() {
     }
     const byMonthCategory: Record<string, Record<string, number>> = {};
 
-    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용 (인바운드 제외), 표준 카테고리만
+    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용 (인바운드 제외), 기타 제외
     for (const o of outbound) {
       const m = (o.outbound_date ?? "").slice(0, 7);
       if (!m) continue;
@@ -174,19 +159,14 @@ export async function GET() {
       if (cat === "기타") continue;
       cat = normalizeCategoryName(cat) || "기타";
       if (cat === "기타") continue;
-      valueCategoriesSet.add(cat);
-      const std = toStandardCategory(cat);
-      if (std) {
-        categoriesSet.add(std);
-        byMonthCategory[m][std] = (byMonthCategory[m][std] ?? 0) + Number(o.quantity ?? 0);
-      }
+      categoriesSet.add(cat);
+      byMonthCategory[m][cat] = (byMonthCategory[m][cat] ?? 0) + Number(o.quantity ?? 0);
     }
 
     const ordered = [...categoriesSet];
-    const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
-    const valueCategories = [
-      ...CATEGORY_ORDER.filter((c) => valueCategoriesSet.has(c)),
-      ...[...valueCategoriesSet].filter((c) => !CATEGORY_ORDER.includes(c)).sort(),
+    const finalCategories = [
+      ...CATEGORY_ORDER.filter((c) => ordered.includes(c)),
+      ...ordered.filter((c) => !CATEGORY_ORDER.includes(c)).sort(),
     ];
 
     // 최근 14개월 슬롯 고정 (25년 3월~ 데이터 포함)
@@ -258,7 +238,7 @@ export async function GET() {
     for (const m of months) {
       byMonthCategoryInboundValue[m] = {};
       byMonthCategoryOutboundValue[m] = {};
-      for (const c of valueCategories) {
+      for (const c of finalCategories) {
         byMonthCategoryInboundValue[m][c] = 0;
         byMonthCategoryOutboundValue[m][c] = 0;
       }
@@ -270,7 +250,7 @@ export async function GET() {
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(o.product_code) || "") || codeToCategory.get(String(o.product_code).trim()) || "";
       if (cat === "기타") continue;
       cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타" || !valueCategories.includes(cat)) continue;
+      if (cat === "기타" || !finalCategories.includes(cat)) continue;
       const qty = Number(o.quantity ?? 0);
       const cost = codeToCost.get(normalizeCode(o.product_code) || "") ?? codeToCost.get(String(o.product_code).trim()) ?? 0;
       byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + qty * cost;
@@ -282,7 +262,7 @@ export async function GET() {
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(i.product_code) || "") || codeToCategory.get(String(i.product_code).trim()) || "";
       if (cat === "기타") continue;
       cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타" || !valueCategories.includes(cat)) continue;
+      if (cat === "기타" || !finalCategories.includes(cat)) continue;
       const qty = Number(i.quantity ?? 0);
       const cost = codeToCost.get(normalizeCode(i.product_code) || "") ?? codeToCost.get(String(i.product_code).trim()) ?? 0;
       byMonthCategoryInboundValue[m][cat] = (byMonthCategoryInboundValue[m][cat] ?? 0) + qty * cost;
@@ -298,7 +278,7 @@ export async function GET() {
         }, "")
       : "";
     const valueByCategoryFromSnapshot: Record<string, number> = {};
-    for (const c of valueCategories) valueByCategoryFromSnapshot[c] = 0;
+    for (const c of finalCategories) valueByCategoryFromSnapshot[c] = 0;
     for (const row of snapRows) {
       const rowDate = (row.snapshot_date ?? "").slice(0, 10);
       if (rowDate !== latestSnapshotDate) continue;
@@ -307,46 +287,34 @@ export async function GET() {
       if (!cat || cat === "기타") cat = codeToCategory.get(code) ?? codeToCategory.get(String(row.product_code ?? "").trim()) ?? "";
       if (!cat) cat = "기타";
       cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타" || !valueCategories.includes(cat)) continue;
+      if (cat === "기타" || !finalCategories.includes(cat)) continue;
       const qty = Number(row.quantity ?? 0);
       const cost = Number(row.unit_cost ?? 0);
       const totalPrice = Number(row.total_price ?? 0);
       const val = totalPrice > 0 ? totalPrice : qty * (cost > 0 ? cost : (codeToCost.get(code) ?? codeToCost.get(String(row.product_code ?? "").trim()) ?? 0));
       valueByCategoryFromSnapshot[cat] = (valueByCategoryFromSnapshot[cat] ?? 0) + val;
     }
-    for (const c of valueCategories) {
+    for (const c of finalCategories) {
       valueByCategoryFromSnapshot[c] = Math.round(valueByCategoryFromSnapshot[c] ?? 0);
     }
 
-    const monthlyValueByCategoryRaw: Record<string, Record<string, number>> = {};
+    const monthlyValueByCategory: Record<string, Record<string, number>> = {};
     for (let i = months.length - 1; i >= 0; i--) {
       const m = months[i];
       if (m === thisMonthKey) {
-        monthlyValueByCategoryRaw[m] = { ...valueByCategoryFromSnapshot };
+        monthlyValueByCategory[m] = { ...valueByCategoryFromSnapshot };
       } else {
         const nextIdx = i + 1;
         const nextMonth = months[nextIdx];
-        const prevVal = nextMonth ? monthlyValueByCategoryRaw[nextMonth] ?? {} : {};
-        monthlyValueByCategoryRaw[m] = {};
-        for (const c of valueCategories) {
+        const prevVal = nextMonth ? monthlyValueByCategory[nextMonth] ?? {} : {};
+        monthlyValueByCategory[m] = {};
+        for (const c of finalCategories) {
           const nextVal = prevVal[c] ?? 0;
           const inVal = byMonthCategoryInboundValue[nextMonth]?.[c] ?? 0;
           const outVal = byMonthCategoryOutboundValue[nextMonth]?.[c] ?? 0;
-          monthlyValueByCategoryRaw[m][c] = Math.round(nextVal - inVal + outVal);
+          monthlyValueByCategory[m][c] = Math.round(nextVal - inVal + outVal);
         }
       }
-    }
-
-    const nonStandardCategories = valueCategories.filter((c) => !CATEGORY_ORDER.includes(c));
-    const monthlyValueByCategory: Record<string, Record<string, number>> = {};
-    for (const m of months) {
-      const raw = monthlyValueByCategoryRaw[m] ?? {};
-      monthlyValueByCategory[m] = {};
-      for (const c of finalCategories) {
-        monthlyValueByCategory[m][c] = raw[c] ?? 0;
-      }
-      const etcSum = nonStandardCategories.reduce((s, c) => s + (raw[c] ?? 0), 0);
-      if (etcSum > 0) monthlyValueByCategory[m]["기타"] = etcSum;
     }
 
     /** 증감률 표시 상한: ±50% (비정상 수치 방지) */
@@ -382,13 +350,10 @@ export async function GET() {
       }
     }
 
-    const hasEtc = months.some((m) => (monthlyValueByCategory[m]?.["기타"] ?? 0) > 0);
-    const categoriesForResponse = [...finalCategories, ...(hasEtc ? ["기타"] : [])];
-
     return NextResponse.json(
       {
         months,
-        categories: categoriesForResponse,
+        categories: finalCategories,
         chartData,
         naverSearchTrend,
         momRates,

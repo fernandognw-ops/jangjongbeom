@@ -43,14 +43,6 @@ export function normalizeCategory(cat: string): string {
   for (const std of STANDARD_CATEGORIES) {
     if (s === std || s.includes(std) || std.includes(s)) return std;
   }
-  if (s.length > 15) {
-    if (s.includes("캡슐") && s.includes("사은품")) return "캡슐사은품";
-    if (s.includes("캡슐") && (s.includes("세제") || s.includes("세탁"))) return "캡슐세제";
-    if (s.includes("섬유") && s.includes("유연")) return "섬유유연제";
-    if (s.includes("액상") && s.includes("세제")) return "액상세제";
-    if (s.includes("마스크") || s.includes("KF94") || s.includes("KF80")) return "마스크";
-    if (s.includes("생활") || s.includes("리빙") || s.includes("변기") || s.includes("세정")) return "생활용품";
-  }
   return s;
 }
 
@@ -177,7 +169,7 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
       if (k2 && !codeToProduct.has(k2)) codeToProduct.set(k2, p);
     }
 
-    /** product_code → category: rawdata(품목) 우선, snapshot은 보조 (대시보드 카테고리 기준) */
+    /** product_code → category: inventory_stock_snapshot 우선 (update-category 반영) → inventory_products → 기타 */
     const codeToCategoryFromSnapshot = new Map<string, string>();
     for (const row of stockSnapshot) {
       const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
@@ -204,11 +196,11 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     for (const code of codesToUse) {
       const key = normalizeCode(code);
       const p = codeToProduct.get(key) ?? codeToProduct.get(String(code ?? "").trim()) ?? codeToProduct.get(code);
-      /** category: rawdata(품목) 우선 → inventory_stock_snapshot 보조 → 기타 */
+      /** category: inventory_stock_snapshot 우선 (엑셀 update-category 반영) → inventory_products → 기타 */
+      const fromSnapshot = codeToCategoryFromSnapshot.get(key) ?? codeToCategoryFromSnapshot.get(String(code ?? "").trim());
       const fromProduct = p ? String((p as { category?: string }).category ?? (p as { group_name?: string }).group_name ?? "").trim() : "";
       const useProduct = fromProduct && fromProduct !== "기타" && fromProduct !== "전체";
-      const fromSnapshot = codeToCategoryFromSnapshot.get(key) ?? codeToCategoryFromSnapshot.get(String(code ?? "").trim());
-      const category = (useProduct ? fromProduct : null) || fromSnapshot || "기타";
+      const category = fromSnapshot || (useProduct ? fromProduct : "기타");
 
       if (p) {
         (p as InventoryProduct & { is_active?: boolean }).is_active = true;
@@ -238,10 +230,10 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     for (const p of finalProducts) {
       (p as InventoryProduct & { is_active?: boolean }).is_active ??= true;
       const k = normalizeCode(p.product_code) || p.product_code;
+      const fromSnapshot = codeToCategoryFromSnapshot.get(k) ?? codeToCategoryFromSnapshot.get(String(p.product_code).trim());
       const fromProduct = String((p as { category?: string }).category ?? (p as { group_name?: string }).group_name ?? "").trim();
       const useProduct = fromProduct && fromProduct !== "기타" && fromProduct !== "전체";
-      const fromSnapshot = codeToCategoryFromSnapshot.get(k) ?? codeToCategoryFromSnapshot.get(String(p.product_code).trim());
-      (p as InventoryProduct).category = (useProduct ? fromProduct : null) || fromSnapshot || "기타";
+      (p as InventoryProduct).category = fromSnapshot || (useProduct ? fromProduct : "기타");
     }
     const catMap = new Map<string, number>();
     for (const p of finalProducts) {
