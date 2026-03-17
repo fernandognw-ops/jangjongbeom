@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { parseProductionSheet } from "@/lib/productionSheetParser";
 import { useInventory } from "@/context/InventoryContext";
+import { parseProductionSheet } from "@/lib/productionSheetParser";
 
 const ACCEPT = ".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel";
 
@@ -77,14 +77,21 @@ export function ProductionSheetUploader() {
         }
 
         setStatus("success");
-        setProgress("");
+        setProgress("DB 반영 대기 후 대시보드 갱신…");
         const parts: string[] = [];
         if ((json.inbound?.inserted ?? 0) > 0) parts.push(`입고 ${json.inbound.inserted}건`);
-        if ((json.outbound?.inserted ?? 0) > 0) parts.push(`출고 ${json.outbound.inserted}건`);
         if ((json.stockSnapshot ?? 0) > 0) parts.push(`재고 ${json.stockSnapshot}건`);
-        setMessage(`DB 갱신 완료. ${parts.join(", ")} 대시보드가 자동으로 새로고침됩니다.`);
+        if ((json.outbound?.inserted ?? 0) > 0) parts.push(`출고 ${json.outbound.inserted}건`);
+        setMessage(`DB 갱신 완료. ${parts.join(", ")}`);
         setFile(null);
-        refresh();
+        try {
+          // DB 커밋·가시성 확보 후 refresh()로 대시보드 갱신 (Realtime과 동일 방식)
+          await new Promise((r) => setTimeout(r, 1500));
+          await refresh();
+        } catch (e) {
+          console.warn("[업로드] 새로고침 실패:", e);
+        }
+        setProgress("");
       } catch (e) {
         setStatus("error");
         setProgress("");

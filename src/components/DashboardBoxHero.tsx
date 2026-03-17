@@ -168,12 +168,15 @@ export function DashboardBoxHero() {
     return inventoryProducts;
   }, [productFilter, activeProducts, discontinuedProducts, inventoryProducts]);
 
+  /** 카테고리 탭: 표준 카테고리만 표시 (제품명·긴 문자열 제외로 UI 깨짐 방지) */
   const categories = useMemo(() => {
+    const isProductLike = (s: string) =>
+      s.length > 12 || /개입|매입|매\b|케이스|CLA_|\[.*\]/.test(s) || /\d+개/.test(s);
     const fromData = baseProducts
-      .map((p) => String(p.category ?? "").trim())
-      .filter((g) => g && g !== "기타" && g !== "전체" && !/^\d{10,}$/.test(g));
+      .map((p) => normalizeCategory(String(p.category ?? "").trim()) || String(p.category ?? "").trim())
+      .filter((g) => g && g !== "기타" && g !== "전체" && !/^\d{10,}$/.test(g) && !isProductLike(g));
     const merged = new Set([...CATEGORY_ORDER, ...fromData]);
-    const filtered = Array.from(merged).filter((c) => c !== "기타" && c !== "전체" && !/^\d{10,}$/.test(c));
+    const filtered = Array.from(merged).filter((c) => c !== "기타" && c !== "전체" && !isProductLike(c));
     return filtered.sort((a, b) => {
       const ia = (CATEGORY_ORDER as readonly string[]).indexOf(a);
       const ib = (CATEGORY_ORDER as readonly string[]).indexOf(b);
@@ -653,7 +656,7 @@ export function DashboardBoxHero() {
       </div>
 
       {/* 카테고리 탭 */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => setSelectedCategory(null)}
@@ -674,7 +677,7 @@ export function DashboardBoxHero() {
             key={String(cat)}
             type="button"
             onClick={() => setSelectedCategory(cat)}
-            className={`shrink-0 rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
+            className={`shrink-0 max-w-[180px] truncate rounded-xl px-4 py-2 text-sm font-medium transition-colors shadow-sm ${
               selectedCategory === cat
                 ? channel === "coupang"
                   ? "bg-orange-500 text-white"
@@ -683,6 +686,7 @@ export function DashboardBoxHero() {
                     : "bg-indigo-500 text-white"
                 : "bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
             }`}
+            title={cat}
           >
             {cat}
           </button>
@@ -804,7 +808,7 @@ function ProductCard({
     : null;
 
   return (
-    <div className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card transition-shadow hover:shadow-card-hover">
+    <div className="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card transition-shadow hover:shadow-card-hover h-full">
       {/* 상단: 제품명 + 상태 */}
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0 flex-1 overflow-hidden">

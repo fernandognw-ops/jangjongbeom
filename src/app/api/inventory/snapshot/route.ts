@@ -82,18 +82,30 @@ export async function GET(request: Request) {
     date30Ago.setDate(date30Ago.getDate() - 30);
     const dateFrom = date30Ago.toISOString().slice(0, 10);
 
-    const [snapshotRes, productsRes, outboundRows] = await Promise.all([
+    const [maxDateRes, productsRes, outboundRows] = await Promise.all([
       supabase
         .from("inventory_stock_snapshot")
-        .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,category,snapshot_date")
+        .select("snapshot_date")
         .order("snapshot_date", { ascending: false })
-        .order("product_code")
-        .limit(10000),
+        .limit(1),
       supabase.from("inventory_products").select("product_code,category").order("product_code").limit(10000),
       lite ? Promise.resolve([] as { product_code: string; quantity: number; sales_channel?: string }[]) : fetchAllOutbound(supabase, dateFrom),
     ]);
 
-    const { data: snapshotData, error } = snapshotRes;
+    const maxDate = (maxDateRes?.data?.[0] as { snapshot_date?: string })?.snapshot_date?.slice(0, 10) ?? "";
+    if (!maxDate) {
+      return NextResponse.json(
+        { items: [], totalValue: 0, totalQuantity: 0, totalSku: 0, dailyVelocityByProduct: {}, stockByChannel: { coupang: {}, general: {} }, stockByWarehouse: {}, error: "no_snapshot" },
+        { status: 200 }
+      );
+    }
+
+    const { data: snapshotData, error } = await supabase
+      .from("inventory_stock_snapshot")
+      .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,category,snapshot_date")
+      .eq("snapshot_date", maxDate)
+      .order("product_code");
+
     if (error) {
       return NextResponse.json(
         { items: [], totalValue: 0, totalQuantity: 0, totalSku: 0, dailyVelocityByProduct: {}, error: error.message },
@@ -101,7 +113,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const allRows = (snapshotData ?? []) as Array<{ product_code?: string; product_name?: string; quantity?: unknown; pack_size?: unknown; total_price?: unknown; unit_cost?: unknown; dest_warehouse?: string; category?: string; snapshot_date?: string }>;
+    const rows = (snapshotData ?? []) as Array<{ product_code?: string; product_name?: string; quantity?: unknown; pack_size?: unknown; total_price?: unknown; unit_cost?: unknown; dest_warehouse?: string; category?: string; snapshot_date?: string }>;
     const productsData = (productsRes?.data ?? []) as Array<{ product_code?: string; group_name?: string; category?: string }>;
     const codeToCategory = new Map<string, string>();
     for (const p of productsData) {
@@ -115,14 +127,6 @@ export async function GET(request: Request) {
       codeToCategory.set(code, cat);
       codeToCategory.set(rawCode, cat);
     }
-    // 최신 snapshot_date만 사용 (재고 자산은 가장 최신 데이터 기준)
-    const maxDate = allRows.length > 0
-      ? allRows.reduce((max, r) => {
-          const d = (r.snapshot_date ?? "").slice(0, 10);
-          return d > max ? d : max;
-        }, "1970-01-01")
-      : "";
-    const rows = maxDate ? allRows.filter((r) => (r.snapshot_date ?? "").slice(0, 10) === maxDate) : allRows;
     const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
     const stockByWarehouse: Record<string, number> = {};
     const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string; category: string }> = {};
