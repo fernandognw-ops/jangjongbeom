@@ -136,6 +136,7 @@ export async function GET() {
     const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
     const codeToCost = new Map<string, number>();
     const categoriesSet = new Set<string>();
+    const valueCategoriesSet = new Set<string>();
     for (const p of products) {
       const k = normalizeCode(p.product_code) || String(p.product_code).trim();
       const fromProduct = String(p.category ?? p.group_name ?? "").trim();
@@ -145,6 +146,7 @@ export async function GET() {
       if (!codeToCategory.has(String(p.product_code).trim())) codeToCategory.set(String(p.product_code).trim(), group);
       const std = toStandardCategory(group);
       if (std) categoriesSet.add(std);
+      if (group !== "기타") valueCategoriesSet.add(normalizeCategoryName(group));
       const c = Number(p.unit_cost ?? 0);
       if (c > 0 && c <= 500_000) {
         codeToCost.set(k, c);
@@ -165,14 +167,22 @@ export async function GET() {
         codeToCategory.get(String(o.product_code).trim()) ||
         "";
       if (cat === "기타") continue;
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타") continue;
+      valueCategoriesSet.add(cat);
       const std = toStandardCategory(cat);
-      if (!std) continue;
-      categoriesSet.add(std);
-      byMonthCategory[m][std] = (byMonthCategory[m][std] ?? 0) + Number(o.quantity ?? 0);
+      if (std) {
+        categoriesSet.add(std);
+        byMonthCategory[m][std] = (byMonthCategory[m][std] ?? 0) + Number(o.quantity ?? 0);
+      }
     }
 
     const ordered = [...categoriesSet];
     const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
+    const valueCategories = [
+      ...CATEGORY_ORDER.filter((c) => valueCategoriesSet.has(c)),
+      ...[...valueCategoriesSet].filter((c) => !CATEGORY_ORDER.includes(c)).sort(),
+    ];
 
     // 최근 14개월 슬롯 고정 (25년 3월~ 데이터 포함)
     const fourteenMonthsSlots: string[] = [];
@@ -243,7 +253,7 @@ export async function GET() {
     for (const m of months) {
       byMonthCategoryInboundValue[m] = {};
       byMonthCategoryOutboundValue[m] = {};
-      for (const c of finalCategories) {
+      for (const c of valueCategories) {
         byMonthCategoryInboundValue[m][c] = 0;
         byMonthCategoryOutboundValue[m][c] = 0;
       }
@@ -254,11 +264,11 @@ export async function GET() {
       const rowCat = (o.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(o.product_code) || "") || codeToCategory.get(String(o.product_code).trim()) || "";
       if (cat === "기타") continue;
-      const std = toStandardCategory(cat);
-      if (!std || !finalCategories.includes(std)) continue;
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타" || !valueCategories.includes(cat)) continue;
       const qty = Number(o.quantity ?? 0);
       const cost = codeToCost.get(normalizeCode(o.product_code) || "") ?? codeToCost.get(String(o.product_code).trim()) ?? 0;
-      byMonthCategoryOutboundValue[m][std] = (byMonthCategoryOutboundValue[m][std] ?? 0) + qty * cost;
+      byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + qty * cost;
     }
     for (const i of inbound) {
       const m = (i.inbound_date ?? "").slice(0, 7);
@@ -266,11 +276,11 @@ export async function GET() {
       const rowCat = (i.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(i.product_code) || "") || codeToCategory.get(String(i.product_code).trim()) || "";
       if (cat === "기타") continue;
-      const std = toStandardCategory(cat);
-      if (!std || !finalCategories.includes(std)) continue;
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타" || !valueCategories.includes(cat)) continue;
       const qty = Number(i.quantity ?? 0);
       const cost = codeToCost.get(normalizeCode(i.product_code) || "") ?? codeToCost.get(String(i.product_code).trim()) ?? 0;
-      byMonthCategoryInboundValue[m][std] = (byMonthCategoryInboundValue[m][std] ?? 0) + qty * cost;
+      byMonthCategoryInboundValue[m][cat] = (byMonthCategoryInboundValue[m][cat] ?? 0) + qty * cost;
     }
 
     // 월별 재고 자산: 당월말 기준. 현재월=최신 snapshot, 과거월=역산(다음월말 - 다음월 입고 + 다음월 출고)
@@ -283,7 +293,7 @@ export async function GET() {
         }, "")
       : "";
     const valueByCategoryFromSnapshot: Record<string, number> = {};
-    for (const c of finalCategories) valueByCategoryFromSnapshot[c] = 0;
+    for (const c of valueCategories) valueByCategoryFromSnapshot[c] = 0;
     for (const row of snapRows) {
       const rowDate = (row.snapshot_date ?? "").slice(0, 10);
       if (rowDate !== latestSnapshotDate) continue;
@@ -291,35 +301,47 @@ export async function GET() {
       let cat = String(row.category ?? "").trim();
       if (!cat || cat === "기타") cat = codeToCategory.get(code) ?? codeToCategory.get(String(row.product_code ?? "").trim()) ?? "";
       if (!cat) cat = "기타";
-      const std = toStandardCategory(cat);
-      if (!std || !finalCategories.includes(std)) continue;
+      cat = normalizeCategoryName(cat) || "기타";
+      if (cat === "기타" || !valueCategories.includes(cat)) continue;
       const qty = Number(row.quantity ?? 0);
       const cost = Number(row.unit_cost ?? 0);
       const totalPrice = Number(row.total_price ?? 0);
       const val = totalPrice > 0 ? totalPrice : qty * (cost > 0 ? cost : (codeToCost.get(code) ?? codeToCost.get(String(row.product_code ?? "").trim()) ?? 0));
-      valueByCategoryFromSnapshot[std] = (valueByCategoryFromSnapshot[std] ?? 0) + val;
+      valueByCategoryFromSnapshot[cat] = (valueByCategoryFromSnapshot[cat] ?? 0) + val;
     }
-    for (const c of finalCategories) {
+    for (const c of valueCategories) {
       valueByCategoryFromSnapshot[c] = Math.round(valueByCategoryFromSnapshot[c] ?? 0);
     }
 
-    const monthlyValueByCategory: Record<string, Record<string, number>> = {};
+    const monthlyValueByCategoryRaw: Record<string, Record<string, number>> = {};
     for (let i = months.length - 1; i >= 0; i--) {
       const m = months[i];
       if (m === thisMonthKey) {
-        monthlyValueByCategory[m] = { ...valueByCategoryFromSnapshot };
+        monthlyValueByCategoryRaw[m] = { ...valueByCategoryFromSnapshot };
       } else {
         const nextIdx = i + 1;
         const nextMonth = months[nextIdx];
-        const prevVal = nextMonth ? monthlyValueByCategory[nextMonth] ?? {} : {};
-        monthlyValueByCategory[m] = {};
-        for (const c of finalCategories) {
+        const prevVal = nextMonth ? monthlyValueByCategoryRaw[nextMonth] ?? {} : {};
+        monthlyValueByCategoryRaw[m] = {};
+        for (const c of valueCategories) {
           const nextVal = prevVal[c] ?? 0;
           const inVal = byMonthCategoryInboundValue[nextMonth]?.[c] ?? 0;
           const outVal = byMonthCategoryOutboundValue[nextMonth]?.[c] ?? 0;
-          monthlyValueByCategory[m][c] = Math.round(nextVal - inVal + outVal);
+          monthlyValueByCategoryRaw[m][c] = Math.round(nextVal - inVal + outVal);
         }
       }
+    }
+
+    const nonStandardCategories = valueCategories.filter((c) => !CATEGORY_ORDER.includes(c));
+    const monthlyValueByCategory: Record<string, Record<string, number>> = {};
+    for (const m of months) {
+      const raw = monthlyValueByCategoryRaw[m] ?? {};
+      monthlyValueByCategory[m] = {};
+      for (const c of finalCategories) {
+        monthlyValueByCategory[m][c] = raw[c] ?? 0;
+      }
+      const etcSum = nonStandardCategories.reduce((s, c) => s + (raw[c] ?? 0), 0);
+      if (etcSum > 0) monthlyValueByCategory[m]["기타"] = etcSum;
     }
 
     /** 증감률 표시 상한: ±50% (비정상 수치 방지) */
@@ -355,10 +377,13 @@ export async function GET() {
       }
     }
 
+    const hasEtc = months.some((m) => (monthlyValueByCategory[m]?.["기타"] ?? 0) > 0);
+    const categoriesForResponse = [...finalCategories, ...(hasEtc ? ["기타"] : [])];
+
     return NextResponse.json(
       {
         months,
-        categories: finalCategories,
+        categories: categoriesForResponse,
         chartData,
         naverSearchTrend,
         momRates,
