@@ -49,7 +49,7 @@ function SupabaseDiagnosticBanner() {
       <p className="mt-1 text-xs text-slate-600 md:text-sm">{msg.desc}</p>
       <button
         type="button"
-        onClick={() => window.location.reload()}
+        onClick={() => refresh()}
         className="mt-2 text-xs font-medium text-indigo-600 hover:underline"
       >
         새로고침
@@ -59,7 +59,13 @@ function SupabaseDiagnosticBanner() {
 }
 
 export default function DashboardPage() {
-  const { totalValue, useSupabaseInventory, isSupabaseLoading, supabaseFetchStatus, kpiData, refresh } = useInventory() ?? {};
+  const ctx = useInventory();
+  const totalValue = ctx?.totalValue ?? 0;
+  const useSupabaseInventory = ctx?.useSupabaseInventory ?? false;
+  const isSupabaseLoading = ctx?.isSupabaseLoading ?? false;
+  const supabaseFetchStatus = ctx?.supabaseFetchStatus ?? "idle";
+  const kpiData = ctx?.kpiData;
+  const refresh = ctx?.refresh ?? (() => window.location.reload());
 
   return (
     <div
@@ -123,7 +129,7 @@ export default function DashboardPage() {
                     }`}
                     style={{ wordBreak: "break-word" }}
                   >
-                    {(kpiData?.totalValue ?? totalValue).toLocaleString()}원
+                    {((kpiData?.totalValue ?? totalValue) ?? 0).toLocaleString()}원
                   </div>
                 </div>
                 <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
@@ -191,7 +197,7 @@ export default function DashboardPage() {
                 }`}
                 style={{ wordBreak: "break-word" }}
               >
-                {totalValue.toLocaleString()}원
+                {(totalValue ?? 0).toLocaleString()}원
               </div>
             </div>
 
