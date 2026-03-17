@@ -290,16 +290,16 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       const cacheBust = `_t=${Date.now()}`;
       const opts = { cache: "no-store" as RequestCache, headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" } };
 
-      // 1단계: quick(초고속) → 실패 시 snapshot?lite=1 (각 5초 타임아웃)
+      // 1단계: quick(초고속) → 실패 시 snapshot?lite=1 (각 20초 타임아웃 - 콜드스타트·대용량 대비)
       let snapshotRes: Response | null = null;
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 5_000);
+      const tid = setTimeout(() => ctrl.abort(), 20_000);
       try {
         snapshotRes = await fetch(`/api/inventory/quick?${cacheBust}`, { ...opts, signal: ctrl.signal });
       } catch {
         clearTimeout(tid);
         const ctrl2 = new AbortController();
-        const tid2 = setTimeout(() => ctrl2.abort(), 5_000);
+        const tid2 = setTimeout(() => ctrl2.abort(), 20_000);
         try {
           snapshotRes = await fetch(`/api/inventory/snapshot?lite=1&${cacheBust}`, { ...opts, signal: ctrl2.signal });
         } finally {
@@ -492,7 +492,10 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setIsSupabaseLoading(false);
       router.refresh();
     } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
+      const raw = e instanceof Error ? e.message : String(e);
+      const errMsg = /abort|signal is aborted/i.test(raw)
+        ? "요청 시간 초과. 잠시 후 새로고침해 주세요."
+        : raw;
       setSupabaseFetchStatus("fetch_error");
       setSupabaseFetchError(errMsg);
       if (!FORCE_SUPABASE) {
