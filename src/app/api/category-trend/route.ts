@@ -8,7 +8,7 @@
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { normalizeCode } from "@/lib/inventoryApi";
+import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
 import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 
 const emptyResponse = {
@@ -71,8 +71,15 @@ function normalizeCategoryName(cat: string): string {
   return s;
 }
 
-/** 표시용 카테고리 순서 (기타 제외) */
+/** 표시용 카테고리 순서 (기타 제외) - 표준 카테고리만 표시 */
 const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품", "캡슐사은품"];
+
+/** 품목구분 → 표준 카테고리만 반환 (매핑 불가 시 null) */
+function toStandardCategory(cat: string): string | null {
+  const n = normalizeCategory(normalizeCategoryName(cat));
+  if (!n || !CATEGORY_ORDER.includes(n)) return null;
+  return n;
+}
 
 export async function GET() {
   try {
@@ -136,7 +143,8 @@ export async function GET() {
       const group = (fromProduct && fromProduct !== "기타") ? fromProduct : (catFromSnapshot || "기타");
       if (!codeToCategory.has(k)) codeToCategory.set(k, group);
       if (!codeToCategory.has(String(p.product_code).trim())) codeToCategory.set(String(p.product_code).trim(), group);
-      if (group !== "기타") categoriesSet.add(normalizeCategoryName(group));
+      const std = toStandardCategory(group);
+      if (std) categoriesSet.add(std);
       const c = Number(p.unit_cost ?? 0);
       if (c > 0 && c <= 500_000) {
         codeToCost.set(k, c);
@@ -145,7 +153,7 @@ export async function GET() {
     }
     const byMonthCategory: Record<string, Record<string, number>> = {};
 
-    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용 (인바운드 제외), 기타 제외
+    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용 (인바운드 제외), 표준 카테고리만
     for (const o of outbound) {
       const m = (o.outbound_date ?? "").slice(0, 7);
       if (!m) continue;
@@ -157,17 +165,14 @@ export async function GET() {
         codeToCategory.get(String(o.product_code).trim()) ||
         "";
       if (cat === "기타") continue;
-      cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타") continue;
-      categoriesSet.add(cat);
-      byMonthCategory[m][cat] = (byMonthCategory[m][cat] ?? 0) + Number(o.quantity ?? 0);
+      const std = toStandardCategory(cat);
+      if (!std) continue;
+      categoriesSet.add(std);
+      byMonthCategory[m][std] = (byMonthCategory[m][std] ?? 0) + Number(o.quantity ?? 0);
     }
 
     const ordered = [...categoriesSet];
-    const finalCategories = [
-      ...CATEGORY_ORDER.filter((c) => ordered.includes(c)),
-      ...ordered.filter((c) => !CATEGORY_ORDER.includes(c)).sort(),
-    ];
+    const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
 
     // 최근 14개월 슬롯 고정 (25년 3월~ 데이터 포함)
     const fourteenMonthsSlots: string[] = [];
@@ -249,11 +254,11 @@ export async function GET() {
       const rowCat = (o.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(o.product_code) || "") || codeToCategory.get(String(o.product_code).trim()) || "";
       if (cat === "기타") continue;
-      cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타" || !finalCategories.includes(cat)) continue;
+      const std = toStandardCategory(cat);
+      if (!std || !finalCategories.includes(std)) continue;
       const qty = Number(o.quantity ?? 0);
       const cost = codeToCost.get(normalizeCode(o.product_code) || "") ?? codeToCost.get(String(o.product_code).trim()) ?? 0;
-      byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + qty * cost;
+      byMonthCategoryOutboundValue[m][std] = (byMonthCategoryOutboundValue[m][std] ?? 0) + qty * cost;
     }
     for (const i of inbound) {
       const m = (i.inbound_date ?? "").slice(0, 7);
@@ -261,11 +266,11 @@ export async function GET() {
       const rowCat = (i.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(i.product_code) || "") || codeToCategory.get(String(i.product_code).trim()) || "";
       if (cat === "기타") continue;
-      cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타" || !finalCategories.includes(cat)) continue;
+      const std = toStandardCategory(cat);
+      if (!std || !finalCategories.includes(std)) continue;
       const qty = Number(i.quantity ?? 0);
       const cost = codeToCost.get(normalizeCode(i.product_code) || "") ?? codeToCost.get(String(i.product_code).trim()) ?? 0;
-      byMonthCategoryInboundValue[m][cat] = (byMonthCategoryInboundValue[m][cat] ?? 0) + qty * cost;
+      byMonthCategoryInboundValue[m][std] = (byMonthCategoryInboundValue[m][std] ?? 0) + qty * cost;
     }
 
     // 월별 재고 자산: 당월말 기준. 현재월=최신 snapshot, 과거월=역산(다음월말 - 다음월 입고 + 다음월 출고)
@@ -286,13 +291,13 @@ export async function GET() {
       let cat = String(row.category ?? "").trim();
       if (!cat || cat === "기타") cat = codeToCategory.get(code) ?? codeToCategory.get(String(row.product_code ?? "").trim()) ?? "";
       if (!cat) cat = "기타";
-      cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타" || !finalCategories.includes(cat)) continue;
+      const std = toStandardCategory(cat);
+      if (!std || !finalCategories.includes(std)) continue;
       const qty = Number(row.quantity ?? 0);
       const cost = Number(row.unit_cost ?? 0);
       const totalPrice = Number(row.total_price ?? 0);
       const val = totalPrice > 0 ? totalPrice : qty * (cost > 0 ? cost : (codeToCost.get(code) ?? codeToCost.get(String(row.product_code ?? "").trim()) ?? 0));
-      valueByCategoryFromSnapshot[cat] = (valueByCategoryFromSnapshot[cat] ?? 0) + val;
+      valueByCategoryFromSnapshot[std] = (valueByCategoryFromSnapshot[std] ?? 0) + val;
     }
     for (const c of finalCategories) {
       valueByCategoryFromSnapshot[c] = Math.round(valueByCategoryFromSnapshot[c] ?? 0);
