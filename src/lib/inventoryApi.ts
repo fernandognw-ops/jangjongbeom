@@ -43,6 +43,14 @@ export function normalizeCategory(cat: string): string {
   for (const std of STANDARD_CATEGORIES) {
     if (s === std || s.includes(std) || std.includes(s)) return std;
   }
+  if (s.length > 15) {
+    if (s.includes("캡슐") && s.includes("사은품")) return "캡슐사은품";
+    if (s.includes("캡슐") && (s.includes("세제") || s.includes("세탁"))) return "캡슐세제";
+    if (s.includes("섬유") && s.includes("유연")) return "섬유유연제";
+    if (s.includes("액상") && s.includes("세제")) return "액상세제";
+    if (s.includes("마스크") || s.includes("KF94") || s.includes("KF80")) return "마스크";
+    if (s.includes("생활") || s.includes("리빙") || s.includes("변기") || s.includes("세정")) return "생활용품";
+  }
   return s;
 }
 
