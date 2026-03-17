@@ -67,6 +67,7 @@ export function ProductionSheetUploader() {
             outbound: result.outbound,
             stockSnapshot: result.stockSnapshot,
             currentProductCodes: result.currentProductCodes,
+            targetSnapshotDate: result.targetSnapshotDate,
           }),
         });
         const json = await res.json();

@@ -207,6 +207,8 @@ export interface ProductionSheetParseResult {
   currentProductCodes: string[];
   /** 파일명에서 추출한 연도 (25년/26년 등) */
   yearInferred?: number;
+  /** 업로드 대상 날짜 (YYYY-MM-DD). 재고일자 또는 파일명(예: 0317)에서 추출. 당월 삭제·교체 기준 */
+  targetSnapshotDate?: string;
 }
 
 export interface ProductionSheetParseError {
@@ -245,6 +247,22 @@ function yearFromFilename(filename: string | undefined): number {
     if (y >= 2020 && y <= 2030) return y;
   }
   return new Date().getFullYear();
+}
+
+/** 파일명에서 MMDD 추출 (예: 0317_생산수불현황.xlsx → 03-17, 0315 → 03-15) */
+function dateFromFilename(filename: string | undefined, year: number): string | null {
+  if (!filename) return null;
+  const name = filename.split(/[/\\]/).pop() ?? "";
+  // 0317, 0315, 317, 315 등 패턴
+  const m = name.match(/^0?(\d{1,2})0?(\d{2})/);
+  if (m) {
+    const month = parseInt(m[1], 10);
+    const day = parseInt(m[2], 10);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+  return null;
 }
 
 function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): ProductionSheetParseOutput {
@@ -340,6 +358,8 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
   const outbound: OutboundRow[] = [];
   const stockSnapshot: StockSnapshotRow[] = [];
   const currentProductCodes = new Set<string>();
+  /** 업로드 대상 날짜 (재고일자/파일명에서 추출). 당월 삭제·교체 기준 */
+  let targetSnapshotDate: string = new Date().toISOString().slice(0, 10);
 
   // 입고 시트 (4행 헤더, 6행부터 데이터)
   const inSheet = getSheet("입고");
@@ -501,6 +521,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     let idxAmount = findCol(h, ["재고 금액", "재고금액"], { exclude: ["재고원가"] });
     if (idxAmount < 0) idxAmount = findCol(h, ["재고원가"]);
     const idxWh = findCol(h, ["창고명", "창고", "보관장소", "입고처", "warehouse"]);
+    const idxStockDate = findCol(h, ["재고일자", "재고 일자", "재고일"]);
 
     if (idxCode < 0 || idxQty < 0) {
       return {
@@ -512,6 +533,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
 
     /** Python integrated_sync와 동일: (product_code, dest_warehouse)별 집계 */
     const agg: Record<string, { qty: number; cost: number; totalPrice: number }> = {};
+    let stockDateFromSheet: string | null = null;
     const stockDataStart = headerRow + DATA_ROW_OFFSET;
     for (let r = stockDataStart; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
@@ -519,6 +541,11 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       if (!code || code.toLowerCase() === "nan") continue;
       const digits = (code.match(/\d/g) ?? []).length;
       if (code.length < 5 || digits < code.length * 0.5) continue;
+
+      if (idxStockDate >= 0 && !stockDateFromSheet) {
+        const parsed = parseDate(row[idxStockDate], year);
+        if (parsed) stockDateFromSheet = parsed;
+      }
 
       const qty = safeInt(row[idxQty]);
       let cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
@@ -536,7 +563,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       agg[key].totalPrice += totalPrice;
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    targetSnapshotDate = stockDateFromSheet ?? dateFromFilename(filename, year) ?? targetSnapshotDate;
     for (const [key, { qty, cost, totalPrice }] of Object.entries(agg)) {
       const [code, wh] = key.split("|");
       currentProductCodes.add(code);
@@ -549,12 +576,16 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       });
     }
   }
+  if (stockSnapshot.length === 0) {
+    targetSnapshotDate = dateFromFilename(filename, year) ?? targetSnapshotDate;
+  }
 
   const sampleIn = inbound[0]?.inbound_date;
   const sampleOut = outbound[0]?.outbound_date;
   if (sampleIn || sampleOut) {
     console.log(`[생산수불현황] 최종 파싱된 날짜 예시: 입고 ${sampleIn ?? "-"}, 출고 ${sampleOut ?? "-"}`);
   }
+  console.log(`[생산수불현황] targetSnapshotDate: ${targetSnapshotDate}`);
 
   return {
     ok: true,
@@ -564,5 +595,6 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     stockSnapshot,
     currentProductCodes: Array.from(currentProductCodes),
     yearInferred: year,
+    targetSnapshotDate,
   };
 }

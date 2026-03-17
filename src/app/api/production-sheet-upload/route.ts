@@ -24,11 +24,20 @@ function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
   return "general";
 }
 
-/** 당월(현재 월) 첫날~마지막날. 당월 이전 데이터는 수정하지 않음 */
-function getCurrentMonthRange(): [string, string] {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth() + 1;
+/** 해당 날짜의 월 첫날~마지막날. 업로드 대상 날짜 기준 당월만 삭제·교체 */
+function getMonthRangeFromDate(dateStr: string): [string, string] {
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1;
+    const first = `${y}-${String(m).padStart(2, "0")}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    const last = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    return [first, last];
+  }
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
   const first = `${y}-${String(m).padStart(2, "0")}-01`;
   const lastDay = new Date(y, m, 0).getDate();
   const last = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
@@ -68,6 +77,7 @@ export async function POST(request: Request) {
     outbound: OutboundRow[];
     stockSnapshot: StockSnapshotRow[];
     currentProductCodes: string[];
+    targetSnapshotDate?: string;
   };
 
   try {
@@ -79,7 +89,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const { rawProducts = [], inbound = [], outbound = [], stockSnapshot = [], currentProductCodes = [] } = body;
+  const { rawProducts = [], inbound = [], outbound = [], stockSnapshot = [], currentProductCodes = [], targetSnapshotDate } = body;
+  const snapshotDate = targetSnapshotDate && /^\d{4}-\d{2}-\d{2}$/.test(targetSnapshotDate)
+    ? targetSnapshotDate
+    : new Date().toISOString().slice(0, 10);
+  const [monthStart, monthEnd] = getMonthRangeFromDate(snapshotDate);
 
   const supabase = createClient(url, key);
   const BATCH = 300;
@@ -191,7 +205,6 @@ export async function POST(request: Request) {
           });
         }
       }
-      const [monthStart, monthEnd] = getCurrentMonthRange();
       await deleteByDateRange(supabase, TABLE_INBOUND, "inbound_date", monthStart, monthEnd);
       const rows = Array.from(merged.values()).filter((r) => {
         const d = r.inbound_date.slice(0, 10);
@@ -224,10 +237,9 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. 재고: Python과 동일 - 전체 truncate 후 INSERT (inbound 다음, 출고 전)
+    // 2. 재고: 업로드 대상 날짜(snapshotDate) 기준 당월만 삭제 후 INSERT
     let stockInserted = 0;
     if (stockSnapshot.length > 0) {
-      const today = new Date().toISOString().slice(0, 10);
       const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
       const [existingSnap, productsInfo] = await Promise.all([
         supabase.from(TABLE_SNAPSHOT).select("product_code,unit_cost").in("product_code", codes),
@@ -259,13 +271,13 @@ export async function POST(request: Request) {
           quantity: s.quantity,
           unit_cost: Math.round(cost * 100) / 100,
           total_price: Math.round(totalPrice * 100) / 100,
-          snapshot_date: today,
+          snapshot_date: snapshotDate,
         };
       });
       // RPC가 당월만 삭제 후 INSERT. 당월 이전 데이터는 유지
       const { error: rpcError } = await supabase.rpc("replace_stock_snapshot", {
         p_rows: snapshotRows,
-        p_snapshot_date: today,
+        p_snapshot_date: snapshotDate,
       });
       if (rpcError) {
         return NextResponse.json(
@@ -320,7 +332,6 @@ export async function POST(request: Request) {
           });
         }
       }
-      const [monthStart, monthEnd] = getCurrentMonthRange();
       await deleteByDateRange(supabase, TABLE_OUTBOUND, "outbound_date", monthStart, monthEnd);
       const rows = Array.from(merged.values()).filter((r) => {
         const d = r.outbound_date.slice(0, 10);
