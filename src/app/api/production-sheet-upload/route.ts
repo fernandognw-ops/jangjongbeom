@@ -24,7 +24,14 @@ function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
   return "general";
 }
 
-/** 해당 날짜의 월 첫날~마지막날. 업로드 대상 날짜 기준 당월만 삭제·교체 */
+/** 날짜 문자열에서 YYYY-MM 추출 */
+function toYearMonth(dateStr: string): string {
+  const d = dateStr.slice(0, 10);
+  const m = d.match(/^(\d{4})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}` : "";
+}
+
+/** 해당 날짜의 월 첫날~마지막날 */
 function getMonthRangeFromDate(dateStr: string): [string, string] {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) {
@@ -93,7 +100,6 @@ export async function POST(request: Request) {
   const snapshotDate = targetSnapshotDate && /^\d{4}-\d{2}-\d{2}$/.test(targetSnapshotDate)
     ? targetSnapshotDate
     : new Date().toISOString().slice(0, 10);
-  const [monthStart, monthEnd] = getMonthRangeFromDate(snapshotDate);
 
   const supabase = createClient(url, key);
   const BATCH = 300;
@@ -164,7 +170,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // 1. 입고: Python과 동일 - 해당 기간 삭제 후 upsert (product_code+inbound_date)
+    // 1. 입고: 엑셀에 포함된 모든 월 삭제 후 upsert (업로드 엑셀만 반영)
     let inboundInserted = 0;
     if (inbound.length > 0) {
       const merged = new Map<
@@ -205,11 +211,13 @@ export async function POST(request: Request) {
           });
         }
       }
-      await deleteByDateRange(supabase, TABLE_INBOUND, "inbound_date", monthStart, monthEnd);
-      const rows = Array.from(merged.values()).filter((r) => {
-        const d = r.inbound_date.slice(0, 10);
-        return d >= monthStart && d <= monthEnd;
-      });
+      const allInboundRows = Array.from(merged.values());
+      const inboundMonths = new Set(allInboundRows.map((r) => toYearMonth(r.inbound_date)).filter(Boolean));
+      for (const ym of inboundMonths) {
+        const [mStart, mEnd] = getMonthRangeFromDate(`${ym}-01`);
+        await deleteByDateRange(supabase, TABLE_INBOUND, "inbound_date", mStart, mEnd);
+      }
+      const rows = allInboundRows;
       const codes = [...new Set(rows.map((r) => r.product_code))];
       const costRes = await supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes);
       const costMap = new Map<string, number>();
@@ -341,11 +349,13 @@ export async function POST(request: Request) {
           });
         }
       }
-      await deleteByDateRange(supabase, TABLE_OUTBOUND, "outbound_date", monthStart, monthEnd);
-      const rows = Array.from(merged.values()).filter((r) => {
-        const d = r.outbound_date.slice(0, 10);
-        return d >= monthStart && d <= monthEnd;
-      });
+      const allOutboundRows = Array.from(merged.values());
+      const outboundMonths = new Set(allOutboundRows.map((r) => toYearMonth(r.outbound_date)).filter(Boolean));
+      for (const ym of outboundMonths) {
+        const [mStart, mEnd] = getMonthRangeFromDate(`${ym}-01`);
+        await deleteByDateRange(supabase, TABLE_OUTBOUND, "outbound_date", mStart, mEnd);
+      }
+      const rows = allOutboundRows;
       const codes = [...new Set(rows.map((r) => r.product_code))];
       const costRes = await supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes);
       const costMap = new Map<string, number>();

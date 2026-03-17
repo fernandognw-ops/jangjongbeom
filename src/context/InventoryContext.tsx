@@ -637,12 +637,21 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, [refresh]);
 
-  // Supabase Realtime 구독: INSERT/UPDATE/DELETE 시 즉시 refresh (대시보드 실시간 반영)
+  // Supabase Realtime 구독: INSERT/UPDATE/DELETE 시 refresh (디바운스로 연속 갱신 방지)
   useEffect(() => {
     if (!FORCE_SUPABASE) return;
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (!url || !key) return;
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedRefresh = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        refresh();
+      }, 500);
+    };
 
     const supabase = createClient(url, key);
     const channel = supabase
@@ -654,7 +663,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
           schema: "public",
           table: "inventory_stock_snapshot",
         },
-        () => refresh()
+        debouncedRefresh
       )
       .on(
         "postgres_changes",
@@ -663,7 +672,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
           schema: "public",
           table: "inventory_inbound",
         },
-        () => refresh()
+        debouncedRefresh
       )
       .on(
         "postgres_changes",
@@ -672,7 +681,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
           schema: "public",
           table: "inventory_outbound",
         },
-        () => refresh()
+        debouncedRefresh
       )
       .on(
         "postgres_changes",
@@ -681,7 +690,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
           schema: "public",
           table: "inventory_products",
         },
-        () => refresh()
+        debouncedRefresh
       )
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
@@ -692,6 +701,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       });
 
     return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
   }, [refresh]);
