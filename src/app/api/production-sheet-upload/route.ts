@@ -187,8 +187,9 @@ export async function POST(request: Request) {
           snapshot_date: today,
         };
       });
-      const { data: rpcData, error: rpcError } = await supabase.rpc("replace_stock_snapshot", {
+      const { error: rpcError } = await supabase.rpc("replace_stock_snapshot", {
         p_rows: snapshotRows,
+        p_snapshot_date: today,
       });
       if (rpcError) {
         return NextResponse.json(
