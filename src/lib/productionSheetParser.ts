@@ -143,6 +143,8 @@ export interface InboundRow {
   product_code: string;
   quantity: number;
   inbound_date: string;
+  /** 입고처/창고 (엑셀 그대로) */
+  dest_warehouse?: string;
   /** 품목구분/품목 (Excel에 있으면 저장) */
   category?: string;
 }
@@ -152,6 +154,8 @@ export interface OutboundRow {
   quantity: number;
   outbound_date: string;
   sales_channel: "coupang" | "general";
+  /** 출고처/창고 (엑셀 그대로) */
+  dest_warehouse?: string;
   /** 품목구분/품목 (Excel에 있으면 저장) */
   category?: string;
 }
@@ -160,6 +164,8 @@ export interface StockSnapshotRow {
   product_code: string;
   quantity: number;
   unit_cost: number;
+  /** 창고명/창고 (엑셀 그대로) */
+  dest_warehouse?: string;
 }
 
 export interface ProductionSheetParseResult {
@@ -248,6 +254,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
     const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
     const idxDate = findCol(h, ["입고일자", "입고일", "일자"]);
+    const idxWh = findCol(h, ["입고처", "창고", "창고명", "보관장소", "보관처"]);
     const idxCat = findCol(h, ["품목구분", "품목", "카테고리"]);
 
     if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
@@ -264,11 +271,13 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       const qty = safeInt(row[idxQty]);
       const dateStr = parseDate(row[idxDate], year);
       if (!code || code.toLowerCase() === "nan" || qty <= 0 || !dateStr) continue;
+      const wh = idxWh >= 0 ? String(row[idxWh] ?? "").trim() : "";
       const category = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : undefined;
       inbound.push({
         product_code: code,
         quantity: qty,
         inbound_date: dateStr,
+        ...(wh && { dest_warehouse: wh }),
         ...(category && { category }),
       });
     }
@@ -287,6 +296,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
     const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
     const idxDate = findCol(h, ["출고일자", "출고일", "일자"]);
+    const idxWh = findCol(h, ["출고처", "창고", "창고명", "보관장소", "보관처"]);
     const idxSc = findCol(h, ["매출구분", "판매처"]);
     const idxCat = findCol(h, ["품목구분", "품목", "카테고리"]);
 
@@ -304,12 +314,14 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       const qty = safeInt(row[idxQty]);
       const dateStr = parseDate(row[idxDate], year);
       if (!code || code.toLowerCase() === "nan" || qty <= 0 || !dateStr) continue;
+      const wh = idxWh >= 0 ? String(row[idxWh] ?? "").trim() : "";
       const category = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : undefined;
       outbound.push({
         product_code: code,
         quantity: qty,
         outbound_date: dateStr,
         sales_channel: idxSc >= 0 ? toSalesChannel(row[idxSc]) : "general",
+        ...(wh && { dest_warehouse: wh }),
         ...(category && { category }),
       });
     }
@@ -337,6 +349,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
     const idxQty = findCol(h, ["수량", "재고", "재고수량"], { exclude: ["입수량"] });
+    const idxWh = findCol(h, ["창고명", "창고", "보관장소", "보관처", "입고처"]);
     const idxCost = findCol(h, ["단가", "원가", "제품원가표", "재고원가"]);
     const idxAmount = findCol(h, ["재고 금액", "재고금액"]);
 
@@ -348,7 +361,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       };
     }
 
-    const agg: Record<string, { qty: number; cost: number }> = {};
+    const agg: Record<string, { qty: number; cost: number; wh: string }> = {};
     for (let r = headerRow + 1; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
       const code = String(row[idxCode] ?? "").trim();
@@ -356,23 +369,30 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       const digits = (code.match(/\d/g) ?? []).length;
       if (code.length < 5 || digits < code.length * 0.5) continue;
 
+      const wh = idxWh >= 0 ? String(row[idxWh] ?? "").trim() : "";
+      const destWh = wh || "제이에스";
+      const key = `${code}|${destWh}`;
+
       const qty = safeInt(row[idxQty]);
       let cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
       const amount = idxAmount >= 0 ? safeFloat(row[idxAmount]) : 0;
       if (cost <= 0 && amount > 0 && qty > 0) cost = amount / qty;
 
-      if (!agg[code]) agg[code] = { qty: 0, cost: 0 };
-      agg[code].qty += qty;
-      agg[code].cost = cost > 0 ? cost : agg[code].cost;
+      if (!agg[key]) agg[key] = { qty: 0, cost: 0, wh: destWh };
+      agg[key].qty += qty;
+      agg[key].cost = cost > 0 ? cost : agg[key].cost;
     }
 
     const today = new Date().toISOString().slice(0, 10);
-    for (const [code, { qty, cost }] of Object.entries(agg)) {
+    for (const [key, { qty, cost, wh }] of Object.entries(agg)) {
+      const code = key.split("|")[0];
+      if (!code) continue;
       currentProductCodes.add(code);
       stockSnapshot.push({
         product_code: code,
         quantity: qty,
         unit_cost: Math.round(cost * 100) / 100,
+        dest_warehouse: wh,
       });
     }
   }

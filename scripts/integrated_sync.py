@@ -163,20 +163,6 @@ def find_col_exact(df: pd.DataFrame, header_row: int, names: list[str]) -> int:
     return -1
 
 
-def normalize_warehouse(warehouse: str) -> str:
-    """창고명 정규화 → dest_warehouse. 테이칼튼/테이칼튼1공장=쿠팡, 제이에스/컬리=일반"""
-    w = str(warehouse or "").strip().replace(" ", "")
-    if "테이칼튼" in w and "1공장" in w:
-        return "테이칼튼1공장"
-    if "테이칼튼" in w:
-        return "테이칼튼"
-    if "제이에스" in w:
-        return "제이에스"
-    if "컬리" in w:
-        return "컬리"
-    return "제이에스"  # 빈값·미인식 → 일반(제이에스)
-
-
 def _find_col_exclude(df: pd.DataFrame, header_row: int, names: list[str], exclude: list[str]) -> int:
     """헤더에서 names 매칭, exclude에 포함된 컬럼 제외 (예: 수량 검색 시 입수량 제외)"""
     row = df.iloc[header_row]
@@ -490,7 +476,7 @@ def load_stock(path: str, sheet_name: str, debug: bool = False, check_product: s
         cat = str(df.iloc[i, idx_cat] or "").strip() if idx_cat >= 0 else ""
         pack = safe_int(df.iloc[i, idx_pack]) if idx_pack >= 0 else 1
         wh_raw = str(df.iloc[i, idx_wh] or "").strip() if idx_wh >= 0 else ""
-        wh = normalize_warehouse(wh_raw) if wh_raw else "제이에스"
+        wh = wh_raw if wh_raw else "제이에스"
         cost = safe_float(df.iloc[i, idx_cost]) if idx_cost >= 0 else None
         total = safe_float(df.iloc[i, idx_total]) if idx_total >= 0 else None
 
@@ -748,7 +734,7 @@ def main() -> None:
     wh_info = ", ".join(f"{k}:{v}건" for k, v in sorted(wh_dist.items(), key=lambda x: -x[1]))
     print(f"    재고 파싱: {len(stock_rows)}건 (엑셀 총합 {stock_sum:,.0f}원)")
     if len(wh_dist) <= 1 and wh_dist.get("제이에스", 0) == len(stock_rows):
-        print(f"    ⚠ 창고 구분: 모두 제이에스. 재고 시트에 '창고명'/'입고처' 컬럼이 있는지 확인하고, scripts/migrate_snapshot_channel_pk.sql 실행 후 재동기화하세요.")
+        print(f"    ⚠ 창고 구분: 모두 제이에스. 재고 시트에 '창고명'/'입고처' 컬럼이 있는지 확인하세요.")
     else:
         print(f"    창고별: {wh_info}")
 
@@ -926,39 +912,26 @@ def main() -> None:
                     if (r.get("total_price") or 0) <= 0 and (r.get("unit_cost") or 0) > 0:
                         r["total_price"] = round(r["quantity"] * r["unit_cost"], 2)
 
+            merged_sum = sum(float(r.get("total_price") or 0) for r in stock_merged)
+            # product_code 단일 PK: 품목당 1행. 수량이 가장 많은 창고를 dest_warehouse로 저장
             if not args.dry_run:
                 n_del = truncate_table(supabase, TABLE_STOCK, "product_code")
                 if n_del != 0:
                     msg = f"기존 {n_del}행 삭제" if n_del > 0 else "기존 데이터 삭제"
                     print(f"    {TABLE_STOCK}: {msg}")
-            merged_sum = sum(float(r.get("total_price") or 0) for r in stock_merged)
-            # (product_code, dest_warehouse) 복합 PK 있으면 upsert, 없으면 product_code별 합산 후 insert
-            try:
-                n = upsert_batch(supabase, TABLE_STOCK, stock_merged, ["product_code", "dest_warehouse"], args.dry_run)
-                print(f"    {TABLE_STOCK}: {n}건 upsert (창고별 {len(stock_merged)}건, 합계 {merged_sum:,.0f}원)")
-            except Exception as e:
-                err = str(e).lower()
-                if "on conflict" in err or "unique" in err or "constraint" in err or "pgrst" in err:
-                    # 복합 PK 미적용: product_code별 합산 후 insert (dest_warehouse=제이에스로 통합)
-                    print(f"    ⚠ (product_code, dest_warehouse) 복합 PK 없음 → 창고 구분 없이 제이에스로 통합 저장")
-                    print(f"    → Supabase SQL Editor에서 scripts/migrate_snapshot_channel_pk.sql 실행 후 재동기화하면 창고별 저장됩니다.")
-                    fallback: dict[str, dict] = {}
-                    for r in stock_merged:
-                        code = r["product_code"]
-                        if code not in fallback:
-                            fallback[code] = dict(r)
-                            fallback[code]["dest_warehouse"] = "제이에스"
-                            fallback[code]["quantity"] = 0
-                            fallback[code]["total_price"] = 0.0
-                        fallback[code]["quantity"] += r["quantity"]
-                        fallback[code]["total_price"] = (fallback[code].get("total_price") or 0) + float(r.get("total_price") or 0)
-                    for x in fallback.values():
-                        x["total_price"] = round(x.get("total_price") or 0, 2)
-                    stock_fallback = list(fallback.values())
-                    n = insert_batch(supabase, TABLE_STOCK, stock_fallback, args.dry_run)
-                    print(f"    {TABLE_STOCK}: {n}건 삽입 완료")
+            by_code: dict[str, dict] = {}
+            for r in stock_merged:
+                code = r["product_code"]
+                if code not in by_code or r["quantity"] > by_code[code]["quantity"]:
+                    by_code[code] = dict(r)
                 else:
-                    raise
+                    by_code[code]["quantity"] += r["quantity"]
+                    by_code[code]["total_price"] = (by_code[code].get("total_price") or 0) + float(r.get("total_price") or 0)
+            for x in by_code.values():
+                x["total_price"] = round(x.get("total_price") or 0, 2)
+            stock_for_db = list(by_code.values())
+            n = insert_batch(supabase, TABLE_STOCK, stock_for_db, args.dry_run)
+            print(f"    {TABLE_STOCK}: {n}건 삽입 (품목 {len(stock_for_db)}건, 창고: {len(set(r['dest_warehouse'] for r in stock_for_db))}개, 합계 {merged_sum:,.0f}원)")
         except TableNotFoundError as e:
             _exit_missing_tables(e.table)
 

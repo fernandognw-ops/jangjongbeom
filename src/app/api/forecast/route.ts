@@ -2,17 +2,19 @@
  * 수요 예측 API
  * GET /api/forecast
  *
- * [정밀 산술 + 네이버 검색 트렌드]
- * 1. M0: Run-rate
- * 2. 추세: M0 - 3개월평균
- * 3. M1~M3: (3개월평균+추세) × (1 + 검색지수_변화율) 선형 연장, 검색가중치 최대 1.3배
- * 4. Clamping: 하한 0, 상한 직전달×2
+ * [판매 추세 + 검색량 지수 연동]
+ * 1. M0: Run-rate (당월 예상)
+ * 2. 추세 = M0 - 3개월평균
+ * 3. M1 = (3개월평균+추세) × 검색량_가중치
+ * 4. M2 = M1 × 검색량_가중치, M3 = M2 × 검색량_가중치 (검색량 추세 반영)
+ * 5. 검색량_가중치 = 1 + (당월_검색지수 - 전월_검색지수) / 100, ±30% 캡
+ * 6. Clamping: 0 ~ 직전달×2
  */
 
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
-import { fetchNaverSearchTrend, fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
+import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_OUTBOUND = "inventory_outbound";
@@ -114,13 +116,11 @@ export async function GET() {
 
     const dateFrom = new Date(year, month - 24, 1).toISOString().slice(0, 10);
 
-    const [productsRes, outboundRows, searchTrend, naverMonthly] = await Promise.all([
+    const [productsRes, outboundRows, naverMonthly] = await Promise.all([
       supabase.from(TABLE_PRODUCTS).select("product_code,product_name,category,group_name").limit(10000),
       fetchAllOutbound(supabase, dateFrom),
-      fetchNaverSearchTrend(),
       fetchNaverSearchTrendMonthly(),
     ]);
-    const searchMultiplierByCategory = searchTrend.byCategory ?? {};
 
     const naverIndexByMonth: Record<string, Record<string, number>> = {};
     for (const [kw, data] of Object.entries(naverMonthly ?? {})) {
@@ -228,22 +228,30 @@ export async function GET() {
       const f0 = clamp(m0Raw, lastMonthQty);
 
       const trend = f0 - avg3;
-      const searchChangeRate = searchMultiplierByCategory[prod.category] ?? 0;
-      const searchMult = 1 + searchChangeRate;
 
+      /** 검색량 지수 연동: (당월 - 전월) / 100, ±30% 캡. 0~100 스케일 기준 */
       const currIdx = naverIndexByMonth[thisMonthKey]?.[prod.category] ?? 0;
       const prevIdx = naverIndexByMonth[lastMonthKey]?.[prod.category] ?? 0;
       const hasNaverData = NAVER_CATEGORIES.includes(prod.category) && (currIdx > 0 || prevIdx > 0);
-      const indexMaintainOrRise = prevIdx <= 0 || currIdx >= prevIdx;
-      const indexBoost = hasNaverData && indexMaintainOrRise ? 1.05 : 1;
+      let searchWeight = 1;
+      if (hasNaverData && prevIdx > 0) {
+        const rawDelta = (currIdx - prevIdx) / 100; // 0~100 스케일 → -1~1
+        const capped = Math.max(-0.3, Math.min(0.3, rawDelta));
+        searchWeight = 1 + capped;
+      }
 
+      /** M1 = 3개월평균+추세, M2 = M1+추세, M3 = M2+추세 (기본 추세선) */
       const baseF1 = avg3 + trend;
       const baseF2 = baseF1 + trend;
       const baseF3 = baseF2 + trend;
 
-      const f1 = clamp(baseF1 * searchMult * indexBoost, lastMonthQty);
-      const f2 = clamp(baseF2 * searchMult * indexBoost, f1);
-      const f3 = clamp(baseF3 * searchMult * indexBoost, f2);
+      /** 검색량 가중치 적용: M1~M3에 검색량 지수 변화 반영 */
+      const indexMaintainOrRise = prevIdx <= 0 || currIdx >= prevIdx;
+      const refForF1 = Math.max(lastMonthQty, f0);
+      let f1 = clamp(baseF1 * searchWeight, refForF1);
+      if (hasNaverData && indexMaintainOrRise && f1 < f0) f1 = f0;
+      const f2 = clamp(baseF2 * searchWeight, f1);
+      const f3 = clamp(baseF3 * searchWeight, f2);
 
       const lastYearKeys = [thisMonthKey, ...next3MonthKeys].map((k) => {
         const [y, m] = k.split("-").map(Number) as [number, number];

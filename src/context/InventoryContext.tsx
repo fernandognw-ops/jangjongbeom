@@ -124,6 +124,8 @@ interface InventoryContextValue {
   } | null;
   /** 통합 새로고침 시 한 번에 로드 (AI 수요 예측) */
   aiForecastByProduct?: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
+  /** AI 예측보고 당월 예측 (카테고리별 forecast_this_month) - CategoryTrendChart 당월 표시용 */
+  categoryForecastThisMonth?: { thisMonthKey: string; byCategory: Record<string, number> };
   /** 판매·입고 백그라운드 로드 완료 여부 (null=로딩중, true=완료) */
   categoryTrendLoaded?: boolean | null;
 }
@@ -248,6 +250,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [categoryTrendData, setCategoryTrendData] = useState<InventoryContextValue["categoryTrendData"]>(null);
   const [categoryTrendLoaded, setCategoryTrendLoaded] = useState<boolean | null>(null);
   const [aiForecastByProduct, setAiForecastByProduct] = useState<Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>>({});
+  const [categoryForecastThisMonth, setCategoryForecastThisMonth] = useState<{ thisMonthKey: string; byCategory: Record<string, number> } | undefined>(undefined);
   const [supabaseSummary, setSupabaseSummary] = useState<{
     stockByProduct: Record<string, number>;
     stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
@@ -311,6 +314,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         totalSku?: number;
         dailyVelocityByProduct?: Record<string, number>;
         stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
+        stockByWarehouse?: Record<string, number>;
         error?: string;
       };
 
@@ -384,7 +388,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setSupabaseStockSnapshot(snapshot);
       setDailyVelocityByProduct(data.dailyVelocityByProduct ?? {});
       setStockByChannelFromApi(data.stockByChannel ?? { coupang: {}, general: {} });
-      setStockByWarehouse((data as { stockByWarehouse?: Record<string, number> }).stockByWarehouse ?? {});
+      setStockByWarehouse(data.stockByWarehouse ?? {});
       setSupabaseInbound([]);
       setSupabaseOutbound([]);
       setSupabaseSummary(null);
@@ -424,6 +428,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
           }
         }
         let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
+        let categoryForecast: { thisMonthKey: string; byCategory: Record<string, number> } | undefined;
         if (forecastRes.ok) {
           const fJson = await forecastRes.json().catch(() => null);
           const forecasts = (fJson?.product_forecasts ?? []) as Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
@@ -439,9 +444,22 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
               forecastMap[normalizeCode(code) || code] = v;
             }
           }
+          const cf = fJson?.category_forecast as Record<string, { forecast_this_month?: number }> | undefined;
+          const label = fJson?.forecast_this_month_label as string | undefined;
+          if (label && cf && typeof cf === "object") {
+            const byCategory: Record<string, number> = {};
+            for (const [cat, val] of Object.entries(cf)) {
+              const v = val?.forecast_this_month;
+              if (typeof v === "number" && v >= 0) byCategory[cat] = v;
+            }
+            if (Object.keys(byCategory).length > 0) {
+              categoryForecast = { thisMonthKey: label, byCategory };
+            }
+          }
         }
         setCategoryTrendData(categoryTrend);
         setAiForecastByProduct(forecastMap);
+        setCategoryForecastThisMonth(categoryForecast);
         setCategoryTrendLoaded(true);
         setDataRefreshKey((k) => k + 1);
       }).catch(() => {
@@ -845,6 +863,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       dataRefreshKey,
       categoryTrendData: useSupabaseInventory ? categoryTrendData : null,
       aiForecastByProduct: useSupabaseInventory ? aiForecastByProduct : undefined,
+      categoryForecastThisMonth: useSupabaseInventory ? categoryForecastThisMonth : undefined,
       categoryTrendLoaded: useSupabaseInventory ? categoryTrendLoaded : null,
     }),
     [
@@ -889,6 +908,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       dataRefreshKey,
       categoryTrendData,
       aiForecastByProduct,
+      categoryForecastThisMonth,
       categoryTrendLoaded,
     ]
   );

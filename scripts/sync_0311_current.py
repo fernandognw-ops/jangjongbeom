@@ -165,20 +165,6 @@ def _find_col_stock(df: pd.DataFrame, header_row: int, names: list[str], exclude
     return -1
 
 
-def _normalize_warehouse(warehouse: str) -> str:
-    """창고명 → dest_warehouse. 테이칼튼/테이칼튼1공장=쿠팡, 제이에스/컬리=일반"""
-    w = str(warehouse or "").strip().replace(" ", "")
-    if "테이칼튼" in w and "1공장" in w:
-        return "테이칼튼1공장"
-    if "테이칼튼" in w:
-        return "테이칼튼"
-    if "제이에스" in w:
-        return "제이에스"
-    if "컬리" in w:
-        return "컬리"
-    return "제이에스"
-
-
 def load_stock_snapshot(
     path: str,
     rawdata_cost_map: dict[str, float] | None = None,
@@ -237,7 +223,7 @@ def load_stock_snapshot(
             cost_from_stock = amount_val / qty
 
         warehouse_raw = str(df.iloc[r, idx_warehouse] or "").strip() if idx_warehouse >= 0 else ""
-        dest = _normalize_warehouse(warehouse_raw)
+        dest = warehouse_raw if warehouse_raw else "제이에스"
         product_name = str(df.iloc[r, idx_name] or "").strip() if idx_name >= 0 else ""
         pack_size = 1
         if idx_pack >= 0:

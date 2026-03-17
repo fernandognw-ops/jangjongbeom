@@ -2,6 +2,8 @@
 
 import { useMemo, useState, useEffect, useCallback } from "react";
 import { useInventory } from "@/context/InventoryContext";
+import { normalizeCategory, computeAvgNDayOutboundByProduct } from "@/lib/inventoryApi";
+import { simplifyProductName } from "@/lib/productNameFormatter";
 import { NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 import {
   ComposedChart,
@@ -18,14 +20,13 @@ import {
   ReferenceLine,
 } from "recharts";
 
-/** 카테고리별 색상 */
+/** 마스터 5개 카테고리만 */
 const CATEGORY_COLORS: Record<string, string> = {
   마스크: "#22d3ee",
   캡슐세제: "#a78bfa",
   섬유유연제: "#f472b6",
   액상세제: "#34d399",
   생활용품: "#fbbf24",
-  캡슐사은품: "#fb923c",
 };
 
 function getColorForCategory(category: string, index: number): string {
@@ -44,14 +45,13 @@ function getColorForCategory(category: string, index: number): string {
   );
 }
 
-/** 카테고리 표시용 짧은 이름 (차트·필터 공간 절약) */
+/** 카테고리 표시용 짧은 이름 (마스터 5개만) */
 const CATEGORY_SHORT: Record<string, string> = {
   마스크: "마스크",
   캡슐세제: "캡슐",
   섬유유연제: "섬유",
   액상세제: "액상",
   생활용품: "생활",
-  캡슐사은품: "캡슐사은품",
   "3개월 이동평균": "3M평균",
 };
 function shortCategoryLabel(cat: string): string {
@@ -88,7 +88,18 @@ export interface CategoryTrendData {
 type YearFilter = "all" | "2025" | "2026";
 
 export function CategoryTrendChart() {
-  const { categoryTrendData: contextCategoryTrend, isSupabaseLoading, categoryTrendLoaded, refresh } = useInventory() ?? {};
+  const {
+    categoryTrendData: contextCategoryTrend,
+    categoryForecastThisMonth,
+    inventoryProducts = [],
+    inventoryOutbound = [],
+    stockByProduct = {},
+    dailyVelocityByProduct = {},
+    safetyStockByProduct = {},
+    isSupabaseLoading,
+    categoryTrendLoaded,
+    refresh,
+  } = useInventory() ?? {};
   const [data, setData] = useState<CategoryTrendData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -139,10 +150,27 @@ export function CategoryTrendChart() {
     return data.months.filter((m) => m.startsWith(yearFilter));
   }, [data?.months, yearFilter]);
 
+  /** AI 예측보고 당월 예측을 반영한 chartData (다른 데이터 건드리지 않음) */
+  const effectiveChartData = useMemo(() => {
+    if (!data?.chartData?.length) return data?.chartData ?? [];
+    const cf = categoryForecastThisMonth;
+    if (!cf) return data.chartData;
+    const lastRow = data.chartData[data.chartData.length - 1] as Record<string, string | number>;
+    const lastMonth = String(lastRow?.month ?? "");
+    if (lastMonth !== cf.thisMonthKey) return data.chartData;
+    const merged = data.chartData.slice(0, -1).map((r) => ({ ...r }));
+    const newLast = { ...lastRow };
+    for (const [cat, val] of Object.entries(cf.byCategory)) {
+      newLast[cat] = val;
+    }
+    merged.push(newLast);
+    return merged;
+  }, [data?.chartData, categoryForecastThisMonth]);
+
   const filteredChartData = useMemo(() => {
-    if (!data?.chartData) return [];
+    if (!effectiveChartData?.length) return [];
     if (selectedCategories.size === 0) return [];
-    let rows = data.chartData;
+    let rows = effectiveChartData;
     if (yearFilter !== "all") {
       rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
     }
@@ -195,7 +223,7 @@ export function CategoryTrendChart() {
     }
 
     return base.map(({ _total, ...rest }) => ({ ...rest, outboundTotal: _total ?? 0 }));
-  }, [data?.chartData, selectedCategories, yearFilter]);
+  }, [effectiveChartData, selectedCategories, yearFilter]);
 
   const filteredMomTable = useMemo(() => {
     if (!data?.momRates) return [];
@@ -214,11 +242,11 @@ export function CategoryTrendChart() {
 
   const HIGH_VOLUME_THRESHOLD = 1_000_000;
   const { highVolCats, lowVolCats, chartDataHigh, chartDataLow } = useMemo(() => {
-    if (!data?.chartData || selectedCategories.size === 0) {
+    if (!effectiveChartData?.length || selectedCategories.size === 0) {
       return { highVolCats: [] as string[], lowVolCats: [] as string[], chartDataHigh: [], chartDataLow: [] };
     }
     const catTotals: Record<string, number> = {};
-    for (const row of data.chartData) {
+    for (const row of effectiveChartData) {
       for (const cat of selectedCategories) {
         catTotals[cat] = (catTotals[cat] ?? 0) + ((row[cat] as number) ?? 0);
       }
@@ -226,7 +254,7 @@ export function CategoryTrendChart() {
     const highVolCats = Array.from(selectedCategories).filter((c) => (catTotals[c] ?? 0) >= HIGH_VOLUME_THRESHOLD);
     const lowVolCats = Array.from(selectedCategories).filter((c) => (catTotals[c] ?? 0) < HIGH_VOLUME_THRESHOLD);
 
-    let rows = data.chartData;
+    let rows = effectiveChartData;
     if (yearFilter !== "all") {
       rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
     }
@@ -285,7 +313,7 @@ export function CategoryTrendChart() {
       chartDataHigh: buildChartData(highVolCats),
       chartDataLow: buildChartData(lowVolCats),
     };
-  }, [data?.chartData, selectedCategories, yearFilter]);
+  }, [effectiveChartData, selectedCategories, yearFilter]);
 
   /** 네이버 검색 지수 Y축 자동 스케일 (선택된 카테고리 min~max, 여유 10%) */
   const computeNaverDomain = (chartData: Record<string, string | number>[], naverCats: string[]): [number, number] => {
@@ -327,11 +355,11 @@ export function CategoryTrendChart() {
 
   /** 검색어-판매량 상관계수 + 액션플랜 (월별 데이터 1:1 매칭) */
   const correlationAnalysis = useMemo(() => {
-    if (!data?.chartData || selectedCategories.size === 0) return [];
+    if (!effectiveChartData?.length || selectedCategories.size === 0) return [];
     const naverCats = NAVER_CATEGORIES.filter((c) => selectedCategories.has(c));
     if (naverCats.length === 0) return [];
 
-    let rows = data.chartData;
+    let rows = effectiveChartData;
     if (yearFilter !== "all") rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
 
     const pearson = (x: number[], y: number[]): number => {
@@ -419,12 +447,7 @@ export function CategoryTrendChart() {
           showDataMismatchWarning,
       };
     });
-  }, [data?.chartData, selectedCategories, yearFilter]);
-
-  const focusedAction = useMemo(() => {
-    if (!focusedActionCategory) return correlationAnalysis[0] ?? null;
-    return correlationAnalysis.find((a) => a.category === focusedActionCategory) ?? correlationAnalysis[0] ?? null;
-  }, [correlationAnalysis, focusedActionCategory]);
+  }, [effectiveChartData, selectedCategories, yearFilter]);
 
   useEffect(() => {
     if (focusedActionCategory && correlationAnalysis.length > 0 && !correlationAnalysis.some((a) => a.category === focusedActionCategory)) {
@@ -432,13 +455,79 @@ export function CategoryTrendChart() {
     }
   }, [focusedActionCategory, correlationAnalysis]);
 
+  /** 카테고리별 재고 부족 분석 (보유 일수 기준: 품절임박 ≤3일, 부족 <14일) */
+  const shortageByCategory = useMemo(() => {
+    const out: Record<string, { low: number; out: number }> = {};
+    for (const cat of NAVER_CATEGORIES) out[cat] = { low: 0, out: 0 };
+    if (inventoryProducts.length === 0 || Object.keys(stockByProduct).length === 0) return out;
+    for (const p of inventoryProducts) {
+      const raw = String(p.category ?? p.group_name ?? "").trim();
+      const pCat = normalizeCategory(raw) || raw;
+      if (!NAVER_CATEGORIES.includes(pCat)) continue;
+      const stock = Math.max(0, stockByProduct[p.product_code] ?? stockByProduct[String(p.product_code).trim()] ?? 0);
+      const dailyVel = dailyVelocityByProduct[p.product_code] ?? dailyVelocityByProduct[String(p.product_code).trim()] ?? 0;
+      if (dailyVel <= 0) continue;
+      const daysOfStock = stock / dailyVel;
+      if (daysOfStock <= 3) out[pCat].out++;
+      else if (daysOfStock < 14) out[pCat].low++;
+    }
+    return out;
+  }, [inventoryProducts, stockByProduct, dailyVelocityByProduct]);
+
+  /** 품목별 누적 출고 기반 일평균 (최근 30일) → 3일 판매량 산출용 */
+  const dailyVelFromOutbound = useMemo(
+    () => computeAvgNDayOutboundByProduct(inventoryOutbound, 30),
+    [inventoryOutbound]
+  );
+
+  /** 카테고리별 재고 부족으로 인한 판매 손실 (누적 출고 기반 3일 판매량, 품절임박 3일 이하만) */
+  const MAX_SHORTAGE_SKUS = 8;
+  const DAYS_FOR_LOSS = 3;
+  const shortageLostByCategory = useMemo(() => {
+    type SkuRow = { label: string; code: string; pack_size?: number; lost: number; actual: number; potential: number };
+    const out: Record<string, { pct: number; totalLost: number; skus: SkuRow[] }> = {};
+    for (const cat of NAVER_CATEGORIES) out[cat] = { pct: 0, totalLost: 0, skus: [] };
+    if (!effectiveChartData?.length || inventoryProducts.length === 0) return out;
+    const lastRow = effectiveChartData[effectiveChartData.length - 1] as Record<string, string | number>;
+    const lastMonth = String(lastRow?.month ?? "");
+    if (!lastMonth) return out;
+    const skusByCat: Record<string, SkuRow[]> = {};
+    for (const cat of NAVER_CATEGORIES) skusByCat[cat] = [];
+    for (const p of inventoryProducts) {
+      const raw = String(p.category ?? p.group_name ?? "").trim();
+      const pCat = normalizeCategory(raw) || raw;
+      if (!NAVER_CATEGORIES.includes(pCat)) continue;
+      const stock = Math.max(0, stockByProduct[p.product_code] ?? stockByProduct[String(p.product_code).trim()] ?? 0);
+      const dailyVel = dailyVelFromOutbound[p.product_code] ?? dailyVelFromOutbound[String(p.product_code).trim()] ?? dailyVelocityByProduct[p.product_code] ?? dailyVelocityByProduct[String(p.product_code).trim()] ?? 0;
+      if (dailyVel <= 0) continue;
+      const daysOfStock = stock / dailyVel;
+      if (daysOfStock > DAYS_FOR_LOSS) continue; // 품절임박(3일 이하)만 손실 집계
+      const potential = dailyVel * DAYS_FOR_LOSS; // 3일 판매량 = 일평균 × 3
+      const actual = dailyVel * daysOfStock; // 3일 중 재고로 판매 가능했던 수량
+      const lost = Math.max(0, potential - actual);
+      if (lost <= 0) continue;
+      const label = String(p.product_name ?? p.product_code ?? "").trim() || String(p.product_code ?? "");
+      skusByCat[pCat].push({ label, code: String(p.product_code ?? ""), pack_size: p.pack_size, lost, actual, potential });
+    }
+    for (const cat of NAVER_CATEGORIES) {
+      const categoryActual = (lastRow[cat] as number) ?? 0;
+      const list = skusByCat[cat] ?? [];
+      list.sort((a, b) => b.lost - a.lost);
+      const totalLost = list.reduce((s, t) => s + t.lost, 0);
+      const skus = list.slice(0, MAX_SHORTAGE_SKUS);
+      const pct = categoryActual + totalLost > 0 ? Math.round((totalLost / (categoryActual + totalLost)) * 1000) / 10 : 0;
+      out[cat] = { pct, totalLost, skus };
+    }
+    return out;
+  }, [effectiveChartData, inventoryProducts, stockByProduct, dailyVelocityByProduct, dailyVelFromOutbound]);
+
   /** 네이버 검색 지수 변화율 기반 액션플랜 (전월 대비 MoM + 작년 동월 대비 YoY) */
   const naverIndexActionPlans = useMemo(() => {
-    if (!data?.chartData || selectedCategories.size === 0) return [];
+    if (!effectiveChartData?.length || selectedCategories.size === 0) return [];
     const naverCats = NAVER_CATEGORIES.filter((c) => selectedCategories.has(c));
     if (naverCats.length === 0) return [];
 
-    let rows = data.chartData;
+    let rows = effectiveChartData;
     if (yearFilter !== "all") rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
     if (rows.length < 2) return [];
 
@@ -447,15 +536,21 @@ export function CategoryTrendChart() {
     const lastMonth = String(lastRow.month ?? "");
     const [y, m] = lastMonth.split("-").map(Number);
     const lastYearSameMonth = `${y - 1}-${String(m).padStart(2, "0")}`;
-    const yoyRow = data.chartData.find((r) => String(r.month ?? "") === lastYearSameMonth) as Record<string, string | number> | undefined;
+    const yoyRow = effectiveChartData.find((r) => String(r.month ?? "") === lastYearSameMonth) as Record<string, string | number> | undefined;
 
     return naverCats.map((cat) => {
       const currVal = (lastRow[`naver_${cat}`] as number) ?? 0;
       const prevVal = (prevRow[`naver_${cat}`] as number) ?? 0;
       const lastYearVal = yoyRow ? ((yoyRow[`naver_${cat}`] as number) ?? 0) : 0;
 
+      const currSales = (lastRow[cat] as number) ?? 0;
+      const prevSales = (prevRow[cat] as number) ?? 0;
+
       const changeRate = prevVal > 0 ? ((currVal - prevVal) / prevVal) * 100 : 0;
       const changeRateRounded = Math.round(changeRate * 10) / 10;
+
+      const salesChangeRate = prevSales > 0 ? ((currSales - prevSales) / prevSales) * 100 : 0;
+      const salesChangeRounded = Math.round(salesChangeRate * 10) / 10;
 
       const changeRateYoY = lastYearVal > 0 ? ((currVal - lastYearVal) / lastYearVal) * 100 : 0;
       const changeRateYoYRounded = Math.round(changeRateYoY * 10) / 10;
@@ -465,22 +560,40 @@ export function CategoryTrendChart() {
       const lagText = lag === 0 ? "동시" : `${lag}개월 선행`;
       const impactMonths = lag === 0 ? 1 : lag;
 
+      const searchUp = changeRate > 0;
+      const searchDown = changeRate < 0;
+      const salesUp = salesChangeRate > 0;
+      const salesDown = salesChangeRate < 0;
+
       let variant: "하락" | "상승" | "보합" = "보합";
       let message = "";
       let cardColor = "zinc";
 
-      if (changeRate <= -10) {
+      if (searchDown && salesDown) {
         variant = "하락";
         cardColor = "rose";
-        message = `⚠️ [재고 방어] 시장 관심도가 ${Math.abs(changeRateRounded)}% 급감했습니다. ${lagText} 지표임을 고려할 때, ${impactMonths}개월 뒤 출고량 감소가 확실시됩니다. 신규 생산 및 발주량을 20% 이상 하향 조정하세요.`;
-      } else if (changeRate >= 10) {
+        message = `⚠️ [재고 방어] 검색량·판매량 동반 감소. ${lagText} 지표로 ${impactMonths}개월 뒤 출고량 감소 예상. 발주량 20% 이상 하향 조정하세요.`;
+      } else if (searchUp && salesUp) {
         variant = "상승";
         cardColor = "emerald";
-        message = `🚀 [공격적 확보] 시장 관심도가 ${changeRateRounded}% 폭발했습니다. ${impactMonths}개월 뒤 주문 폭주가 예상됩니다. 품절 방지를 위해 선제적으로 재고를 15% 더 확보하세요.`;
+        message = `🚀 [공격적 확보] 검색량·판매량 동반 상승(전월 판매 +${salesChangeRounded}%). 발주량 10~15% 확보하세요.`;
+      } else if (searchUp && salesDown) {
+        variant = "보합";
+        cardColor = "amber";
+        const shortage = shortageByCategory[cat] ?? { low: 0, out: 0 };
+        const hasShortage = shortage.out > 0 || shortage.low > 0;
+        const lostPct = shortageLostByCategory[cat]?.pct ?? 0;
+        message = hasShortage
+          ? `⚠️ [점검 필요] 검색량은 상승인데 판매량은 감소(전월 ${salesChangeRounded}%). 재고 부족으로 추정 손실 약 ${lostPct}%. 하단 결품 손실 테이블 참조.`
+          : `⚠️ [점검 필요] 검색량은 상승인데 판매량은 감소(전월 ${salesChangeRounded}%). 프로모션·가격·경쟁 등 원인 점검 후 발주 결정하세요.`;
+      } else if (searchDown && salesUp) {
+        variant = "보합";
+        cardColor = "zinc";
+        message = `✔ [현상 유지] 검색은 하락인데 판매는 상승. 프로모션 영향 가능. 발주량 유지, 과다 재고 금지.`;
       } else {
         variant = "보합";
         cardColor = "zinc";
-        message = `✅ [현상 유지] 시장 수요가 안정적입니다. 현재의 Run-rate(판매 속도)에 맞춰 정기 발주를 유지하세요.`;
+        message = `✔ [현상 유지] 검색·판매 변화 미미. 발주량 유지하세요.`;
       }
 
       return {
@@ -495,7 +608,7 @@ export function CategoryTrendChart() {
         cardColor,
       };
     });
-  }, [data?.chartData, selectedCategories, yearFilter, correlationAnalysis]);
+  }, [effectiveChartData, selectedCategories, yearFilter, correlationAnalysis, shortageByCategory, shortageLostByCategory]);
 
   if (loading) {
     return (
@@ -935,51 +1048,6 @@ export function CategoryTrendChart() {
         </div>
       </div>
 
-      {/* 액션플랜 카드 (상관계수 기반) */}
-      {showNaverSearch && correlationAnalysis.length > 0 && focusedAction && (
-        <div
-          className={`rounded-xl border-2 px-5 py-4 ${
-            focusedAction.actionColor === "emerald"
-              ? "border-emerald-500/60 bg-emerald-500/10"
-              : focusedAction.actionColor === "rose"
-                ? "border-rose-500/60 bg-rose-500/10"
-                : "border-amber-500/60 bg-amber-500/10"
-          }`}
-        >
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <span
-              className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold uppercase ${
-                focusedAction.actionColor === "emerald"
-                  ? "bg-emerald-500/30 text-emerald-300"
-                  : focusedAction.actionColor === "rose"
-                    ? "bg-rose-500/30 text-rose-300"
-                    : "bg-amber-500/30 text-amber-300"
-              }`}
-            >
-              {focusedAction.actionType}
-            </span>
-            <span
-              className="cursor-pointer rounded-md px-2 py-0.5 text-sm font-medium transition-colors hover:bg-zinc-700/80"
-              style={{ color: getColorForCategory(focusedAction.category, data.categories.indexOf(focusedAction.category)) }}
-              onClick={() => setFocusedActionCategory(focusedAction.category)}
-              onKeyDown={(e) => e.key === "Enter" && setFocusedActionCategory(focusedAction.category)}
-              role="button"
-              tabIndex={0}
-            >
-              {focusedAction.category}
-            </span>
-          </div>
-          <p className="text-base font-semibold leading-relaxed text-white md:text-lg">
-            {focusedAction.actionMessage}
-          </p>
-          {focusedAction.showDataMismatchWarning && (
-            <p className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-sm font-medium text-rose-200">
-              ⚠️ 현재 시장 트렌드와 무관한 판매가 일어나고 있으니 과잉 생산에 주의하세요.
-            </p>
-          )}
-        </div>
-      )}
-
       {/* 누적 영역 차트: 왼쪽 100만 이상 / 오른쪽 100만 미만 (스케일 분리) */}
       {selectedCategories.size === 0 ? (
         <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-zinc-600 bg-zinc-800/30 text-zinc-500 md:h-96">
@@ -1222,45 +1290,76 @@ export function CategoryTrendChart() {
         </div>
       )}
 
-      {/* 검색어-판매량 상관계수 (클릭 시 액션플랜 포커스) */}
-      {showNaverSearch && correlationAnalysis.length > 0 && (
-        <div className="rounded-xl border border-zinc-600 bg-zinc-800/40 px-4 py-3">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-zinc-400">검색어-판매량 상관계수</span>
-            <span className="text-[10px] text-zinc-500">(클릭 시 액션플랜 표시 · 월별 1:1 매칭)</span>
+      {/* 결품으로 인한 판매 손실 */}
+      {(() => {
+        const catsWithSkus = Object.entries(shortageLostByCategory).filter(
+          ([_, v]) => v?.skus && v.skus.length > 0
+        );
+        if (catsWithSkus.length === 0) return null;
+        return (
+          <div className="min-w-0 overflow-x-auto">
+            <h3 className="mb-3 text-sm font-semibold text-zinc-300">
+              결품으로 인한 판매 손실
+            </h3>
+            <p className="mb-2 text-xs text-zinc-500">
+              누적 출고량(최근 30일) 기반 일평균 × 3일. 품절임박(재고 3일 이하) 품목만 집계.
+            </p>
+            <table className="w-full min-w-[520px] border-collapse text-sm">
+              <thead>
+                <tr>
+                  <th className="border border-zinc-600 bg-zinc-800/80 px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
+                    카테고리
+                  </th>
+                  <th className="border border-zinc-600 bg-zinc-800/80 px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-zinc-400">
+                    품목(SKU)
+                  </th>
+                  <th className="border border-zinc-600 bg-zinc-800/80 px-3 py-2 text-right text-xs font-medium text-zinc-400">
+                    추정 손실(EA)
+                  </th>
+                  <th className="border border-zinc-600 bg-zinc-800/80 px-3 py-2 text-right text-xs font-medium text-zinc-400">
+                    3일 판매 가능(EA)
+                  </th>
+                  <th className="border border-zinc-600 bg-zinc-800/80 px-3 py-2 text-right text-xs font-medium text-zinc-400">
+                    3일 판매량(EA)
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {catsWithSkus.flatMap(([cat, data]) =>
+                  (data.skus ?? []).map((s) => (
+                    <tr key={`${cat}-${s.code}`} className="hover:bg-zinc-800/50">
+                      <td className="border border-zinc-700 px-3 py-2 font-medium text-zinc-200" title={cat}>
+                        {shortCategoryLabel(cat)}
+                      </td>
+                      <td className="border border-zinc-700 px-3 py-2 text-zinc-300" title={s.code}>
+                        {simplifyProductName(s.label, s.pack_size) || s.code}
+                      </td>
+                      <td className="border border-zinc-700 px-3 py-2 text-right tabular-nums text-amber-400">
+                        {Math.round(s.lost).toLocaleString()}
+                      </td>
+                      <td className="border border-zinc-700 px-3 py-2 text-right tabular-nums text-zinc-400">
+                        {Math.round(s.actual).toLocaleString()}
+                      </td>
+                      <td className="border border-zinc-700 px-3 py-2 text-right tabular-nums text-zinc-400">
+                        {Math.round(s.potential).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
-          <div className="mt-1 flex flex-wrap gap-4 text-sm">
-            {correlationAnalysis.map((item) => {
-              const { category, correlation, lagText, actionType } = item;
-              const pct = Math.round(Math.abs(correlation) * 100);
-              const trustColor = pct >= 70 ? "text-emerald-400" : pct >= 50 ? "text-zinc-300" : "text-amber-400";
-              const trustLabel = pct >= 70 ? "신뢰도 높음" : pct >= 50 ? "보통" : "참고용";
-              const isFocused = focusedActionCategory === category || (!focusedActionCategory && correlationAnalysis[0]?.category === category);
-              return (
-                <button
-                  key={category}
-                  type="button"
-                  onClick={() => setFocusedActionCategory(category)}
-                  className={`cursor-pointer rounded-lg px-2 py-1 text-left transition-colors hover:bg-zinc-700/60 ${trustColor} ${isFocused ? "ring-1 ring-cyan-500/50 bg-zinc-700/40" : ""}`}
-                >
-                  <span style={{ color: getColorForCategory(category, data.categories.indexOf(category)) }} className="font-medium">{category}</span>
-                  <span className="ml-1 text-zinc-400">({actionType})</span>
-                  : 검색 트렌드와 판매량이 <span className="font-bold">{pct}%</span> 일치 ({trustLabel}). 검색어가 <span className="font-medium">{lagText}</span>하는 경향.
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+        );
+      })()}
 
-      {/* 전월 대비 증감률(%) 표 */}
+      {/* 월별 카테고리 증감율 표 */}
       <div className="min-w-0 overflow-x-auto">
         <h3 className="mb-3 text-sm font-semibold text-zinc-300">
-          전월 대비 증감률 (%)
+          월별 카테고리 증감율 (%)
         </h3>
         {filteredMomTable.length === 0 ? (
           <div className="rounded-xl border border-zinc-700 bg-zinc-800/30 py-8 text-center text-zinc-500">
-            카테고리를 선택하면 전월 대비 증감률을 확인할 수 있습니다.
+            카테고리를 선택하면 월별 카테고리 증감율을 확인할 수 있습니다.
           </div>
         ) : (
           <table className="w-full min-w-[480px] border-collapse text-sm">

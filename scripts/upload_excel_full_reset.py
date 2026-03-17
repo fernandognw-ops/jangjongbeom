@@ -400,20 +400,6 @@ def load_outbound(path: str, sheet_name: str) -> list[dict]:
     return rows
 
 
-def normalize_warehouse(warehouse: str) -> str:
-    """창고명 정규화 → dest_warehouse (dest_warehouse = 창고명 동일). 테이칼튼/테이칼튼1공장=쿠팡, 제이에스/컬리=일반"""
-    w = str(warehouse or "").strip().replace(" ", "")
-    if "테이칼튼" in w and "1공장" in w:
-        return "테이칼튼1공장"
-    if "테이칼튼" in w:
-        return "테이칼튼"
-    if "제이에스" in w:
-        return "제이에스"
-    if "컬리" in w:
-        return "컬리"
-    return "제이에스"  # 기본값: 일반
-
-
 # ========== ④ 재고 → inventory_stock_snapshot (product_code별 1건, dest_warehouse=창고명으로 채널분리) ==========
 def load_stock_snapshot(path: str, sheet_name: str) -> tuple[list[dict], dict[str, float]]:
     """재고 시트 = 현재고 마스터. product_code+창고명(dest_warehouse=창고명 동일)별 수량·금액 합산하여 채널별 저장"""
@@ -470,7 +456,7 @@ def load_stock_snapshot(path: str, sheet_name: str) -> tuple[list[dict], dict[st
             pack_size = 1
 
         warehouse_raw = str(df.iloc[r, idx_warehouse] or "").strip() if idx_warehouse >= 0 else ""
-        dest = normalize_warehouse(warehouse_raw)
+        dest = warehouse_raw if warehouse_raw else "제이에스"
 
         product_name = str(df.iloc[r, idx_name] or "").strip() if idx_name >= 0 else ""
         category = str(df.iloc[r, idx_cat] or "").strip() if idx_cat >= 0 else ""

@@ -11,6 +11,7 @@ import { DataManagement } from "@/components/DataManagement";
 import { SyncSettings } from "@/components/SyncSettings";
 import { DashboardBoxHero } from "@/components/DashboardBoxHero";
 import { ProductionSheetUploader } from "@/components/ProductionSheetUploader";
+import { TopSkuByCategoryDashboard } from "@/components/TopSkuByCategoryDashboard";
 
 const CategoryTrendChart = lazy(() =>
   import("@/components/CategoryTrendChart").then((m) => ({ default: m.CategoryTrendChart }))
@@ -163,6 +164,12 @@ export default function DashboardPage() {
               <ProductionSheetUploader />
             </div>
             <DashboardBoxHero />
+            <section className="mt-8" id="top-sku-dashboard">
+              <h2 className="mb-3 text-base font-bold text-slate-800 md:text-lg">
+                카테고리별 주력 SKU 재고 관리
+              </h2>
+              <TopSkuByCategoryDashboard />
+            </section>
             {/* 카테고리 트렌드·AI 예측 (비동기 로딩) */}
             <Suspense
               fallback={

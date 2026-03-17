@@ -7,6 +7,8 @@
   },
   "scripts": {
     "dev": "next dev -p 3007",
+    "dev:3000": "next dev -p 3000",
+    "dev:reset": "powershell -ExecutionPolicy Bypass -File ./scripts/restart-dev.ps1",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

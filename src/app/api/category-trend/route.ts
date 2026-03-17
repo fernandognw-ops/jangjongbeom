@@ -64,15 +64,15 @@ function isCoupangChannel(ch: string | null | undefined): boolean {
   return s === "coupang" || s === "쿠팡" || s.includes("쿠팡");
 }
 
-/** 카테고리 정규화: 캡슐세제 사은품 → 캡슐사은품 */
+/** 카테고리 정규화: 마스터 5개만. 캡슐세제 사은품 → 캡슐세제 */
 function normalizeCategoryName(cat: string): string {
   const s = String(cat ?? "").trim();
-  if (s === "캡슐세제 사은품" || (s.includes("캡슐세제") && s.includes("사은품"))) return "캡슐사은품";
+  if (s === "캡슐세제 사은품" || (s.includes("캡슐세제") && s.includes("사은품"))) return "캡슐세제";
   return s;
 }
 
-/** 표시용 카테고리 순서 (기타 제외) */
-const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품", "캡슐사은품"];
+/** 마스터 코드 5개만. 대시보드에 이 외 카테고리 표시 금지 */
+const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"];
 
 export async function GET() {
   try {
@@ -145,7 +145,7 @@ export async function GET() {
     }
     const byMonthCategory: Record<string, Record<string, number>> = {};
 
-    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용 (인바운드 제외), 기타 제외
+    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용. 마스터 5개 카테고리만 표시
     for (const o of outbound) {
       const m = (o.outbound_date ?? "").slice(0, 7);
       if (!m) continue;
@@ -164,10 +164,7 @@ export async function GET() {
     }
 
     const ordered = [...categoriesSet];
-    const finalCategories = [
-      ...CATEGORY_ORDER.filter((c) => ordered.includes(c)),
-      ...ordered.filter((c) => !CATEGORY_ORDER.includes(c)).sort(),
-    ];
+    const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
 
     // 최근 14개월 슬롯 고정 (25년 3월~ 데이터 포함)
     const fourteenMonthsSlots: string[] = [];

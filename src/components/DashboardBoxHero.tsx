@@ -95,6 +95,13 @@ function clampStock(stock: number): { display: number; hasWarning: boolean } {
   return { display: 0, hasWarning: true };
 }
 
+/** dest_warehouse → 쿠팡 여부. 테이칼튼, 테이칼튼 1공장, 테이칼튼1공장 = 쿠팡. 비어있으면 일반 */
+function isCoupangWarehouse(wh: string): boolean {
+  const s = String(wh ?? "").trim().replace(/\s/g, "");
+  if (!s) return false;
+  return s.includes("테이칼튼");
+}
+
 export function DashboardBoxHero() {
   const {
     useSupabaseInventory,
@@ -309,15 +316,16 @@ export function DashboardBoxHero() {
     return Object.values(stockByProductRaw).filter((q) => q < 0).length;
   }, [stockByProductRaw]);
 
-  const coupangStockTotal = useMemo(() => {
-    if (!stockByProductByChannel?.coupang) return 0;
-    return Object.values(stockByProductByChannel.coupang).reduce((a, b) => a + b, 0);
-  }, [stockByProductByChannel]);
-
-  const generalStockTotal = useMemo(() => {
-    if (!stockByProductByChannel?.general) return 0;
-    return Object.values(stockByProductByChannel.general).reduce((a, b) => a + b, 0);
-  }, [stockByProductByChannel]);
+  const { coupangStockTotal, generalStockTotal } = useMemo(() => {
+    const entries = Object.entries(stockByWarehouse);
+    const coupang = entries
+      .filter(([wh]) => isCoupangWarehouse(wh))
+      .reduce((a, [, q]) => a + q, 0);
+    const general = entries
+      .filter(([wh]) => !isCoupangWarehouse(wh))
+      .reduce((a, [, q]) => a + q, 0);
+    return { coupangStockTotal: coupang, generalStockTotal: general };
+  }, [stockByWarehouse]);
 
   const channelTheme = {
     all: {
@@ -413,6 +421,9 @@ export function DashboardBoxHero() {
                 .map(([wh, qty]) => (
                   <div key={wh} className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
                     <span className="text-sm text-slate-600">{wh}</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${isCoupangWarehouse(wh) ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
+                      {isCoupangWarehouse(wh) ? "(쿠팡)" : "(일반)"}
+                    </span>
                     <span className="font-bold tabular-nums text-slate-800">{qty.toLocaleString()}EA</span>
                   </div>
                 ))}
@@ -784,7 +795,7 @@ function ProductCard({
   const shortfall = safetyStock > 0 && displayStock < safetyStock
     ? Math.max(0, safetyStock - displayStock)
     : 0;
-  const simplifiedName = simplifyProductName(String(product.product_name ?? product.product_code ?? ""));
+  const simplifiedName = simplifyProductName(String(product.product_name ?? product.product_code ?? ""), product.pack_size);
   const packSize = product.pack_size ?? 0;
   const boxCount = packSize > 0 ? Math.floor(displayStock / packSize) : null;
   const needsAction = status === "out" || status === "low";

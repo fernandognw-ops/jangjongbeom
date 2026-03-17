@@ -87,18 +87,29 @@ export async function POST(request: Request) {
       }
     }
 
-    // 1. 입고 INSERT (product_code+inbound_date 기준 병합, sales_channel 없음)
+    // 1. 입고: date+dest_warehouse 일치 기존 삭제 후 INSERT
     let inboundInserted = 0;
     if (inbound.length > 0) {
-      const merged = new Map<string, { product_code: string; quantity: number; inbound_date: string; category?: string }>();
+      const dates = [...new Set(inbound.map((r) => r.inbound_date))];
+      const warehouses = [...new Set(inbound.map((r) => r.dest_warehouse).filter(Boolean))] as string[];
+      if (dates.length > 0) {
+        let q = supabase.from(TABLE_INBOUND).delete().in("inbound_date", dates);
+        if (warehouses.length > 0) {
+          q = q.in("dest_warehouse", warehouses);
+        }
+        await q;
+      }
+      const merged = new Map<string, { product_code: string; quantity: number; inbound_date: string; dest_warehouse?: string; category?: string }>();
       for (const r of inbound) {
+        const wh = r.dest_warehouse?.trim() || undefined;
         const k = `${r.product_code}|${r.inbound_date}`;
         const existing = merged.get(k);
         if (existing) {
           existing.quantity += r.quantity;
           if (r.category && !existing.category) existing.category = r.category;
+          if (wh && !existing.dest_warehouse) existing.dest_warehouse = wh;
         } else {
-          merged.set(k, { product_code: r.product_code, quantity: r.quantity, inbound_date: r.inbound_date, ...(r.category && { category: r.category }) });
+          merged.set(k, { product_code: r.product_code, quantity: r.quantity, inbound_date: r.inbound_date, ...(wh && { dest_warehouse: wh }), ...(r.category && { category: r.category }) });
         }
       }
       const rows = Array.from(merged.values());
@@ -115,19 +126,30 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. 출고 INSERT (코드에서 중복 병합)
+    // 2. 출고: date+dest_warehouse 일치 기존 삭제 후 INSERT
     let outboundInserted = 0;
     if (outbound.length > 0) {
-      const merged = new Map<string, { product_code: string; quantity: number; outbound_date: string; sales_channel: "coupang" | "general"; category?: string }>();
+      const dates = [...new Set(outbound.map((r) => r.outbound_date))];
+      const warehouses = [...new Set(outbound.map((r) => r.dest_warehouse).filter(Boolean))] as string[];
+      if (dates.length > 0) {
+        let q = supabase.from(TABLE_OUTBOUND).delete().in("outbound_date", dates);
+        if (warehouses.length > 0) {
+          q = q.in("dest_warehouse", warehouses);
+        }
+        await q;
+      }
+      const merged = new Map<string, { product_code: string; quantity: number; outbound_date: string; sales_channel: "coupang" | "general"; dest_warehouse?: string; category?: string }>();
       for (const r of outbound) {
         const ch = ensureChannel(r.sales_channel);
+        const wh = r.dest_warehouse?.trim() || undefined;
         const k = `${r.product_code}|${r.outbound_date}|${ch}`;
         const existing = merged.get(k);
         if (existing) {
           existing.quantity += r.quantity;
           if (r.category && !existing.category) existing.category = r.category;
+          if (wh && !existing.dest_warehouse) existing.dest_warehouse = wh;
         } else {
-          merged.set(k, { product_code: r.product_code, quantity: r.quantity, outbound_date: r.outbound_date, sales_channel: ch, ...(r.category && { category: r.category }) });
+          merged.set(k, { product_code: r.product_code, quantity: r.quantity, outbound_date: r.outbound_date, sales_channel: ch, ...(wh && { dest_warehouse: wh }), ...(r.category && { category: r.category }) });
         }
       }
       const rows = Array.from(merged.values());
@@ -161,43 +183,76 @@ export async function POST(request: Request) {
       }
     }
 
-    // 5. inventory_stock_snapshot 동기화 (unit_cost 0이면 기존값 유지)
+    // 5. inventory_stock_snapshot: date+dest_warehouse 일치 기존 삭제 후 upsert
     if (stockSnapshot.length > 0) {
       const today = new Date().toISOString().slice(0, 10);
+      const warehouses = [...new Set(stockSnapshot.map((s) => s.dest_warehouse).filter(Boolean))] as string[];
       const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
       const [existingSnap, productsCost] = await Promise.all([
-        supabase.from(TABLE_SNAPSHOT).select("product_code,unit_cost").in("product_code", codes),
+        supabase.from(TABLE_SNAPSHOT).select("product_code,dest_warehouse,unit_cost").in("product_code", codes),
         supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes),
       ]);
+      const costByKey = new Map<string, number>();
       const costByCode = new Map<string, number>();
       for (const r of existingSnap.data ?? []) {
-        const c = (r as { product_code: string; unit_cost: number }).unit_cost;
-        if (c != null && c > 0) costByCode.set((r as { product_code: string }).product_code, c);
+        const row = r as { product_code: string; dest_warehouse?: string; unit_cost: number };
+        const key = `${row.product_code}|${(row.dest_warehouse ?? "").trim() || "제이에스"}`;
+        if ((row.unit_cost ?? 0) > 0) costByKey.set(key, row.unit_cost);
       }
       for (const r of productsCost.data ?? []) {
         const p = r as { product_code: string; unit_cost: number };
-        if ((p.unit_cost ?? 0) > 0 && !costByCode.has(p.product_code)) costByCode.set(p.product_code, p.unit_cost);
+        if ((p.unit_cost ?? 0) > 0) costByCode.set(p.product_code, p.unit_cost);
       }
       const snapshotRows = stockSnapshot.map((s) => {
+        const wh = s.dest_warehouse?.trim() || "제이에스";
         let cost = s.unit_cost ?? 0;
-        if (cost <= 0) cost = costByCode.get(s.product_code) ?? 0;
+        if (cost <= 0) cost = costByKey.get(`${s.product_code}|${wh}`) ?? costByCode.get(s.product_code) ?? 0;
         return {
           product_code: s.product_code,
+          dest_warehouse: wh,
           quantity: s.quantity,
           unit_cost: cost,
           snapshot_date: today,
         };
       });
+      if (warehouses.length > 0) {
+        await supabase.from(TABLE_SNAPSHOT).delete().eq("snapshot_date", today).in("dest_warehouse", warehouses);
+      } else {
+        await supabase.from(TABLE_SNAPSHOT).delete().eq("snapshot_date", today);
+      }
       for (let i = 0; i < snapshotRows.length; i += BATCH) {
         const batch = snapshotRows.slice(i, i + BATCH);
         const { error } = await supabase
           .from(TABLE_SNAPSHOT)
-          .upsert(batch, { onConflict: "product_code" });
+          .upsert(batch, { onConflict: "product_code,dest_warehouse" });
         if (error) {
-          return NextResponse.json(
-            { error: `재고 스냅샷 저장 실패: ${error.message}` },
-            { status: 500 }
-          );
+          const errMsg = error.message.toLowerCase();
+          if (errMsg.includes("product_code,dest_warehouse") || errMsg.includes("unique") || errMsg.includes("constraint")) {
+            await supabase.from(TABLE_SNAPSHOT).delete().eq("snapshot_date", today);
+            const fallback = new Map<string, { product_code: string; quantity: number; unit_cost: number; snapshot_date: string; dest_warehouse: string }>();
+            for (const s of snapshotRows) {
+              const code = s.product_code;
+              const existing = fallback.get(code);
+              if (existing) {
+                existing.quantity += s.quantity;
+              } else {
+                fallback.set(code, { ...s, dest_warehouse: "제이에스" });
+              }
+            }
+            const fallbackBatch = Array.from(fallback.values());
+            const { error: err2 } = await supabase.from(TABLE_SNAPSHOT).upsert(fallbackBatch, { onConflict: "product_code" });
+            if (err2) {
+              return NextResponse.json(
+                { error: `재고 스냅샷 저장 실패: ${err2.message}` },
+                { status: 500 }
+              );
+            }
+          } else {
+            return NextResponse.json(
+              { error: `재고 스냅샷 저장 실패: ${error.message}` },
+              { status: 500 }
+            );
+          }
         }
       }
     }

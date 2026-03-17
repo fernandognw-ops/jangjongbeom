@@ -35,11 +35,13 @@ export function normalizeCode(c: unknown): string {
 }
 
 /** 품목구분 → 표준 카테고리 정규화 (필터 매칭용) */
-export const STANDARD_CATEGORIES = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품", "캡슐사은품"] as const;
+/** 마스터 코드 5개만 사용. 대시보드에 이 외 카테고리 표시 금지 */
+export const STANDARD_CATEGORIES = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"] as const;
+
 export function normalizeCategory(cat: string): string {
   const s = String(cat ?? "").trim();
   if (!s || s === "기타" || s === "전체") return "";
-  if (s === "캡슐세제 사은품" || (s.includes("캡슐세제") && s.includes("사은품"))) return "캡슐사은품";
+  if (s === "캡슐세제 사은품" || (s.includes("캡슐세제") && s.includes("사은품"))) return "캡슐세제";
   for (const std of STANDARD_CATEGORIES) {
     if (s === std || s.includes(std) || std.includes(s)) return std;
   }
@@ -739,6 +741,26 @@ export function computeAvg30DayOutboundByProduct(
 function isCoupangSalesChannel(ch: string | null | undefined): boolean {
   const s = String(ch ?? "").trim().toLowerCase();
   return s === "coupang" || s === "쿠팡" || s.includes("쿠팡") || s.includes("coupang");
+}
+
+/** 최근 N일 총 출고량 (품목별) - 카테고리별 상위 SKU 랭킹용 */
+export function computeTotalOutboundByProduct(
+  outbound: InventoryOutbound[],
+  days: number = 90
+): Record<string, number> {
+  const now = new Date();
+  const cutoff = new Date(now);
+  cutoff.setDate(cutoff.getDate() - days);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  const totalByProduct: Record<string, number> = {};
+  for (const o of outbound) {
+    if ((o.outbound_date ?? "").slice(0, 10) < cutoffStr) continue;
+    const code = String(o.product_code ?? "").trim();
+    if (!code) continue;
+    totalByProduct[code] = (totalByProduct[code] ?? 0) + toNumber(o.quantity);
+  }
+  return totalByProduct;
 }
 
 /** 최근 N일 일평균 출고량 - 캘린더 일수 기준 (수요 예측용) */
