@@ -71,6 +71,27 @@ export async function GET() {
       : "";
     const rows = maxDate ? allRows.filter((r) => (r.snapshot_date ?? "").slice(0, 10) === maxDate) : allRows;
 
+    const codesNeedingFallback = new Set<string>();
+    for (const r of rows) {
+      const code = String(r.product_code ?? "").trim();
+      const hasName = (r.product_name ?? "").toString().trim();
+      const hasCat = (r.category ?? "").toString().trim();
+      if (code && (!hasName || !hasCat)) codesNeedingFallback.add(code);
+    }
+    const productFallback = new Map<string, { product_name: string; category: string }>();
+    if (codesNeedingFallback.size > 0) {
+      const { data: productsData } = await supabase
+        .from("inventory_products")
+        .select("product_code,product_name,category,group_name")
+        .in("product_code", Array.from(codesNeedingFallback));
+      for (const p of productsData ?? []) {
+        const code = String((p as { product_code: string }).product_code ?? "").trim();
+        const name = String((p as { product_name?: string }).product_name ?? "").trim() || code;
+        const cat = String((p as { category?: string }).category ?? (p as { group_name?: string }).group_name ?? "").trim() || "기타";
+        if (code) productFallback.set(code, { product_name: name, category: cat });
+      }
+    }
+
     const seen = new Set<string>();
     const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
     const stockByWarehouse: Record<string, number> = {};
@@ -96,13 +117,17 @@ export async function GET() {
         stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;
       }
 
+      const fallback = productFallback.get(code);
+      const name = String(r.product_name ?? "").trim() || fallback?.product_name || code;
+      const category = String(r.category ?? "").trim() || fallback?.category || "기타";
+
       if (!merged[code]) {
         merged[code] = {
           qty: 0,
           price: 0,
           pack,
-          name: String(r.product_name ?? "").trim() || code,
-          category: String(r.category ?? "").trim() || "생활용품",
+          name,
+          category,
         };
       }
       merged[code].qty += qty;

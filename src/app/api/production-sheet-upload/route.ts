@@ -219,26 +219,33 @@ export async function POST(request: Request) {
     if (stockSnapshot.length > 0) {
       const today = new Date().toISOString().slice(0, 10);
       const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
-      const [existingSnap, productsCost] = await Promise.all([
+      const [existingSnap, productsInfo] = await Promise.all([
         supabase.from(TABLE_SNAPSHOT).select("product_code,unit_cost").in("product_code", codes),
-        supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes),
+        supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost,product_name,category,group_name").in("product_code", codes),
       ]);
       const costByCode = new Map<string, number>();
+      const productInfoByCode = new Map<string, { product_name?: string; category?: string }>();
       for (const r of existingSnap.data ?? []) {
         const c = (r as { product_code: string; unit_cost: number }).unit_cost;
         if (c != null && c > 0) costByCode.set((r as { product_code: string }).product_code, c);
       }
-      for (const r of productsCost.data ?? []) {
-        const p = r as { product_code: string; unit_cost: number };
-        if ((p.unit_cost ?? 0) > 0 && !costByCode.has(p.product_code)) costByCode.set(p.product_code, p.unit_cost);
+      for (const r of productsInfo.data ?? []) {
+        const p = r as { product_code: string; unit_cost?: number; product_name?: string; category?: string; group_name?: string };
+        if ((p.unit_cost ?? 0) > 0 && !costByCode.has(p.product_code)) costByCode.set(p.product_code, p.unit_cost!);
+        const name = (p.product_name ?? "").trim() || (p.product_code ?? "");
+        const cat = (p.category ?? p.group_name ?? "").trim() || "기타";
+        if (name || cat) productInfoByCode.set(p.product_code, { product_name: name || undefined, category: cat || undefined });
       }
       const snapshotRows = stockSnapshot.map((s) => {
         let cost = s.unit_cost ?? 0;
         if (cost <= 0) cost = costByCode.get(s.product_code) ?? 0;
         const totalPrice = (s.total_price ?? 0) > 0 ? s.total_price! : s.quantity * cost;
+        const info = productInfoByCode.get(s.product_code);
         return {
           product_code: s.product_code,
           dest_warehouse: s.dest_warehouse ?? "",
+          product_name: info?.product_name ?? s.product_code,
+          category: info?.category ?? "기타",
           quantity: s.quantity,
           unit_cost: Math.round(cost * 100) / 100,
           total_price: Math.round(totalPrice * 100) / 100,

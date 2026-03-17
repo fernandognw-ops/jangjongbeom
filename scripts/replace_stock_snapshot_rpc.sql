@@ -22,6 +22,8 @@ DECLARE
   elem JSONB;
   v_product_code TEXT;
   v_dest_warehouse TEXT;
+  v_product_name TEXT;
+  v_category TEXT;
   v_quantity INT;
   v_unit_cost NUMERIC;
   v_snapshot_date DATE;
@@ -46,6 +48,8 @@ BEGIN
   LOOP
     v_product_code := COALESCE((elem->>'product_code')::TEXT, '');
     v_dest_warehouse := COALESCE((elem->>'dest_warehouse')::TEXT, '');
+    v_product_name := NULLIF(TRIM((elem->>'product_name')::TEXT), '');
+    v_category := NULLIF(TRIM((elem->>'category')::TEXT), '');
     v_quantity := COALESCE((elem->>'quantity')::INTEGER, 0);
     v_unit_cost := COALESCE((elem->>'unit_cost')::NUMERIC, 0);
     v_snapshot_date := COALESCE((elem->>'snapshot_date')::DATE, CURRENT_DATE);
@@ -57,6 +61,8 @@ BEGIN
     INSERT INTO inventory_stock_snapshot (
       product_code,
       dest_warehouse,
+      product_name,
+      category,
       quantity,
       unit_cost,
       snapshot_date,
@@ -64,6 +70,8 @@ BEGIN
     ) VALUES (
       v_product_code,
       v_dest_warehouse,
+      v_product_name,
+      v_category,
       v_quantity,
       v_unit_cost,
       v_snapshot_date,

@@ -55,14 +55,16 @@ function parseDate(val: unknown, year = new Date().getFullYear()): string | null
   if (val == null) return null;
 
   // 1. Date 객체 (cellDates: true) - Excel 수식입력줄 실제 날짜 최우선
+  // Vercel 등 UTC 서버에서 한국 날짜(2026-03-02 00:00 KST)가 2026-03-01 15:00 UTC로 해석되는 문제 방지
   if (typeof val === "object" && "getFullYear" in val) {
     const d = val as Date;
-    let y = d.getFullYear();
+    const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+    let y = kst.getUTCFullYear();
     if (y < 2000 || y > 2030) y = year;
-    return `${y}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return `${y}-${String(kst.getUTCMonth() + 1).padStart(2, "0")}-${String(kst.getUTCDate()).padStart(2, "0")}`;
   }
 
-  // 2. Excel serial number - 수식입력줄 실제 날짜 데이터
+  // 2. Excel serial number - 수식입력줄 실제 날짜 데이터 (Python과 동일)
   if (typeof val === "number" && Number.isFinite(val) && val > 0) {
     try {
       const parsed = XLSX.SSF?.parse_date_code?.(val);
@@ -73,9 +75,10 @@ function parseDate(val: unknown, year = new Date().getFullYear()): string | null
       }
       const excelEpoch = new Date(1899, 11, 30);
       const jsDate = new Date(excelEpoch.getTime() + val * 86400 * 1000);
-      let y = jsDate.getFullYear();
+      const kst = new Date(jsDate.getTime() + 9 * 60 * 60 * 1000);
+      let y = kst.getUTCFullYear();
       if (y < 2000 || y > 2030) y = year;
-      return `${y}-${String(jsDate.getMonth() + 1).padStart(2, "0")}-${String(jsDate.getDate()).padStart(2, "0")}`;
+      return `${y}-${String(kst.getUTCMonth() + 1).padStart(2, "0")}-${String(kst.getUTCDate()).padStart(2, "0")}`;
     } catch {
       return null;
     }
@@ -363,7 +366,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     const idxPack = findCol(h, ["입수량", "입수"]);
     const idxWh = findCol(h, ["입고처", "창고명", "dest_warehouse"]);
     const idxUnit = findCol(h, ["원가", "단가"]);
-    const idxTotal = findCol(h, ["합계원가", "합계", "원가합계"]);
+    const idxTotal = findCol(h, ["합계 원가", "합계원가", "원가합계", "합계"], { exclude: ["원가"] });
 
     if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
       return {
@@ -430,7 +433,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     const idxPack = findCol(h, ["입수량", "입수"]);
     const idxWh = findCol(h, ["출고처", "창고명", "dest_warehouse"]);
     const idxUnit = findCol(h, ["원가", "단가"]);
-    const idxTotal = findCol(h, ["합계", "합계원가"]);
+    const idxTotal = findCol(h, ["합계", "합계원가", "원가합계"], { exclude: ["원가", "단가", "출고금액"] });
 
     if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
       return {
