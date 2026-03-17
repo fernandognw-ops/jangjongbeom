@@ -20,7 +20,7 @@ const AIForecastReport = lazy(() =>
 );
 
 function SupabaseDiagnosticBanner() {
-  const { supabaseFetchStatus, supabaseFetchError } = useInventory();
+  const { supabaseFetchStatus, supabaseFetchError, refresh } = useInventory();
   if (supabaseFetchStatus === "idle" || supabaseFetchStatus === "ok") return null;
 
   const messages: Record<string, { title: string; desc: string }> = {
@@ -59,7 +59,7 @@ function SupabaseDiagnosticBanner() {
 }
 
 export default function DashboardPage() {
-  const { totalValue, useSupabaseInventory, isSupabaseLoading, supabaseFetchStatus, kpiData } = useInventory() ?? {};
+  const { totalValue, useSupabaseInventory, isSupabaseLoading, supabaseFetchStatus, kpiData, refresh } = useInventory() ?? {};
 
   return (
     <div
@@ -88,7 +88,7 @@ export default function DashboardPage() {
             <div className="mt-4 flex justify-center">
               <button
                 type="button"
-                onClick={() => window.location.reload()}
+                onClick={() => refresh()}
                 className="rounded-xl bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-600 shadow-sm"
               >
                 새로고침
@@ -106,10 +106,10 @@ export default function DashboardPage() {
                 <span className="text-xs text-slate-500">데이터가 안 바뀌면 →</span>
                 <button
                   type="button"
-                  onClick={() => window.location.reload()}
+                  onClick={() => refresh()}
                   className="rounded-lg bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600"
                 >
-                  데이터 새로고침 (전체 리로드)
+                  데이터 새로고침
                 </button>
               </div>
               <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 md:gap-4">

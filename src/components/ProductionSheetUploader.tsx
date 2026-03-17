@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useInventory } from "@/context/InventoryContext";
 import { parseProductionSheet } from "@/lib/productionSheetParser";
 
 const ACCEPT = ".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel";
@@ -12,6 +13,7 @@ function yearFromFilename(name: string): number | null {
 }
 
 export function ProductionSheetUploader() {
+  const { refresh } = useInventory();
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<"idle" | "parsing" | "uploading" | "success" | "error">("idle");
   const [message, setMessage] = useState<string>("");
@@ -77,7 +79,7 @@ export function ProductionSheetUploader() {
         }
 
         setStatus("success");
-        setProgress("DB 반영 대기 후 새로고침…");
+        setProgress("DB 반영 대기 후 대시보드 갱신…");
         const parts: string[] = [];
         if ((json.rawProducts ?? 0) > 0) parts.push(`품목 ${json.rawProducts}건`);
         if ((json.inbound?.inserted ?? 0) > 0) parts.push(`입고 ${json.inbound.inserted}건`);
@@ -86,9 +88,9 @@ export function ProductionSheetUploader() {
         setMessage(`DB 갱신 완료. ${parts.join(", ")}`);
         setFile(null);
         try {
-          // DB 커밋·가시성 확보 후 전체 페이지 리로드 (캐시 완전 우회)
+          // DB 커밋·가시성 확보 후 refresh()로 대시보드 갱신 (Realtime과 동일 방식)
           await new Promise((r) => setTimeout(r, 1500));
-          window.location.reload();
+          await refresh();
         } catch (e) {
           console.warn("[업로드] 새로고침 실패:", e);
         }
@@ -99,7 +101,7 @@ export function ProductionSheetUploader() {
         setMessage(e instanceof Error ? e.message : "업로드 중 오류가 발생했습니다.");
       }
     },
-    []
+    [refresh]
   );
 
   const onDrop = useCallback(
