@@ -47,7 +47,9 @@ export async function GET() {
         // 날짜 로그 실패 시 무시
       }
     }
-    return NextResponse.json(response);
+    return NextResponse.json(response, {
+      headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" },
+    });
   } catch (e) {
     logApiError("api/inventory/route.ts", 48, e);
     return NextResponse.json(emptyResponse, { status: 200 });

@@ -397,12 +397,13 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         totalSku: data.totalSku ?? 0,
       });
 
-      // 2단계: inbound/outbound + snapshot + category-trend + forecast 모두 await (대시보드 완전 갱신)
-      const [snapshotApiRes, inventoryRes, categoryTrendRes, forecastRes] = await Promise.all([
+      // 2단계: inbound/outbound + snapshot + category-trend + forecast + KPI 모두 await (대시보드 완전 갱신)
+      const [snapshotApiRes, inventoryRes, categoryTrendRes, forecastRes, kpiRes] = await Promise.all([
         fetch(`/api/inventory/snapshot?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/inventory?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/category-trend?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
         fetch(`/api/forecast?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/inventory/kpi?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
       ]);
 
       const fullData = snapshotApiRes as { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; stockByWarehouse?: Record<string, number> } | null;
@@ -427,7 +428,17 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       }
       if (invData?.inbound) setSupabaseInbound(invData.inbound);
       if (invData?.outbound) setSupabaseOutbound(invData.outbound);
-      if (invData?.stockSnapshot && invData.stockSnapshot.length > 0) {
+
+      // KPI API가 최신 snapshot_date 기준 단일 출처 → 항상 우선 적용 (데이터 새로고침 시 갱신 보장)
+      const kpiDataRes = kpiRes as { productCount?: number; totalValue?: number; totalQuantity?: number; totalSku?: number; error?: string } | null;
+      if (kpiDataRes && !kpiDataRes.error) {
+        setKpiData({
+          productCount: kpiDataRes.productCount ?? 0,
+          totalValue: kpiDataRes.totalValue ?? 0,
+          totalQuantity: kpiDataRes.totalQuantity ?? 0,
+          totalSku: kpiDataRes.totalSku ?? 0,
+        });
+      } else if (invData?.stockSnapshot && invData.stockSnapshot.length > 0) {
         const totalVal = computeTotalValueFromSnapshot(invData.stockSnapshot, invData.products ?? []);
         const qtyByCode: Record<string, number> = {};
         for (const r of invData.stockSnapshot) {
