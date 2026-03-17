@@ -274,9 +274,22 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
   const hasSheet = (name: string) =>
     sheetNames.some((s) => s.replace(/\s/g, "") === name.replace(/\s/g, ""));
 
+  /** 출고: "출고" 정확 매칭 또는 "품목별 출고현황" 등 포함 매칭 */
+  const hasOutboundSheet = () =>
+    hasSheet("출고") || sheetNames.some((s) => /출고|출고현황/.test(s.replace(/\s/g, "")));
+  /** 재고: "재고" 정확 매칭 또는 "품목별 재고현황" 등 포함 매칭 */
+  const hasStockSheet = () =>
+    hasSheet("재고") || sheetNames.some((s) => /재고|재고현황/.test(s.replace(/\s/g, "")));
+
   const missing: string[] = [];
   for (const name of REQUIRED_SHEETS) {
-    if (!hasSheet(name)) missing.push(name);
+    if (name === "출고") {
+      if (!hasOutboundSheet()) missing.push(name);
+    } else if (name === "재고") {
+      if (!hasStockSheet()) missing.push(name);
+    } else if (!hasSheet(name)) {
+      missing.push(name);
+    }
   }
   if (missing.length > 0) {
     return {
@@ -287,8 +300,22 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
   }
 
   const getSheet = (name: string) => {
-    const found = sheetNames.find((s) => s.replace(/\s/g, "") === name.replace(/\s/g, ""));
-    return found ? wb.Sheets[found] : null;
+    const exact = sheetNames.find((s) => s.replace(/\s/g, "") === name.replace(/\s/g, ""));
+    if (exact) return wb.Sheets[exact];
+    if (name === "출고") {
+      const detail = sheetNames.find((s) => /출고현황|품목별출고/.test(s.replace(/\s/g, "")));
+      if (detail) return wb.Sheets[detail];
+      const fallback = sheetNames.find((s) => /출고/.test(s.replace(/\s/g, "")));
+      return fallback ? wb.Sheets[fallback] : null;
+    }
+    if (name === "재고") {
+      // "품목별 재고현황" 등 상세 시트 우선 (3월 17일 등 실제 재고일자 반영)
+      const detail = sheetNames.find((s) => /재고현황|품목별재고/.test(s.replace(/\s/g, "")));
+      if (detail) return wb.Sheets[detail];
+      const fallback = sheetNames.find((s) => /재고/.test(s.replace(/\s/g, "")));
+      return fallback ? wb.Sheets[fallback] : null;
+    }
+    return null;
   };
 
   const findSheetByName = (want: string, fallbacks?: string[]): string | null => {
@@ -522,7 +549,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     // 재고금액(합계)만 사용. 재고원가는 단가이므로 amount로 사용 금지 (엑셀 검증값과 불일치 방지)
     const idxAmount = findCol(h, ["재고 금액", "재고금액"], { exclude: ["재고원가"] });
     const idxWh = findCol(h, ["창고명", "창고", "보관장소", "입고처", "warehouse"]);
-    const idxStockDate = findCol(h, ["재고일자", "재고 일자", "재고일"]);
+    const idxStockDate = findCol(h, ["재고일자", "재고 일자", "재고일", "일자"]);
     const idxPack = findCol(h, ["입수량", "입수"]);
 
     if (idxCode < 0 || idxQty < 0) {
@@ -535,7 +562,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
 
     /** Python integrated_sync와 동일: (product_code, dest_warehouse)별 집계 */
     const agg: Record<string, { qty: number; cost: number; totalPrice: number; pack: number }> = {};
-    let stockDateFromSheet: string | null = null;
+    const stockDates: string[] = [];
     const stockDataStart = headerRow + DATA_ROW_OFFSET;
     for (let r = stockDataStart; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
@@ -544,9 +571,9 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       const digits = (code.match(/\d/g) ?? []).length;
       if (code.length < 5 || digits < code.length * 0.5) continue;
 
-      if (idxStockDate >= 0 && !stockDateFromSheet) {
+      if (idxStockDate >= 0) {
         const parsed = parseDate(row[idxStockDate], year);
-        if (parsed) stockDateFromSheet = parsed;
+        if (parsed) stockDates.push(parsed);
       }
 
       const qty = safeInt(row[idxQty]);
@@ -567,7 +594,19 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       if (pack > 0 && agg[key].pack <= 0) agg[key].pack = pack;
     }
 
-    targetSnapshotDate = stockDateFromSheet ?? dateFromFilename(filename, year) ?? targetSnapshotDate;
+    // 엑셀 재고일자 우선: 가장 많이 등장한 날짜 사용 (실제 데이터 기반)
+    if (stockDates.length > 0) {
+      const countByDate = new Map<string, number>();
+      for (const d of stockDates) {
+        countByDate.set(d, (countByDate.get(d) ?? 0) + 1);
+      }
+      const sorted = [...countByDate.entries()].sort((a, b) => b[1] - a[1]);
+      const mostCommon = sorted[0]?.[0];
+      const latest = [...new Set(stockDates)].sort().pop();
+      targetSnapshotDate = mostCommon ?? latest ?? dateFromFilename(filename, year) ?? targetSnapshotDate;
+    } else {
+      targetSnapshotDate = dateFromFilename(filename, year) ?? targetSnapshotDate;
+    }
     for (const [key, { qty, cost, totalPrice, pack }] of Object.entries(agg)) {
       const [code, wh] = key.split("|");
       currentProductCodes.add(code);
