@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@supabase/supabase-js";
 import type { StockMap, Transaction } from "@/lib/types";
 import {
   getShortageItems,
@@ -631,6 +632,65 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [refresh]);
+
+  // Supabase Realtime 구독: INSERT/UPDATE/DELETE 시 즉시 refresh (대시보드 실시간 반영)
+  useEffect(() => {
+    if (!FORCE_SUPABASE) return;
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) return;
+
+    const supabase = createClient(url, key);
+    const channel = supabase
+      .channel("inventory-realtime")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "inventory_stock_snapshot",
+        },
+        () => refresh()
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "inventory_inbound",
+        },
+        () => refresh()
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "inventory_outbound",
+        },
+        () => refresh()
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "inventory_products",
+        },
+        () => refresh()
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          console.log("[Realtime] inventory 테이블 구독 시작");
+        } else if (status === "CHANNEL_ERROR") {
+          console.warn("[Realtime] 구독 오류 - Replication 설정 확인");
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [refresh]);
 
   const addTransaction = useCallback(
