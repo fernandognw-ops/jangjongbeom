@@ -519,9 +519,8 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     let idxQty = findCol(h, ["수량", "재고수량"], { exclude: ["입수량", "재고금액", "재고원가", "금액", "원가", "일자", "날짜"] });
     if (idxQty < 0) idxQty = findCol(h, ["재고"], { exclude: ["재고금액", "재고원가"] });
     const idxCost = findCol(h, ["단가", "원가", "제품원가표", "재고원가"]);
-    // 재고금액(합계) 우선. 재고원가는 단가일 수 있으므로 exclude. Python integrated_sync와 동일
-    let idxAmount = findCol(h, ["재고 금액", "재고금액"], { exclude: ["재고원가"] });
-    if (idxAmount < 0) idxAmount = findCol(h, ["재고원가"]);
+    // 재고금액(합계)만 사용. 재고원가는 단가이므로 amount로 사용 금지 (엑셀 검증값과 불일치 방지)
+    const idxAmount = findCol(h, ["재고 금액", "재고금액"], { exclude: ["재고원가"] });
     const idxWh = findCol(h, ["창고명", "창고", "보관장소", "입고처", "warehouse"]);
     const idxStockDate = findCol(h, ["재고일자", "재고 일자", "재고일"]);
     const idxPack = findCol(h, ["입수량", "입수"]);

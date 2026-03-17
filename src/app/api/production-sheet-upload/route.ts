@@ -262,7 +262,13 @@ export async function POST(request: Request) {
       const snapshotRows = stockSnapshot.map((s) => {
         let cost = s.unit_cost ?? 0;
         if (cost <= 0) cost = costByCode.get(s.product_code) ?? 0;
-        const totalPrice = (s.total_price ?? 0) > 0 ? s.total_price! : s.quantity * cost;
+        // Excel total_price 우선. 없으면 수량×단가(엑셀→DB순). DB 단가는 rawdata 등 외부 출처라 엑셀과 다를 수 있음
+        const totalPrice =
+          (s.total_price ?? 0) > 0
+            ? s.total_price!
+            : (s.unit_cost ?? 0) > 0
+              ? s.quantity * s.unit_cost!
+              : s.quantity * cost;
         const info = productInfoByCode.get(s.product_code);
         const packSize = (s.pack_size ?? 0) > 0 ? s.pack_size : info?.pack_size ?? 1;
         return {
