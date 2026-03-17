@@ -8,6 +8,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { useRouter } from "next/navigation";
 import type { StockMap, Transaction } from "@/lib/types";
 import {
   getShortageItems,
@@ -230,6 +231,7 @@ function computeProductCostMap(products: ProductMasterRow[]): Record<string, num
 }
 
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
   const [useSupabaseInventory, setUseSupabaseInventory] = useState(false);
   const [supabaseFetchStatus, setSupabaseFetchStatus] = useState<SupabaseFetchStatus>("idle");
   const [supabaseFetchError, setSupabaseFetchError] = useState<string | undefined>();
@@ -385,8 +387,6 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setDailyVelocityByProduct(data.dailyVelocityByProduct ?? {});
       setStockByChannelFromApi(data.stockByChannel ?? { coupang: {}, general: {} });
       setStockByWarehouse((data as { stockByWarehouse?: Record<string, number> }).stockByWarehouse ?? {});
-      setSupabaseInbound([]);
-      setSupabaseOutbound([]);
       setSupabaseSummary(null);
       setUseSupabaseInventory(true);
       setSupabaseFetchStatus("ok");
@@ -396,57 +396,82 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         totalQuantity: data.totalQuantity ?? 0,
         totalSku: data.totalSku ?? 0,
       });
+
+      // 2단계: inbound/outbound + snapshot + category-trend + forecast 모두 await (대시보드 완전 갱신)
+      const [snapshotApiRes, inventoryRes, categoryTrendRes, forecastRes] = await Promise.all([
+        fetch(`/api/inventory/snapshot?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/inventory?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/category-trend?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/forecast?${cacheBust}`, opts).then((r) => (r.ok ? r.json() : null)),
+      ]);
+
+      const fullData = snapshotApiRes as { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; stockByWarehouse?: Record<string, number> } | null;
+      if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
+      if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
+      if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
+      if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
+      if (fullData?.stockByWarehouse) setStockByWarehouse(fullData.stockByWarehouse);
+
+      const invData = inventoryRes as {
+        inbound?: InventoryInbound[];
+        outbound?: InventoryOutbound[];
+        stockSnapshot?: StockSnapshotRow[];
+        products?: InventoryProduct[];
+      } | null;
+      // inventory API가 DB 직접 조회 결과 → stockSnapshot/products/inbound/outbound 모두 반영 (대시보드 완전 갱신)
+      if (invData?.stockSnapshot && invData.stockSnapshot.length > 0) {
+        setSupabaseStockSnapshot(invData.stockSnapshot);
+      }
+      if (invData?.products && invData.products.length > 0) {
+        setSupabaseProducts(invData.products);
+      }
+      if (invData?.inbound) setSupabaseInbound(invData.inbound);
+      if (invData?.outbound) setSupabaseOutbound(invData.outbound);
+      if (invData?.stockSnapshot && invData.stockSnapshot.length > 0) {
+        const totalVal = computeTotalValueFromSnapshot(invData.stockSnapshot, invData.products ?? []);
+        const qtyByCode: Record<string, number> = {};
+        for (const r of invData.stockSnapshot) {
+          const code = String(r.product_code ?? "").trim();
+          if (!code) continue;
+          qtyByCode[code] = (qtyByCode[code] ?? 0) + (r.quantity ?? 0);
+        }
+        let totalSku = 0;
+        for (const code of Object.keys(qtyByCode)) {
+          const p = (invData.products ?? []).find((x) => String(x.product_code).trim() === code);
+          const pack = Math.max(1, p?.pack_size ?? 1);
+          totalSku += Math.floor((qtyByCode[code] ?? 0) / pack);
+        }
+        setKpiData({
+          productCount: Object.keys(qtyByCode).length,
+          totalValue: Math.round(totalVal),
+          totalQuantity: Object.values(qtyByCode).reduce((a, b) => a + b, 0),
+          totalSku,
+        });
+      }
+
+      let categoryTrend: InventoryContextValue["categoryTrendData"] = null;
+      if (categoryTrendRes && typeof categoryTrendRes === "object" && !(categoryTrendRes as { error?: string }).error) {
+        categoryTrend = categoryTrendRes as InventoryContextValue["categoryTrendData"];
+      }
+      let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
+      const forecasts = (forecastRes as { product_forecasts?: Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }> })?.product_forecasts ?? [];
+      for (const row of forecasts) {
+        const code = String(row.product_code ?? "").trim();
+        if (code) {
+          forecastMap[code] = {
+            forecast_month1: Number(row.forecast_month1) || 0,
+            forecast_month2: Number(row.forecast_month2) || 0,
+            forecast_month3: Number(row.forecast_month3) || 0,
+          };
+          forecastMap[normalizeCode(code) || code] = forecastMap[code];
+        }
+      }
+      setCategoryTrendData(categoryTrend);
+      setAiForecastByProduct(forecastMap);
+      setCategoryTrendLoaded(true);
       setDataRefreshKey((k) => k + 1);
       setIsSupabaseLoading(false);
-
-      // 2단계: 전체 snapshot(dailyVelocity) + 판매·입고·예측 백그라운드
-      fetch(`/api/inventory/snapshot?${cacheBust}`, opts)
-        .then((r) => r.ok ? r.json() : null)
-        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; stockByWarehouse?: Record<string, number> } | null) => {
-          if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
-          if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
-          if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
-          if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
-          if (fullData?.stockByWarehouse) setStockByWarehouse(fullData.stockByWarehouse);
-        })
-        .catch(() => {});
-
-      // 3단계: 판매·입고·예측 백그라운드
-      Promise.all([
-        fetch(`/api/category-trend?${cacheBust}`, opts),
-        fetch(`/api/forecast?${cacheBust}`, opts),
-      ]).then(async ([categoryTrendRes, forecastRes]) => {
-        let categoryTrend: InventoryContextValue["categoryTrendData"] = null;
-        if (categoryTrendRes.ok) {
-          const ctJson = await categoryTrendRes.json().catch(() => null);
-          if (ctJson && typeof ctJson === "object" && !ctJson.error) {
-            categoryTrend = ctJson as InventoryContextValue["categoryTrendData"];
-          }
-        }
-        let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
-        if (forecastRes.ok) {
-          const fJson = await forecastRes.json().catch(() => null);
-          const forecasts = (fJson?.product_forecasts ?? []) as Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
-          for (const row of forecasts) {
-            const code = String(row.product_code ?? "").trim();
-            if (code) {
-              const v = {
-                forecast_month1: Number(row.forecast_month1) || 0,
-                forecast_month2: Number(row.forecast_month2) || 0,
-                forecast_month3: Number(row.forecast_month3) || 0,
-              };
-              forecastMap[code] = v;
-              forecastMap[normalizeCode(code) || code] = v;
-            }
-          }
-        }
-        setCategoryTrendData(categoryTrend);
-        setAiForecastByProduct(forecastMap);
-        setCategoryTrendLoaded(true);
-        setDataRefreshKey((k) => k + 1);
-      }).catch(() => {
-        setCategoryTrendLoaded(true);
-      });
+      router.refresh();
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       setSupabaseFetchStatus("fetch_error");
@@ -477,7 +502,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsSupabaseLoading(false);
     }
-  }, []);
+  }, [router]);
 
   const switchToLocalMode = useCallback(async () => {
     setSupabaseFetchStatus("fetch_error");

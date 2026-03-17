@@ -5,6 +5,7 @@
  * Supabase inventory_* 테이블 데이터를 서버에서 조회 후 반환.
  * 에러 시에도 빈 배열 반환 (500 방지)
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { fetchInventoryData } from "@/lib/inventoryApi";
 import { logApiError } from "@/lib/apiErrorLog";
