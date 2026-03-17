@@ -159,7 +159,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // 5. inventory_stock_snapshot 동기화 (unit_cost 0이면 기존값 유지)
+    // 5. inventory_stock_snapshot 전체 교체 (DELETE + INSERT 트랜잭션)
     if (stockSnapshot.length > 0) {
       const today = new Date().toISOString().slice(0, 10);
       const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
@@ -181,22 +181,20 @@ export async function POST(request: Request) {
         if (cost <= 0) cost = costByCode.get(s.product_code) ?? 0;
         return {
           product_code: s.product_code,
+          dest_warehouse: "",
           quantity: s.quantity,
           unit_cost: cost,
           snapshot_date: today,
         };
       });
-      for (let i = 0; i < snapshotRows.length; i += BATCH) {
-        const batch = snapshotRows.slice(i, i + BATCH);
-        const { error } = await supabase
-          .from(TABLE_SNAPSHOT)
-          .upsert(batch, { onConflict: "product_code" });
-        if (error) {
-          return NextResponse.json(
-            { error: `재고 스냅샷 저장 실패: ${error.message}` },
-            { status: 500 }
-          );
-        }
+      const { data: rpcData, error: rpcError } = await supabase.rpc("replace_stock_snapshot", {
+        p_rows: snapshotRows,
+      });
+      if (rpcError) {
+        return NextResponse.json(
+          { error: `재고 스냅샷 저장 실패: ${rpcError.message}` },
+          { status: 500 }
+        );
       }
     }
 
