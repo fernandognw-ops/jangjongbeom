@@ -62,6 +62,7 @@ export function ProductionSheetUploader() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            rawProducts: result.rawProducts ?? [],
             inbound: result.inbound,
             outbound: result.outbound,
             stockSnapshot: result.stockSnapshot,
@@ -79,9 +80,10 @@ export function ProductionSheetUploader() {
         setStatus("success");
         setProgress("");
         const parts: string[] = [];
+        if ((json.rawProducts ?? 0) > 0) parts.push(`품목 ${json.rawProducts}건`);
         if ((json.inbound?.inserted ?? 0) > 0) parts.push(`입고 ${json.inbound.inserted}건`);
-        if ((json.outbound?.inserted ?? 0) > 0) parts.push(`출고 ${json.outbound.inserted}건`);
         if ((json.stockSnapshot ?? 0) > 0) parts.push(`재고 ${json.stockSnapshot}건`);
+        if ((json.outbound?.inserted ?? 0) > 0) parts.push(`출고 ${json.outbound.inserted}건`);
         setMessage(`DB 갱신 완료. ${parts.join(", ")} 대시보드가 자동으로 새로고침됩니다.`);
         setFile(null);
         refresh();

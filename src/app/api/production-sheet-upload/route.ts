@@ -8,8 +8,8 @@
  */
 
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import type { InboundRow, OutboundRow, StockSnapshotRow } from "@/lib/productionSheetParser";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { InboundRow, OutboundRow, RawProductRow, StockSnapshotRow } from "@/lib/productionSheetParser";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_INBOUND = "inventory_inbound";
@@ -24,6 +24,23 @@ function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
   return "general";
 }
 
+/** Python integrated_sync와 동일: 해당 기간 데이터 삭제 후 upsert */
+async function deleteByDateRange(
+  supabase: SupabaseClient,
+  table: string,
+  dateCol: string,
+  dateFrom: string,
+  dateTo: string
+): Promise<boolean> {
+  try {
+    await supabase.from(table).delete().gte(dateCol, dateFrom).lte(dateCol, dateTo);
+    return true;
+  } catch (e) {
+    console.error(`[production-sheet-upload] ${table} 기간 삭제 실패:`, e);
+    return false;
+  }
+}
+
 export async function POST(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -35,6 +52,7 @@ export async function POST(request: Request) {
   }
 
   let body: {
+    rawProducts?: RawProductRow[];
     inbound: InboundRow[];
     outbound: OutboundRow[];
     stockSnapshot: StockSnapshotRow[];
@@ -50,58 +68,141 @@ export async function POST(request: Request) {
     );
   }
 
-  const { inbound = [], outbound = [], stockSnapshot = [], currentProductCodes = [] } = body;
+  const { rawProducts = [], inbound = [], outbound = [], stockSnapshot = [], currentProductCodes = [] } = body;
 
   const supabase = createClient(url, key);
   const BATCH = 300;
 
   try {
-    // 0. 품목코드 수집 → inventory_products에 없는 코드 추가
-    const allCodes = new Set<string>();
-    for (const r of inbound) allCodes.add(r.product_code);
-    for (const r of outbound) allCodes.add(r.product_code);
-    for (const r of stockSnapshot) allCodes.add(r.product_code);
-    const productsRes = await supabase.from(TABLE_PRODUCTS).select("product_code");
-    const existingCodes = new Set((productsRes.data ?? []).map((r) => (r as { product_code: string }).product_code));
-    const toCreate = Array.from(allCodes).filter((c) => !existingCodes.has(c));
-    if (toCreate.length > 0) {
-      const newProducts = toCreate.map((code) => ({
-        product_code: code,
-        product_name: code,
-        group_name: "생활용품",
-        category: "생활용품",
-        unit_cost: 0,
-        pack_size: 1,
+    // 0. Python integrated_sync와 동일 순서: rawdata → inventory_products
+    if (rawProducts.length > 0) {
+      const rawRows = rawProducts.map((p) => ({
+        product_code: p.product_code,
+        product_name: p.product_name,
+        unit_cost: p.unit_cost,
+        category: p.category,
+        pack_size: p.pack_size,
       }));
-      for (let i = 0; i < newProducts.length; i += BATCH) {
-        const batch = newProducts.slice(i, i + BATCH);
+      for (let i = 0; i < rawRows.length; i += BATCH) {
+        const batch = rawRows.slice(i, i + BATCH);
         const { error } = await supabase.from(TABLE_PRODUCTS).upsert(batch, { onConflict: "product_code" });
         if (error) {
           return NextResponse.json(
-            { error: `제품 등록 실패: ${error.message}` },
+            { error: `제품(rawdata) 등록 실패: ${error.message}` },
             { status: 500 }
           );
         }
       }
     }
 
-    // 1. 입고 UPSERT (동일 product_code+inbound_date → 업로드 값으로 덮어쓰기)
+    // 0b. FK 보장: 입고/출고/재고에 등장하는 product_code가 없으면 최소 행 추가 (Python과 동일)
+    const allCodes = new Set<string>();
+    const nameByCode = new Map<string, string>();
+    for (const r of inbound) {
+      allCodes.add(r.product_code);
+      if (r.product_name) nameByCode.set(r.product_code, r.product_name);
+    }
+    for (const r of outbound) {
+      allCodes.add(r.product_code);
+      if (r.product_name && !nameByCode.has(r.product_code)) nameByCode.set(r.product_code, r.product_name);
+    }
+    for (const r of stockSnapshot) allCodes.add(r.product_code);
+    if (allCodes.size > 0) {
+      const codesList = Array.from(allCodes);
+      const existingCodes = new Set<string>();
+      for (let i = 0; i < codesList.length; i += BATCH) {
+        const batch = codesList.slice(i, i + BATCH);
+        const res = await supabase.from(TABLE_PRODUCTS).select("product_code").in("product_code", batch);
+        for (const r of res.data ?? []) {
+          existingCodes.add((r as { product_code: string }).product_code);
+        }
+      }
+      const missing = codesList.filter((c) => !existingCodes.has(c));
+      if (missing.length > 0) {
+        const toInsert = missing.map((c) => ({
+          product_code: c,
+          product_name: nameByCode.get(c) ?? c,
+          unit_cost: 0,
+          category: "기타",
+          pack_size: 1,
+        }));
+        for (let i = 0; i < toInsert.length; i += BATCH) {
+          const batch = toInsert.slice(i, i + BATCH);
+          const { error } = await supabase.from(TABLE_PRODUCTS).upsert(batch, { onConflict: "product_code" });
+          if (error) {
+            return NextResponse.json(
+              { error: `제품(FK보장) 등록 실패: ${error.message}` },
+              { status: 500 }
+            );
+          }
+        }
+      }
+    }
+
+    // 1. 입고: Python과 동일 - 해당 기간 삭제 후 upsert (product_code+inbound_date)
     let inboundInserted = 0;
     if (inbound.length > 0) {
-      const merged = new Map<string, { product_code: string; quantity: number; inbound_date: string; category?: string }>();
+      const merged = new Map<
+        string,
+        {
+          product_code: string;
+          product_name?: string;
+          quantity: number;
+          inbound_date: string;
+          category?: string;
+          pack_size?: number;
+          dest_warehouse?: string;
+          unit_price?: number;
+          total_price?: number;
+        }
+      >();
       for (const r of inbound) {
         const k = `${r.product_code}|${r.inbound_date}`;
         const existing = merged.get(k);
         if (existing) {
           existing.quantity += r.quantity;
           if (r.category && !existing.category) existing.category = r.category;
+          if (r.product_name && !existing.product_name) existing.product_name = r.product_name;
+          if (r.dest_warehouse && !existing.dest_warehouse) existing.dest_warehouse = r.dest_warehouse;
+          if ((r.unit_price ?? 0) > 0 && (existing.unit_price ?? 0) <= 0) existing.unit_price = r.unit_price;
+          if ((r.total_price ?? 0) > 0 && (existing.total_price ?? 0) <= 0) existing.total_price = r.total_price;
         } else {
-          merged.set(k, { product_code: r.product_code, quantity: r.quantity, inbound_date: r.inbound_date, ...(r.category && { category: r.category }) });
+          merged.set(k, {
+            product_code: r.product_code,
+            quantity: r.quantity,
+            inbound_date: r.inbound_date,
+            ...(r.category && { category: r.category }),
+            ...(r.product_name && { product_name: r.product_name }),
+            ...(r.pack_size && r.pack_size > 0 && { pack_size: r.pack_size }),
+            ...(r.dest_warehouse && { dest_warehouse: r.dest_warehouse }),
+            ...(r.unit_price != null && r.unit_price > 0 && { unit_price: r.unit_price }),
+            ...(r.total_price != null && r.total_price > 0 && { total_price: r.total_price }),
+          });
         }
       }
       const rows = Array.from(merged.values());
-      for (let i = 0; i < rows.length; i += BATCH) {
-        const batch = rows.slice(i, i + BATCH);
+      const dates = rows.map((r) => r.inbound_date.slice(0, 10)).filter(Boolean);
+      if (dates.length > 0) {
+        const dMin = dates.reduce((a, b) => (a < b ? a : b));
+        const dMax = dates.reduce((a, b) => (a > b ? a : b));
+        await deleteByDateRange(supabase, TABLE_INBOUND, "inbound_date", dMin, dMax);
+      }
+      const codes = [...new Set(rows.map((r) => r.product_code))];
+      const costRes = await supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes);
+      const costMap = new Map<string, number>();
+      for (const r of costRes.data ?? []) {
+        const p = r as { product_code: string; unit_cost?: number };
+        if ((p.unit_cost ?? 0) > 0) costMap.set(p.product_code, p.unit_cost!);
+      }
+      const rowsWithCost = rows.map((r) => {
+        let up = r.unit_price ?? 0;
+        let tp = r.total_price ?? 0;
+        if (up <= 0) up = costMap.get(r.product_code) ?? 0;
+        if (tp <= 0 && up > 0) tp = Math.round(r.quantity * up * 100) / 100;
+        return { ...r, unit_price: up, total_price: tp };
+      });
+      for (let i = 0; i < rowsWithCost.length; i += BATCH) {
+        const batch = rowsWithCost.slice(i, i + BATCH);
         const { error } = await supabase.from(TABLE_INBOUND).upsert(batch, { onConflict: "product_code,inbound_date" });
         if (error) {
           return NextResponse.json(
@@ -113,53 +214,8 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. 출고 UPSERT (동일 product_code+outbound_date+sales_channel → 업로드 값으로 덮어쓰기)
-    let outboundInserted = 0;
-    if (outbound.length > 0) {
-      const merged = new Map<string, { product_code: string; quantity: number; outbound_date: string; sales_channel: "coupang" | "general"; category?: string }>();
-      for (const r of outbound) {
-        const ch = ensureChannel(r.sales_channel);
-        const k = `${r.product_code}|${r.outbound_date}|${ch}`;
-        const existing = merged.get(k);
-        if (existing) {
-          existing.quantity += r.quantity;
-          if (r.category && !existing.category) existing.category = r.category;
-        } else {
-          merged.set(k, { product_code: r.product_code, quantity: r.quantity, outbound_date: r.outbound_date, sales_channel: ch, ...(r.category && { category: r.category }) });
-        }
-      }
-      const rows = Array.from(merged.values());
-      for (let i = 0; i < rows.length; i += BATCH) {
-        const batch = rows.slice(i, i + BATCH);
-        const { error } = await supabase.from(TABLE_OUTBOUND).upsert(batch, { onConflict: "product_code,outbound_date,sales_channel" });
-        if (error) {
-          return NextResponse.json(
-            { error: `출고 저장 실패: ${error.message}` },
-            { status: 500 }
-          );
-        }
-        outboundInserted += batch.length;
-      }
-    }
-
-    // 4. inventory_current_products 동기화 (재고 시트 품목)
-    if (currentProductCodes.length > 0) {
-      const currentRows = currentProductCodes.map((c) => ({ product_code: c }));
-      for (let i = 0; i < currentRows.length; i += BATCH) {
-        const batch = currentRows.slice(i, i + BATCH);
-        const { error } = await supabase
-          .from(TABLE_CURRENT)
-          .upsert(batch, { onConflict: "product_code" });
-        if (error) {
-          return NextResponse.json(
-            { error: `현재 품목 동기화 실패: ${error.message}` },
-            { status: 500 }
-          );
-        }
-      }
-    }
-
-    // 5. inventory_stock_snapshot 전체 교체 (DELETE + INSERT 트랜잭션)
+    // 2. 재고: Python과 동일 - 전체 truncate 후 INSERT (inbound 다음, 출고 전)
+    let stockInserted = 0;
     if (stockSnapshot.length > 0) {
       const today = new Date().toISOString().slice(0, 10);
       const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
@@ -179,14 +235,21 @@ export async function POST(request: Request) {
       const snapshotRows = stockSnapshot.map((s) => {
         let cost = s.unit_cost ?? 0;
         if (cost <= 0) cost = costByCode.get(s.product_code) ?? 0;
+        const totalPrice = (s.total_price ?? 0) > 0 ? s.total_price! : s.quantity * cost;
         return {
           product_code: s.product_code,
-          dest_warehouse: "",
+          dest_warehouse: s.dest_warehouse ?? "",
           quantity: s.quantity,
-          unit_cost: cost,
+          unit_cost: Math.round(cost * 100) / 100,
+          total_price: Math.round(totalPrice * 100) / 100,
           snapshot_date: today,
         };
       });
+      try {
+        await supabase.from(TABLE_SNAPSHOT).delete().neq("product_code", "__NONE__");
+      } catch (truncErr) {
+        console.warn("[production-sheet-upload] 재고 기존 삭제 실패 (계속 진행):", truncErr);
+      }
       const { error: rpcError } = await supabase.rpc("replace_stock_snapshot", {
         p_rows: snapshotRows,
         p_snapshot_date: today,
@@ -197,13 +260,110 @@ export async function POST(request: Request) {
           { status: 500 }
         );
       }
+      stockInserted = snapshotRows.length;
+    }
+
+    // 3. 출고: Python과 동일 - 해당 기간 삭제 후 upsert (product_code+outbound_date+sales_channel)
+    let outboundInserted = 0;
+    if (outbound.length > 0) {
+      const merged = new Map<
+        string,
+        {
+          product_code: string;
+          product_name?: string;
+          quantity: number;
+          outbound_date: string;
+          sales_channel: "coupang" | "general";
+          category?: string;
+          pack_size?: number;
+          dest_warehouse?: string;
+          unit_price?: number;
+          total_price?: number;
+        }
+      >();
+      for (const r of outbound) {
+        const ch = ensureChannel(r.sales_channel);
+        const k = `${r.product_code}|${r.outbound_date}|${ch}`;
+        const existing = merged.get(k);
+        if (existing) {
+          existing.quantity += r.quantity;
+          if (r.category && !existing.category) existing.category = r.category;
+          if (r.product_name && !existing.product_name) existing.product_name = r.product_name;
+          if (r.dest_warehouse && !existing.dest_warehouse) existing.dest_warehouse = r.dest_warehouse;
+          if ((r.unit_price ?? 0) > 0 && (existing.unit_price ?? 0) <= 0) existing.unit_price = r.unit_price;
+          if ((r.total_price ?? 0) > 0 && (existing.total_price ?? 0) <= 0) existing.total_price = r.total_price;
+        } else {
+          merged.set(k, {
+            product_code: r.product_code,
+            quantity: r.quantity,
+            outbound_date: r.outbound_date,
+            sales_channel: ch,
+            ...(r.category && { category: r.category }),
+            ...(r.product_name && { product_name: r.product_name }),
+            ...(r.pack_size && r.pack_size > 0 && { pack_size: r.pack_size }),
+            ...(r.dest_warehouse && { dest_warehouse: r.dest_warehouse }),
+            ...(r.unit_price != null && r.unit_price > 0 && { unit_price: r.unit_price }),
+            ...(r.total_price != null && r.total_price > 0 && { total_price: r.total_price }),
+          });
+        }
+      }
+      const rows = Array.from(merged.values());
+      const dates = rows.map((r) => r.outbound_date.slice(0, 10)).filter(Boolean);
+      if (dates.length > 0) {
+        const dMin = dates.reduce((a, b) => (a < b ? a : b));
+        const dMax = dates.reduce((a, b) => (a > b ? a : b));
+        await deleteByDateRange(supabase, TABLE_OUTBOUND, "outbound_date", dMin, dMax);
+      }
+      const codes = [...new Set(rows.map((r) => r.product_code))];
+      const costRes = await supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes);
+      const costMap = new Map<string, number>();
+      for (const r of costRes.data ?? []) {
+        const p = r as { product_code: string; unit_cost?: number };
+        if ((p.unit_cost ?? 0) > 0) costMap.set(p.product_code, p.unit_cost!);
+      }
+      const rowsWithCost = rows.map((r) => {
+        let up = r.unit_price ?? 0;
+        let tp = r.total_price ?? 0;
+        if (up <= 0) up = costMap.get(r.product_code) ?? 0;
+        if (tp <= 0 && up > 0) tp = Math.round(r.quantity * up * 100) / 100;
+        return { ...r, unit_price: up, total_price: tp };
+      });
+      for (let i = 0; i < rowsWithCost.length; i += BATCH) {
+        const batch = rowsWithCost.slice(i, i + BATCH);
+        const { error } = await supabase.from(TABLE_OUTBOUND).upsert(batch, { onConflict: "product_code,outbound_date,sales_channel" });
+        if (error) {
+          return NextResponse.json(
+            { error: `출고 저장 실패: ${error.message}` },
+            { status: 500 }
+          );
+        }
+        outboundInserted += batch.length;
+      }
+    }
+
+    // 4. inventory_current_products 동기화 (Python과 동일)
+    if (currentProductCodes.length > 0) {
+      const currentRows = currentProductCodes.map((c) => ({ product_code: c }));
+      for (let i = 0; i < currentRows.length; i += BATCH) {
+        const batch = currentRows.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from(TABLE_CURRENT)
+          .upsert(batch, { onConflict: "product_code" });
+        if (error) {
+          return NextResponse.json(
+            { error: `현재 품목 동기화 실패: ${error.message}` },
+            { status: 500 }
+          );
+        }
+      }
     }
 
     return NextResponse.json({
       success: true,
+      rawProducts: rawProducts.length,
       inbound: { inserted: inboundInserted },
+      stockSnapshot: stockInserted,
       outbound: { inserted: outboundInserted },
-      stockSnapshot: stockSnapshot.length,
       currentProducts: currentProductCodes.length,
     });
   } catch (e) {
