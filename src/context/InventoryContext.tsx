@@ -230,9 +230,12 @@ function computeProductCostMap(products: ProductMasterRow[]): Record<string, num
   return result;
 }
 
+/** Supabase 강제 모드: env 설정 시 항상 Supabase만 사용, localStorage로 전환 불가 */
+const FORCE_SUPABASE = typeof process !== "undefined" && !!(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "");
+
 export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const [useSupabaseInventory, setUseSupabaseInventory] = useState(false);
+  const [useSupabaseInventory, setUseSupabaseInventory] = useState(FORCE_SUPABASE);
   const [supabaseFetchStatus, setSupabaseFetchStatus] = useState<SupabaseFetchStatus>("idle");
   const [supabaseFetchError, setSupabaseFetchError] = useState<string | undefined>();
   const [isSupabaseLoading, setIsSupabaseLoading] = useState(true);
@@ -320,7 +323,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       const items = data.items ?? [];
       if (items.length === 0 && (data.totalValue ?? 0) === 0) {
         setSupabaseFetchStatus("empty_data");
-        setUseSupabaseInventory(false);
+        if (!FORCE_SUPABASE) setUseSupabaseInventory(false);
         setIsSupabaseLoading(false);
         return;
       }
@@ -491,35 +494,38 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       const errMsg = e instanceof Error ? e.message : String(e);
       setSupabaseFetchStatus("fetch_error");
       setSupabaseFetchError(errMsg);
-      setUseSupabaseInventory(false);
-      try {
-        const defaultWorkspace = getDefaultWorkspaceId();
-        const syncCode = getStoredSyncCode();
-        if (defaultWorkspace) {
-          const r = await fetchDefaultWorkspace();
-          if (r.ok && r.data) storage.restoreFromBackup(r.data);
-        } else if (syncCode) {
-          const r = await fetchFromCloud(syncCode);
-          if (r.ok && r.data) storage.restoreFromBackup(r.data);
+      if (!FORCE_SUPABASE) {
+        setUseSupabaseInventory(false);
+        try {
+          const defaultWorkspace = getDefaultWorkspaceId();
+          const syncCode = getStoredSyncCode();
+          if (defaultWorkspace) {
+            const r = await fetchDefaultWorkspace();
+            if (r.ok && r.data) storage.restoreFromBackup(r.data);
+          } else if (syncCode) {
+            const r = await fetchFromCloud(syncCode);
+            if (r.ok && r.data) storage.restoreFromBackup(r.data);
+          }
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
+        const tx = storage.loadTransactions();
+        const base = storage.loadBaseStock();
+        const baseByProduct = storage.loadBaseStockByProduct();
+        const daily = storage.loadDailyStock();
+        setTransactions(tx);
+        setBaseStockState(base);
+        setBaseStockByProductState(baseByProduct);
+        setDailyStockState(daily);
+        setProductsState(storage.loadProducts() as ProductMasterRow[]);
       }
-      const tx = storage.loadTransactions();
-      const base = storage.loadBaseStock();
-      const baseByProduct = storage.loadBaseStockByProduct();
-      const daily = storage.loadDailyStock();
-      setTransactions(tx);
-      setBaseStockState(base);
-      setBaseStockByProductState(baseByProduct);
-      setDailyStockState(daily);
-      setProductsState(storage.loadProducts() as ProductMasterRow[]);
     } finally {
       setIsSupabaseLoading(false);
     }
   }, [router]);
 
   const switchToLocalMode = useCallback(async () => {
+    if (FORCE_SUPABASE) return; // Supabase 강제 모드: 로컬 전환 불가
     setSupabaseFetchStatus("fetch_error");
     setSupabaseFetchError("로컬 모드로 전환됨. Supabase 데이터는 '새로고침'으로 다시 불러올 수 있습니다.");
     setUseSupabaseInventory(false);

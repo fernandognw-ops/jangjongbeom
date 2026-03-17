@@ -20,8 +20,8 @@ const AIForecastReport = lazy(() =>
 );
 
 function SupabaseDiagnosticBanner() {
-  const { useSupabaseInventory, supabaseFetchStatus, supabaseFetchError, refresh } = useInventory();
-  if (useSupabaseInventory || supabaseFetchStatus === "idle" || supabaseFetchStatus === "ok") return null;
+  const { supabaseFetchStatus, supabaseFetchError, refresh } = useInventory();
+  if (supabaseFetchStatus === "idle" || supabaseFetchStatus === "ok") return null;
 
   const messages: Record<string, { title: string; desc: string }> = {
     supabase_not_configured: {
@@ -59,7 +59,7 @@ function SupabaseDiagnosticBanner() {
 }
 
 export default function DashboardPage() {
-  const { totalValue, useSupabaseInventory, isSupabaseLoading, supabaseFetchStatus, refresh, switchToLocalMode, kpiData } = useInventory() ?? {};
+  const { totalValue, useSupabaseInventory, isSupabaseLoading, supabaseFetchStatus, refresh, kpiData } = useInventory() ?? {};
 
   return (
     <div
@@ -83,9 +83,9 @@ export default function DashboardPage() {
       <main className="mx-auto max-w-6xl min-w-0 px-3 py-3 md:px-6 md:py-8 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-x-hidden">
         {isSupabaseLoading && supabaseFetchStatus === "idle" ? (
           <div className="rounded-2xl border border-slate-200 bg-white py-16 px-4 text-center shadow-card">
-            <p className="text-slate-600">데이터 로딩 중입니다…</p>
-            <p className="mt-2 text-xs text-slate-500">15초 이상 걸리면 자동으로 종료됩니다. 아래 버튼으로 재시도할 수 있습니다.</p>
-            <div className="mt-4 flex flex-col sm:flex-row gap-3 justify-center">
+            <p className="text-slate-600">Supabase 데이터 로딩 중입니다…</p>
+            <p className="mt-2 text-xs text-slate-500">모든 데이터는 Supabase에서 가져옵니다. 15초 이상 걸리면 아래 버튼으로 재시도하세요.</p>
+            <div className="mt-4 flex justify-center">
               <button
                 type="button"
                 onClick={() => refresh()}
@@ -93,18 +93,12 @@ export default function DashboardPage() {
               >
                 새로고침
               </button>
-              <button
-                type="button"
-                onClick={() => switchToLocalMode?.()}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 shadow-sm"
-              >
-                로컬 모드로 전환
-              </button>
             </div>
           </div>
         ) : useSupabaseInventory ? (
-          /* 박스히어로 스타일 대시보드 (Supabase inventory_* 연동 시) */
+          /* 박스히어로 스타일 대시보드 (Supabase 전용 - 모든 데이터 Supabase 출처) */
           <>
+            <SupabaseDiagnosticBanner />
             {/* KPI 카드: snapshot 단일 출처 (재고 금액, 품목 수, 수량 EA, SKU 박스) */}
             {(kpiData || totalValue > 0) && (
               <>
