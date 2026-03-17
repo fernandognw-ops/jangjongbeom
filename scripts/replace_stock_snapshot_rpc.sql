@@ -27,6 +27,7 @@ DECLARE
   v_quantity INT;
   v_unit_cost NUMERIC;
   v_total_price NUMERIC;
+  v_pack_size INT;
   v_snapshot_date DATE;
   v_target_date DATE;
 BEGIN
@@ -65,6 +66,12 @@ BEGIN
       v_total_price := v_quantity * v_unit_cost;
     END IF;
 
+    -- pack_size: 입수량 (SKU = quantity/pack_size). 0이면 1
+    v_pack_size := COALESCE((elem->>'pack_size')::INTEGER, 0);
+    IF v_pack_size <= 0 THEN
+      v_pack_size := 1;
+    END IF;
+
     INSERT INTO inventory_stock_snapshot (
       product_code,
       dest_warehouse,
@@ -73,7 +80,8 @@ BEGIN
       quantity,
       unit_cost,
       snapshot_date,
-      total_price
+      total_price,
+      pack_size
     ) VALUES (
       v_product_code,
       v_dest_warehouse,
@@ -82,7 +90,8 @@ BEGIN
       v_quantity,
       v_unit_cost,
       v_snapshot_date,
-      v_total_price
+      v_total_price,
+      v_pack_size
     );
     inserted_count := inserted_count + 1;
   END LOOP;

@@ -186,6 +186,8 @@ export interface StockSnapshotRow {
   unit_cost: number;
   dest_warehouse?: string;
   total_price?: number;
+  /** 입수량 (SKU = quantity/pack_size) */
+  pack_size?: number;
 }
 
 /** Python integrated_sync rawdata와 동일: inventory_products upsert용 */
@@ -522,6 +524,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     if (idxAmount < 0) idxAmount = findCol(h, ["재고원가"]);
     const idxWh = findCol(h, ["창고명", "창고", "보관장소", "입고처", "warehouse"]);
     const idxStockDate = findCol(h, ["재고일자", "재고 일자", "재고일"]);
+    const idxPack = findCol(h, ["입수량", "입수"]);
 
     if (idxCode < 0 || idxQty < 0) {
       return {
@@ -532,7 +535,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
 
     /** Python integrated_sync와 동일: (product_code, dest_warehouse)별 집계 */
-    const agg: Record<string, { qty: number; cost: number; totalPrice: number }> = {};
+    const agg: Record<string, { qty: number; cost: number; totalPrice: number; pack: number }> = {};
     let stockDateFromSheet: string | null = null;
     const stockDataStart = headerRow + DATA_ROW_OFFSET;
     for (let r = stockDataStart; r < data.length; r++) {
@@ -556,15 +559,17 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
       const whRaw = idxWh >= 0 ? String(row[idxWh] ?? "").trim() : "";
       const wh = whRaw ? normalizeWarehouse(whRaw) : "제이에스";
       const key = `${code}|${wh}`;
+      const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 0;
 
-      if (!agg[key]) agg[key] = { qty: 0, cost: 0, totalPrice: 0 };
+      if (!agg[key]) agg[key] = { qty: 0, cost: 0, totalPrice: 0, pack: 0 };
       agg[key].qty += qty;
       agg[key].cost = cost > 0 ? cost : agg[key].cost;
       agg[key].totalPrice += totalPrice;
+      if (pack > 0 && agg[key].pack <= 0) agg[key].pack = pack;
     }
 
     targetSnapshotDate = stockDateFromSheet ?? dateFromFilename(filename, year) ?? targetSnapshotDate;
-    for (const [key, { qty, cost, totalPrice }] of Object.entries(agg)) {
+    for (const [key, { qty, cost, totalPrice, pack }] of Object.entries(agg)) {
       const [code, wh] = key.split("|");
       currentProductCodes.add(code);
       stockSnapshot.push({
@@ -573,6 +578,7 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
         unit_cost: Math.round(cost * 100) / 100,
         dest_warehouse: wh,
         total_price: Math.round(totalPrice * 100) / 100,
+        ...(pack > 0 && { pack_size: pack }),
       });
     }
   }

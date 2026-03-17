@@ -243,26 +243,28 @@ export async function POST(request: Request) {
       const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
       const [existingSnap, productsInfo] = await Promise.all([
         supabase.from(TABLE_SNAPSHOT).select("product_code,unit_cost").in("product_code", codes),
-        supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost,product_name,category,group_name").in("product_code", codes),
+        supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost,product_name,category,group_name,pack_size").in("product_code", codes),
       ]);
       const costByCode = new Map<string, number>();
-      const productInfoByCode = new Map<string, { product_name?: string; category?: string }>();
+      const productInfoByCode = new Map<string, { product_name?: string; category?: string; pack_size?: number }>();
       for (const r of existingSnap.data ?? []) {
         const c = (r as { product_code: string; unit_cost: number }).unit_cost;
         if (c != null && c > 0) costByCode.set((r as { product_code: string }).product_code, c);
       }
       for (const r of productsInfo.data ?? []) {
-        const p = r as { product_code: string; unit_cost?: number; product_name?: string; category?: string; group_name?: string };
+        const p = r as { product_code: string; unit_cost?: number; product_name?: string; category?: string; group_name?: string; pack_size?: number };
         if ((p.unit_cost ?? 0) > 0 && !costByCode.has(p.product_code)) costByCode.set(p.product_code, p.unit_cost!);
         const name = (p.product_name ?? "").trim() || (p.product_code ?? "");
         const cat = (p.category ?? p.group_name ?? "").trim() || "기타";
-        if (name || cat) productInfoByCode.set(p.product_code, { product_name: name || undefined, category: cat || undefined });
+        const pack = (p.pack_size ?? 0) > 0 ? p.pack_size : undefined;
+        if (name || cat || pack) productInfoByCode.set(p.product_code, { product_name: name || undefined, category: cat || undefined, pack_size: pack });
       }
       const snapshotRows = stockSnapshot.map((s) => {
         let cost = s.unit_cost ?? 0;
         if (cost <= 0) cost = costByCode.get(s.product_code) ?? 0;
         const totalPrice = (s.total_price ?? 0) > 0 ? s.total_price! : s.quantity * cost;
         const info = productInfoByCode.get(s.product_code);
+        const packSize = (s.pack_size ?? 0) > 0 ? s.pack_size : info?.pack_size ?? 1;
         return {
           product_code: s.product_code,
           dest_warehouse: s.dest_warehouse ?? "",
@@ -272,6 +274,7 @@ export async function POST(request: Request) {
           unit_cost: Math.round(cost * 100) / 100,
           total_price: Math.round(totalPrice * 100) / 100,
           snapshot_date: snapshotDate,
+          pack_size: packSize,
         };
       });
       // RPC가 당월만 삭제 후 INSERT. 당월 이전 데이터는 유지

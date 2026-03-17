@@ -17,7 +17,8 @@
     "sync-full": "python scripts/sync_full_0316.py",
     "sync-all-maram": "python scripts/sync_all_maram.py",
     "update-stock-costs": "python scripts/update_stock_costs.py",
-    "sync-current-products": "python scripts/sync_current_products.py"
+    "sync-current-products": "python scripts/sync_current_products.py",
+    "verify-excel": "node scripts/verify_excel_totals.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.0",
