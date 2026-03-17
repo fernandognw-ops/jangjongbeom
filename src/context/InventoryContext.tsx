@@ -615,7 +615,23 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("storage", handler);
   }, [refresh, useSupabaseInventory]);
 
-  // Supabase 사용 시: 자동 새로고침 비활성화. 새로고침 버튼 클릭 시에만 refresh
+  // Supabase 강제 모드: 탭 복귀 시 자동 새로고침 (Supabase에서 직접 수정 후 돌아올 때 반영)
+  useEffect(() => {
+    if (!FORCE_SUPABASE) return;
+    let hiddenAt = 0;
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+        return;
+      }
+      if (document.visibilityState === "visible" && hiddenAt > 0 && Date.now() - hiddenAt > 1500) {
+        refresh();
+        hiddenAt = 0;
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [refresh]);
 
   const addTransaction = useCallback(
     (tx: Omit<Transaction, "id" | "createdAt">) => {

@@ -122,22 +122,21 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
   try {
     let currentCodes: string[] = [];
     let stockSnapshot: StockSnapshotRow[] = [];
-    const [currentRes, snapshotRes] = await Promise.all([
+    const [currentRes, maxDateRes] = await Promise.all([
       supabase.from(TABLE_CURRENT_PRODUCTS).select("product_code").order("product_code").limit(10000),
-      supabase.from(TABLE_STOCK_SNAPSHOT).select("product_code,quantity,unit_cost,total_price,snapshot_date,category").limit(50000),
+      supabase.from(TABLE_STOCK_SNAPSHOT).select("snapshot_date").order("snapshot_date", { ascending: false }).limit(1),
     ]);
     currentCodes = currentRes.error ? [] : (currentRes.data ?? []).map((r: { product_code: string }) => r.product_code);
-    const allSnapshot = snapshotRes.error ? [] : ((snapshotRes.data ?? []) as StockSnapshotRow[]);
-    // 최신 snapshot_date만 사용 (재고 자산은 가장 최신 데이터 기준)
-    const maxSnapDate = allSnapshot.length > 0
-      ? allSnapshot.reduce((max, r) => {
-          const d = ((r as { snapshot_date?: string }).snapshot_date ?? "").toString().slice(0, 10);
-          return d > max ? d : max;
-        }, "1970-01-01")
-      : "";
-    stockSnapshot = maxSnapDate ? allSnapshot.filter((r) => ((r as { snapshot_date?: string }).snapshot_date ?? "").toString().slice(0, 10) === maxSnapDate) : allSnapshot;
+    const maxSnapDate = (maxDateRes?.data?.[0] as { snapshot_date?: string })?.snapshot_date?.slice(0, 10) ?? "";
+    if (maxSnapDate) {
+      const snapRes = await supabase
+        .from(TABLE_STOCK_SNAPSHOT)
+        .select("product_code,quantity,unit_cost,total_price,snapshot_date,category")
+        .eq("snapshot_date", maxSnapDate);
+      stockSnapshot = snapRes.error ? [] : ((snapRes.data ?? []) as StockSnapshotRow[]);
+      if (snapRes.error) console.warn("[inventory] inventory_stock_snapshot 조회 실패:", snapRes.error.message);
+    }
     if (currentRes.error) console.warn("[inventory] inventory_current_products 조회 실패:", currentRes.error.message);
-    if (snapshotRes.error) console.warn("[inventory] inventory_stock_snapshot 조회 실패:", snapshotRes.error.message);
 
     // 최근 6개월 조회 (누적 데이터: 1월·2월·3월 등)
     const sixMonthsAgo = new Date();
