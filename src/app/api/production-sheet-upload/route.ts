@@ -69,11 +69,9 @@ export async function POST(request: Request) {
         product_code: code,
         product_name: code,
         group_name: "생활용품",
-        sub_group: "",
-        spec: "",
+        category: "생활용품",
         unit_cost: 0,
         pack_size: 1,
-        sales_channel: "general",
       }));
       for (let i = 0; i < newProducts.length; i += BATCH) {
         const batch = newProducts.slice(i, i + BATCH);
@@ -87,7 +85,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // 1. 입고 INSERT (product_code+inbound_date 기준 병합, sales_channel 없음)
+    // 1. 입고 UPSERT (동일 product_code+inbound_date → 업로드 값으로 덮어쓰기)
     let inboundInserted = 0;
     if (inbound.length > 0) {
       const merged = new Map<string, { product_code: string; quantity: number; inbound_date: string; category?: string }>();
@@ -104,7 +102,7 @@ export async function POST(request: Request) {
       const rows = Array.from(merged.values());
       for (let i = 0; i < rows.length; i += BATCH) {
         const batch = rows.slice(i, i + BATCH);
-        const { error } = await supabase.from(TABLE_INBOUND).insert(batch);
+        const { error } = await supabase.from(TABLE_INBOUND).upsert(batch, { onConflict: "product_code,inbound_date" });
         if (error) {
           return NextResponse.json(
             { error: `입고 저장 실패: ${error.message}` },
@@ -115,7 +113,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // 2. 출고 INSERT (코드에서 중복 병합)
+    // 2. 출고 UPSERT (동일 product_code+outbound_date+sales_channel → 업로드 값으로 덮어쓰기)
     let outboundInserted = 0;
     if (outbound.length > 0) {
       const merged = new Map<string, { product_code: string; quantity: number; outbound_date: string; sales_channel: "coupang" | "general"; category?: string }>();
@@ -133,7 +131,7 @@ export async function POST(request: Request) {
       const rows = Array.from(merged.values());
       for (let i = 0; i < rows.length; i += BATCH) {
         const batch = rows.slice(i, i + BATCH);
-        const { error } = await supabase.from(TABLE_OUTBOUND).insert(batch);
+        const { error } = await supabase.from(TABLE_OUTBOUND).upsert(batch, { onConflict: "product_code,outbound_date,sales_channel" });
         if (error) {
           return NextResponse.json(
             { error: `출고 저장 실패: ${error.message}` },

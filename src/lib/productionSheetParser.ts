@@ -1,19 +1,19 @@
 /**
- * 생산수불현황.xlsx 파싱
+ * 생산수불현황.xlsx 파싱 (0316 형식)
  * 입고·출고·재고 시트 → Supabase 업로드용 데이터
  *
- * 규칙:
- * - 입고/출고: 4행(Index 3)부터 데이터 시작
- * - 날짜: cellDates, Excel serial, "25-10" 형식 지원
- * - 빈 품목코드/날짜 행은 건너뜀
+ * 규칙 (0316_생산수불현황.xlsx):
+ * - 4행: 헤더 (품목코드, 수량, 입고일자/출고일자 등)
+ * - 5행: 서브헤더 (일반/쿠팡 등)
+ * - 6행부터: 실제 데이터
  */
 
 import * as XLSX from "xlsx";
 
 const REQUIRED_SHEETS = ["입고", "출고", "재고"] as const;
 
-/** 입고/출고 시트: 4행(Index 3)부터 실제 데이터가 시작 */
-const DATA_START_ROW = 3;
+/** 헤더 다음 서브헤더 1행 건너뛰고 데이터 시작 */
+const DATA_ROW_OFFSET = 2;
 
 function findCol(
   row: unknown[],
@@ -24,7 +24,8 @@ function findCol(
   const excl = (opts?.exclude ?? []).map(normalize);
   for (let i = 0; i < row.length; i++) {
     const v = normalize(String(row[i] ?? ""));
-    if (excl.some((e) => v.includes(e) || e.includes(v))) continue;
+    if (!v) continue;
+    if (excl.some((e) => v === e)) continue;
     for (const n of names) {
       const nv = normalize(n);
       if (v === nv || v.includes(nv) || nv.includes(v)) return i;
@@ -239,26 +240,38 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
   const stockSnapshot: StockSnapshotRow[] = [];
   const currentProductCodes = new Set<string>();
 
-  // 입고 시트 (4행 Index 3부터 데이터)
+  // 입고 시트 (4행 헤더, 6행부터 데이터)
   const inSheet = getSheet("입고");
   if (inSheet) {
     const data = XLSX.utils.sheet_to_json(inSheet, { header: 1, defval: "" }) as unknown[][];
-    const headerRow = Math.min(DATA_START_ROW - 1, 2);
+    const headerRow = findHeaderRow(inSheet, [
+      ["품목코드", "품번", "제품코드", "SKU"],
+      ["수량"],
+      ["입고일자", "입고일", "일자"],
+    ]);
+    if (headerRow < 0) {
+      return {
+        ok: false,
+        message: "입고 시트: 품목코드, 수량, 입고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
+        formatError: "입고",
+      };
+    }
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
     const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
     const idxDate = findCol(h, ["입고일자", "입고일", "일자"]);
-    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"]);
+    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"], { exclude: ["품목코드", "품번"] });
 
     if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
       return {
         ok: false,
-        message: "입고 시트: 품목코드, 수량, 입고일자 열이 필요합니다. (3행 헤더, 4행부터 데이터)",
+        message: "입고 시트: 품목코드, 수량, 입고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
         formatError: "입고",
       };
     }
 
-    for (let r = DATA_START_ROW; r < data.length; r++) {
+    const dataStartRow = headerRow + DATA_ROW_OFFSET;
+    for (let r = dataStartRow; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
       const code = String(row[idxCode] ?? "").trim();
       const qty = safeInt(row[idxQty]);
@@ -278,27 +291,39 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
   }
 
-  // 출고 시트 (4행 Index 3부터 데이터)
+  // 출고 시트 (4행 헤더, 6행부터 데이터)
   const outSheet = getSheet("출고");
   if (outSheet) {
     const data = XLSX.utils.sheet_to_json(outSheet, { header: 1, defval: "" }) as unknown[][];
-    const headerRow = Math.min(DATA_START_ROW - 1, 2);
+    const headerRow = findHeaderRow(outSheet, [
+      ["품목코드", "품번", "제품코드", "SKU"],
+      ["수량"],
+      ["출고일자", "출고일", "일자"],
+    ]);
+    if (headerRow < 0) {
+      return {
+        ok: false,
+        message: "출고 시트: 품목코드, 수량, 출고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
+        formatError: "출고",
+      };
+    }
     const h = (data[headerRow] ?? []) as unknown[];
     const idxCode = findCol(h, ["품목코드", "품번", "제품코드", "SKU"]);
     const idxQty = findCol(h, ["수량"], { exclude: ["입수량"] });
     const idxDate = findCol(h, ["출고일자", "출고일", "일자"]);
     const idxSc = findCol(h, ["매출구분", "판매처"]);
-    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"]);
+    const idxCat = findCol(h, ["품목구분", "품목", "카테고리"], { exclude: ["품목코드", "품번"] });
 
     if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
       return {
         ok: false,
-        message: "출고 시트: 품목코드, 수량, 출고일자 열이 필요합니다. (3행 헤더, 4행부터 데이터)",
+        message: "출고 시트: 품목코드, 수량, 출고일자 열이 필요합니다. (4행 헤더, 6행부터 데이터)",
         formatError: "출고",
       };
     }
 
-    for (let r = DATA_START_ROW; r < data.length; r++) {
+    const dataStartRow = headerRow + DATA_ROW_OFFSET;
+    for (let r = dataStartRow; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
       const code = String(row[idxCode] ?? "").trim();
       const qty = safeInt(row[idxQty]);
@@ -349,7 +374,8 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
     }
 
     const agg: Record<string, { qty: number; cost: number }> = {};
-    for (let r = headerRow + 1; r < data.length; r++) {
+    const stockDataStart = headerRow + DATA_ROW_OFFSET;
+    for (let r = stockDataStart; r < data.length; r++) {
       const row = (data[r] ?? []) as unknown[];
       const code = String(row[idxCode] ?? "").trim();
       if (!code || code.toLowerCase() === "nan") continue;
