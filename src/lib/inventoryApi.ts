@@ -169,7 +169,7 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
       if (k2 && !codeToProduct.has(k2)) codeToProduct.set(k2, p);
     }
 
-    /** product_code → category: inventory_stock_snapshot (update-category로 반영) */
+    /** product_code → category: rawdata(품목) 우선, snapshot은 보조 (대시보드 카테고리 기준) */
     const codeToCategoryFromSnapshot = new Map<string, string>();
     for (const row of stockSnapshot) {
       const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
@@ -196,11 +196,11 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     for (const code of codesToUse) {
       const key = normalizeCode(code);
       const p = codeToProduct.get(key) ?? codeToProduct.get(String(code ?? "").trim()) ?? codeToProduct.get(code);
-      /** category: inventory_stock_snapshot 우선 (엑셀 update-category 반영) → inventory_products → 기타 */
-      const fromSnapshot = codeToCategoryFromSnapshot.get(key) ?? codeToCategoryFromSnapshot.get(String(code ?? "").trim());
+      /** category: rawdata(품목) 우선 → inventory_stock_snapshot 보조 → 기타 */
       const fromProduct = p ? String((p as { category?: string }).category ?? (p as { group_name?: string }).group_name ?? "").trim() : "";
       const useProduct = fromProduct && fromProduct !== "기타" && fromProduct !== "전체";
-      const category = fromSnapshot || (useProduct ? fromProduct : "기타");
+      const fromSnapshot = codeToCategoryFromSnapshot.get(key) ?? codeToCategoryFromSnapshot.get(String(code ?? "").trim());
+      const category = (useProduct ? fromProduct : null) || fromSnapshot || "기타";
 
       if (p) {
         (p as InventoryProduct & { is_active?: boolean }).is_active = true;
@@ -230,10 +230,10 @@ export async function fetchInventoryData(): Promise<FetchInventoryResult> {
     for (const p of finalProducts) {
       (p as InventoryProduct & { is_active?: boolean }).is_active ??= true;
       const k = normalizeCode(p.product_code) || p.product_code;
-      const fromSnapshot = codeToCategoryFromSnapshot.get(k) ?? codeToCategoryFromSnapshot.get(String(p.product_code).trim());
       const fromProduct = String((p as { category?: string }).category ?? (p as { group_name?: string }).group_name ?? "").trim();
       const useProduct = fromProduct && fromProduct !== "기타" && fromProduct !== "전체";
-      (p as InventoryProduct).category = fromSnapshot || (useProduct ? fromProduct : "기타");
+      const fromSnapshot = codeToCategoryFromSnapshot.get(k) ?? codeToCategoryFromSnapshot.get(String(p.product_code).trim());
+      (p as InventoryProduct).category = (useProduct ? fromProduct : null) || fromSnapshot || "기타";
     }
     const catMap = new Map<string, number>();
     for (const p of finalProducts) {

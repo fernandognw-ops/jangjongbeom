@@ -116,24 +116,29 @@ export async function GET() {
       fetchNaverSearchTrendMonthly(),
     ]);
 
-    /** product_code → category(품목구분): inventory_stock_snapshot 우선 */
+    /** product_code → category(품목구분): rawdata(품목) 우선, snapshot 보조 */
     const codeToCategory = new Map<string, string>();
+    const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
+    for (const p of products) {
+      const k = normalizeCode(p.product_code) || String(p.product_code ?? "").trim();
+      const cat = String(p.category ?? p.group_name ?? "").trim();
+      if (!k || !cat || cat === "기타" || cat === "전체") continue;
+      codeToCategory.set(k, cat);
+      codeToCategory.set(String(p.product_code ?? "").trim(), cat);
+    }
     const snapData = (snapshotRes.data ?? []) as { product_code: string; category?: string; snapshot_date?: string }[];
     const byCodeDate = new Map<string, { category: string; date: string }>();
     for (const row of snapData) {
       const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
       const cat = String(row.category ?? "").trim();
       const date = (row.snapshot_date ?? "").slice(0, 10);
-      if (!code) continue;
+      if (!code || !cat || cat === "기타" || cat === "전체") continue;
       const existing = byCodeDate.get(code);
-      const useCat = cat || (existing?.category ?? "");
-      if (!existing || date >= existing.date) byCodeDate.set(code, { category: useCat, date });
+      if (!existing || date >= existing.date) byCodeDate.set(code, { category: cat, date });
     }
     for (const [code, v] of byCodeDate.entries()) {
-      if (v.category) codeToCategory.set(code, v.category);
+      if (v.category && !codeToCategory.has(code)) codeToCategory.set(code, v.category);
     }
-
-    const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
     const codeToCost = new Map<string, number>();
     const categoriesSet = new Set<string>();
     const valueCategoriesSet = new Set<string>();

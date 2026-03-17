@@ -300,22 +300,35 @@ function parseProductionSheetCore(wb: XLSX.WorkBook, filename?: string): Product
   }
 
   const getSheet = (name: string) => {
-    const exact = sheetNames.find((s) => s.replace(/\s/g, "") === name.replace(/\s/g, ""));
-    if (exact) return wb.Sheets[exact];
     if (name === "출고") {
-      const detail = sheetNames.find((s) => /출고현황|품목별출고/.test(s.replace(/\s/g, "")));
+      // 품목별 출고현황 우선 (3/16 등 일별 최신 데이터 포함). "출고" 요약 시트는 보조
+      const detail = sheetNames.find((s) => /품목별출고|출고현황/.test(s.replace(/\s/g, "")));
       if (detail) return wb.Sheets[detail];
+      const exact = sheetNames.find((s) => s.replace(/\s/g, "") === "출고".replace(/\s/g, ""));
+      if (exact) return wb.Sheets[exact];
       const fallback = sheetNames.find((s) => /출고/.test(s.replace(/\s/g, "")));
       return fallback ? wb.Sheets[fallback] : null;
     }
-    if (name === "재고") {
-      // "품목별 재고현황" 등 상세 시트 우선 (3월 17일 등 실제 재고일자 반영)
-      const detail = sheetNames.find((s) => /재고현황|품목별재고/.test(s.replace(/\s/g, "")));
+    if (name === "입고") {
+      // 품목별 입고현황 우선 (일별 최신 데이터 포함)
+      const detail = sheetNames.find((s) => /품목별입고|입고현황/.test(s.replace(/\s/g, "")));
       if (detail) return wb.Sheets[detail];
+      const exact = sheetNames.find((s) => s.replace(/\s/g, "") === "입고".replace(/\s/g, ""));
+      if (exact) return wb.Sheets[exact];
+      const fallback = sheetNames.find((s) => /입고/.test(s.replace(/\s/g, "")));
+      return fallback ? wb.Sheets[fallback] : null;
+    }
+    if (name === "재고") {
+      // 품목별 재고현황 우선 (3월 17일 등 실제 재고일자 반영)
+      const detail = sheetNames.find((s) => /품목별재고|재고현황/.test(s.replace(/\s/g, "")));
+      if (detail) return wb.Sheets[detail];
+      const exact = sheetNames.find((s) => s.replace(/\s/g, "") === "재고".replace(/\s/g, ""));
+      if (exact) return wb.Sheets[exact];
       const fallback = sheetNames.find((s) => /재고/.test(s.replace(/\s/g, "")));
       return fallback ? wb.Sheets[fallback] : null;
     }
-    return null;
+    const exact = sheetNames.find((s) => s.replace(/\s/g, "") === name.replace(/\s/g, ""));
+    return exact ? wb.Sheets[exact] : null;
   };
 
   const findSheetByName = (want: string, fallbacks?: string[]): string | null => {
