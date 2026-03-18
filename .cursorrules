@@ -1,0 +1,244 @@
+# 재고관리 시스템 - Cursor 규칙 (박제본)
+
+> **절대 규칙**: 이 파일(.cursorrules)은 사용자의 명시적 허락 없이 절대 수정하지 말 것.
+> 규칙 변경·추가·삭제가 필요하면 반드시 사용자에게 요청 후 승인을 받을 것.
+
+---
+
+## 1. 데이터 매핑 절대 규칙
+
+### 1.1 product_code (품목코드)
+- **정규화** (`normalizeCode`): trim, parseFloat; 1e10 이상/이하 시 round; 비정수 시 round.
+- **Excel 컬럼**: 품목코드, 품번, 제품코드, SKU → `product_code`.
+- **바코드**: 12자리 이상(8809…), 문자열 유지, 과학적 표기법(e.g. 8.8E+12) 금지.
+- **검증**: 길이 ≥5, 숫자 비율 ≥50%; "합계"/"소계" 제외.
+
+### 1.2 sales_channel (매출구분)
+- **Enum**: `coupang` | `general`.
+- **매핑**: "쿠팡", "coupang", 포함 문자열 → `coupang`; 그 외 → `general`.
+- **기본값**: 비어있으면 `general`.
+- **적용**: 출고(outbound)에만 사용. 입고(inbound)에는 채널 없음 → `general`.
+
+### 1.3 category (품목구분)
+- **표준 카테고리** (`STANDARD_CATEGORIES`): `["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"]`.
+- **정규화** (`normalizeCategory`): 빈값·"기타"·"전체" → `""`; "캡슐세제 사은품" → `"캡슐세제"`; 표준 카테고리 매칭(equals/includes).
+- **우선순위**: `inventory_stock_snapshot.category` > `inventory_products.group_name` > "기타".
+- **대시보드**: 위 5개 외 카테고리 표시 금지.
+
+### 1.4 pack_size (입수량)
+- **기본값**: ≤0 또는 없으면 1.
+- **Excel 컬럼**: 입수량, 입수 → `pack_size`.
+- **SKU 계산**: `quantity / pack_size` (박스 단위).
+
+### 1.5 unit_cost (원가/단가)
+- **소스**: `inventory_products.unit_cost` 또는 `inventory_stock_snapshot.unit_cost`.
+- **상한**: `MAX_UNIT_COST_KRW = 500,000` — 초과 시 0 처리.
+- **Excel 컬럼**: 제품원가표(개당), 제품원가표, 원가, 단가 → `unit_cost`.
+
+### 1.6 integrated_sync.py 컬럼 매핑 (엑셀 시트)
+- **rawdata**: 품목코드→product_code, 품목명 없으면 제품명→product_name, 제품원가표(개당)→unit_cost, 품목→category, 입수량→pack_size.
+- **입고**: 품목코드, 제품명, 품목구분→category, 입수량, 수량, 입고처→dest_warehouse, 입고일자→inbound_date, 원가→unit_price, 합계원가→total_price.
+- **재고**: 품목코드, 제품명, 품목구분→category, 입수량, 수량, 창고명→dest_warehouse, 재고일자→snapshot_date, **재고원가**→unit_cost, **재고금액**→total_price (둘 다 별도 매핑).
+- **재고 스냅샷 매핑 규칙**:
+  - unit_cost: 재고원가(개당 단가) 우선 → 원가 → 제품원가표/단가.
+  - total_price: 재고금액(총액)만 사용. 재고원가 컬럼은 total_price에 매핑하지 않음.
+  - 재고금액 없으면 total_price=0. 재고원가로 total_price 채우지 않음 (신규 제품 오표기 방지).
+  - product_code 단일 PK: 모든 창고 수량·금액 합산 후 1행 저장.
+- **출고**: 품목코드, 제품명, 품목/품목구분→category, 입수량, 수량, 출고처→dest_warehouse, 출고일자→outbound_date, 원가→unit_price, 합계→total_price, 매출구분→sales_channel.
+
+---
+
+## 2. 창고 및 재고 분류 규칙
+
+### 2.1 창고별 분류 (dest_warehouse)
+| 창고명 | 채널 |
+|--------|------|
+| 테이칼튼, 테이칼튼1공장, 테이칼튼 1공장 | coupang |
+| 제이에스, 컬리 | general |
+
+### 2.2 isCoupangWarehouse 판별
+- `테이칼튼` 포함 → 쿠팡.
+- 비어있으면 일반.
+
+### 2.3 stockByWarehouse
+- **소스**: `dest_warehouse` on `inventory_stock_snapshot`.
+- **기본 창고**: 비어있으면 `"제이에스"`.
+
+### 2.4 stockByProductByChannel
+- **coupang**: 쿠팡 창고 재고 합산.
+- **general**: 일반 창고 재고 합산.
+- **전체**: coupang + general.
+
+---
+
+## 3. 재고 상태 분류 (getStockStatus)
+
+### 3.1 입력
+- `stock`, `safetyStock`, `hasNegativeWarning`, `dailyVelocity`, `hasRequiredData`, `has90DaySales`.
+
+### 3.2 분류 규칙 (우선순위 순)
+| 조건 | 상태 | 설명 |
+|------|------|------|
+| `!hasRequiredData` or `hasNegativeWarning` or `stock < 0` | warning (데이터 오류) | 필수 정보 없음/마이너스 재고 |
+| `stock <= 0` + `has90DaySales` | stockout (품절) | 재고 0 + 3개월 이내 출고 내역 있음 |
+| `stock <= 0` + `!has90DaySales` | warning (데이터 오류) | 재고 0 + 3개월 미만 출고 품목 |
+| `dailyVelocity <= 0` | normal | 출고 이력 없음 |
+| `daysOfStock ≤ 3` | out (품절임박) | 3일 이내 재고 소진 |
+| `daysOfStock < 14` | low (부족) | 14일 미만 보유 |
+| `daysOfStock ≥ 60` | overstock (과재고) | 60일 이상 보유 |
+| else | normal | 14~60일 보유 |
+
+### 3.3 daysOfStock
+- `daysOfStock = stock / dailyVelocity`.
+- `dailyVelocity` = 최근 30일 출고 합계 / 30.
+
+### 3.4 has90DaySales
+- `computeTotalOutboundByProduct(outbound, 90)` > 0 → 3개월 이상 판매 품목.
+
+### 3.5 카드 기준 문구
+- **품절**: "재고 0 (3개월 이내 출고 내역 있음)".
+- **품절임박**: "3일 이내 재고 소진".
+
+---
+
+## 4. 데이터 업데이트 로직
+
+### 4.1 Supabase 테이블
+- `inventory_products`, `inventory_inbound`, `inventory_outbound`, `inventory_stock_snapshot`, `inventory_current_products`.
+- **환경변수**: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (.env.local).
+
+### 4.2 integrated_sync.py (4개 시트 엑셀 동기화)
+- **필수 시트**: rawdata, 입고, 재고, 출고.
+- **매핑**:
+  - rawdata → `inventory_products` (Upsert, product_code)
+  - 입고 → `inventory_inbound` (Upsert, product_code + inbound_date)
+  - 재고 → `inventory_stock_snapshot` (truncate 후 insert, product_code 단일 PK)
+  - 출고 → `inventory_outbound` (Upsert, product_code + outbound_date + sales_channel)
+- **재고 시트**: product_code 단일 PK. 품목당 1행. 모든 창고 수량·금액 합산. 수량 가장 많은 창고를 dest_warehouse로 저장.
+- **당월 데이터만 수정**: 당월 이전 데이터는 변경하지 않음.
+
+### 4.3 production-sheet-upload API (POST /api/production-sheet-upload)
+- **입고/출고**: date + dest_warehouse 일치 기존 `.delete().in().in()` 체인으로 삭제 후 INSERT.
+- **재고**: snapshot_date + dest_warehouse 일치 기존 삭제 후 upsert.
+- **채널**: 비어있으면 `general`.
+- **unique 제약**: product_code,dest_warehouse (snapshot). 충돌 시 product_code 단일로 fallback.
+- **엑셀 파싱** (productionSheetParser): 입고/출고/재고 시트 4행(Index 3)부터 데이터. 날짜: cellDates, Excel serial, "25-10" 형식. 재고원가→unit_cost, 재고금액→total_price (재고금액 없으면 0).
+
+### 4.4 Snapshot
+- **최신 snapshot_date만 사용** (재고 자산·KPI 기준).
+- **재고 금액**: `total_price` 사용. 없으면 0원 (재고원가로 채우지 않음).
+
+### 4.5 단가 fallback
+- 스냅샷 unit_cost 0/비정상 → `inventory_products.unit_cost` 사용.
+
+---
+
+## 5. TopSkuByCategoryDashboard (주력 품목 관리)
+
+### 5.1 상수
+| 상수 | 값 | 설명 |
+|------|-----|------|
+| RANKING_DAYS | 90 | 주력 품목 선정: 최근 3개월 |
+| TOP_PRODUCT_PCT | 0.2 | 상위 20% 품목 (매출 기준) |
+| MIN_MONTHLY_REVENUE | 5,000,000 | 월매출 500만원 미만 숨김 |
+| SAFETY_STOCK_DAYS | 14 | 2주 안전재고 |
+| RECOMMENDED_WEEK_DAYS | 7 | 권장 입고: 1주일 물량 |
+| SALES_DAYS | 30 | 1개월 매출 표시 (30일 출고) |
+
+### 5.2 선정 기준
+- 최근 3개월 매출 상위 20% 품목.
+- 매출 = 수량 × 단가.
+
+### 5.3 권장 입고
+- `recommendedOrder = isBelow2w ? ceil(oneWeekSales + shortfall) : 0`.
+- `shortfall = max(0, safety2w - stock)`.
+- `safety2w = dailyVel × 14`.
+
+### 5.4 입고 기한
+- `dueDate = isBelow2w && daysOfStock != null ? today + floor(daysOfStock)` (YYYY-MM-DD).
+
+### 5.5 표시
+- 미달 품목만 (isBelow2w).
+- 잔여 재고 일수, 7일 미만 시 긴급 표시(빨간 배지).
+
+---
+
+## 6. productNameFormatter
+
+### 6.1 simplifyProductName(raw, packSize?)
+- **normalizeRaw**: `[xxx]` 제거, 라이트 패키지→라이트, 섬유유연제→섬유, `_`→공백.
+- **extractQty**: 25매입, 100개입 등.
+- **extractSize**: 2kg, 1L, 500ml 등.
+- **STOP_TOKENS**: kf94, kf80, 세트, 팩, 일반, 기본 등 제거.
+- **pack_size**: qty 없을 때 `${packSize}개입` 추가.
+
+### 6.2 formatProductDisplayName(raw, maxChars=15)
+- `simplifyProductName` 후 `maxChars`로 자르고 `…` 추가.
+
+---
+
+## 7. 물류 마감 시차 (실시간 가용 재고)
+
+- **쿠팡**: 18:00 마감 → 18시 이전 당일 쿠팡 출고분 미반영.
+- **일반**: 23:59 마감 → 당일 일반 출고분 마감 전 미반영.
+- **computeRealTimeAvailableStock**: 마감 전에는 당일 출고분을 아직 차감하지 않은 수량으로 계산.
+
+---
+
+## 8. 안전재고·권장 발주
+
+### 8.1 안전재고
+- `max(0, ceil(total3MonthOutbound × 0.1))`.
+- TopSku: `safety2w = dailyVel × 14`.
+
+### 8.2 권장 발주
+- `(안전재고 - 현재재고) + (일평균 출고량 × 리드타임)`.
+- **리드타임**: `lead_time_days ?? 7`.
+- 품절임박(보유 ≤3일): 최소 14일분 보충 권장.
+
+---
+
+## 9. KPI·집계
+
+- **totalValue**: `SUM(total_price)` 또는 `SUM(quantity × unit_cost)`.
+- **totalSku**: `SUM(quantity / pack_size)`.
+- **productCount**: unique `product_code`.
+
+---
+
+## 10. 기타 규칙
+
+### 10.1 마이너스 재고
+- **clampStock**: 0으로 표시, `hasWarning: true` 반환.
+
+### 10.2 단종 재고
+- 제품 마스터 없는 품목 → `inventory_discontinued_stock_snapshot`.
+
+### 10.3 API 라우트
+- `/api/inventory`, `/api/inventory/quick`, `/api/inventory/snapshot`, `/api/inventory/summary`, `/api/inventory/kpi`, `/api/inventory/stock`, `/api/inventory/data`, `/api/inventory-diag`, `/api/production-sheet-upload`, `/api/naver-search-trend`, `/api/category-trend`, `/api/demand-forecast`, `/api/stock-alerts`, `/api/forecast`.
+
+### 10.4 Supabase delete 체인
+- `.delete().eq().in()` 또는 `.delete().in().in()` 형태로 조건 결합. 단일 조건만 사용하지 말 것.
+
+---
+
+## 11. 데이터 오류 기준 분류 원칙 (요약)
+
+- **warning (데이터 오류)**: `!hasRequiredData` | `hasNegativeWarning` | `stock < 0` | (`stock <= 0` + `!has90DaySales`)
+- **stockout (품절)**: `stock <= 0` + `has90DaySales` (3개월 이내 출고 내역 있음)
+- **out (품절임박)**: `daysOfStock ≤ 3` (재고 있음)
+- **핵심**: 재고 0일 때 출고 이력 있으면 품절, 없으면 데이터 오류.
+
+---
+
+## 참조 파일
+
+| 로직 | 주요 파일 |
+|------|----------|
+| 데이터 매핑 | `src/lib/inventoryApi.ts`, `scripts/integrated_sync.py` |
+| 엑셀 파싱 (웹 업로드) | `src/lib/productionSheetParser.ts` |
+| 창고·상태 분류 | `src/components/DashboardBoxHero.tsx`, `src/app/api/inventory/snapshot/route.ts` |
+| 동기화 | `scripts/integrated_sync.py`, `src/app/api/production-sheet-upload/route.ts` |
+| 주력 품목 | `src/components/TopSkuByCategoryDashboard.tsx` |
+| 품목명 포맷 | `src/lib/productNameFormatter.ts` |
+| 물류 마감 | `src/lib/inventoryCalculations.ts` |
