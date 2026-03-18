@@ -730,10 +730,12 @@ def main() -> None:
         raw_rows = load_rawdata(path, sheet_map["rawdata"])
     print(f"[2] rawdata 파싱: {len(raw_rows)}건" + (" (시트 없음, 입고/재고/출고에서 품목 추출)" if not raw_rows and not sheet_map.get("rawdata") else ""))
 
-    inbound_rows = load_inbound(path, sheet_map["입고"])
+    from common.parser import parse_inbound_excel, parse_outbound_excel, parse_stock_excel
+
+    inbound_rows = parse_inbound_excel(path, sheet_map["입고"], filename=os.path.basename(path), debug=args.debug)
     print(f"    입고 파싱: {len(inbound_rows)}건")
 
-    stock_rows = load_stock(path, sheet_map["재고"], debug=args.debug, check_product=args.check_product)
+    stock_rows = parse_stock_excel(path, sheet_map["재고"], filename=os.path.basename(path), debug=args.debug)
     stock_sum = sum(
         float(r.get("total_price") or 0) if (r.get("total_price") or 0) > 0
         else float(r.get("quantity") or 0) * float(r.get("unit_cost") or 0)
@@ -762,7 +764,7 @@ def main() -> None:
         total_check = sum(agg_check.values())
         print(f"    [진단] 품목 {code}: 엑셀 원본 {len(matches)}행 (유사 {len(matches_partial)}행) → 창고별 {agg_check} → 합계 {total_check}")
 
-    outbound_rows = load_outbound(path, sheet_map["출고"])
+    outbound_rows = parse_outbound_excel(path, sheet_map["출고"], filename=os.path.basename(path), debug=args.debug)
     print(f"    출고 파싱: {len(outbound_rows)}건")
 
     if args.dry_run:
