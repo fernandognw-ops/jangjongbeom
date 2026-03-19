@@ -4,7 +4,7 @@
  *
  * inventory_outbound 기반 일자별 그룹화, 30일 평균 판매량, 권장 발주량 반환
  */
-
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import {

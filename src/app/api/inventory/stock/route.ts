@@ -3,6 +3,7 @@
  * GET /api/inventory/stock
  * inventory_stock_snapshot 수량만 반환 (product_code → quantity)
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";

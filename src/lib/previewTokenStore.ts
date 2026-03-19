@@ -22,6 +22,7 @@ interface PreviewEntry {
       totalStockValue: number;
       destWarehouseDistribution: Record<string, number>;
       snapshotDates: string[];
+      destWarehouseValid: boolean;
     };
   };
   expiresAt: number;

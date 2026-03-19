@@ -3,6 +3,7 @@
  * GET /api/inventory-diag
  * 각 테이블 row 수 및 샘플 데이터 반환
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";

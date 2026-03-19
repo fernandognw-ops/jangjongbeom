@@ -6,6 +6,7 @@
  * - 수량: inventory_stock_snapshot (product_code로만 매칭)
  * - 두 테이블을 product_code 기준 JOIN하여 한 번에 반환
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";
@@ -29,7 +30,7 @@ export async function GET() {
 
     const [productsRes, snapshotRes, inboundRes, outboundRes] = await Promise.all([
       supabase.from("inventory_products").select("*").order("product_code").limit(5000),
-      supabase.from("inventory_stock_snapshot").select("product_code,quantity,snapshot_date").limit(10000),
+      supabase.from("inventory_stock_snapshot").select("product_code,quantity,snapshot_date,dest_warehouse").limit(20000),
       supabase.from("inventory_inbound").select("product_code,quantity,inbound_date").gte("inbound_date", dateFrom).limit(10000),
       supabase.from("inventory_outbound").select("product_code,quantity,outbound_date,sales_channel").gte("outbound_date", dateFrom).limit(10000),
     ]);
@@ -46,19 +47,21 @@ export async function GET() {
     const outbound = outboundRes.data ?? [];
     const snapshotRows = (snapshotRes.data ?? []) as Array<{ product_code?: unknown; quantity?: unknown; snapshot_date?: string }>;
 
-    // 수량: inventory_stock_snapshot에서 product_code 매칭, 최신 snapshot_date 기준 1건
-    const byProduct = new Map<string, { qty: number; date: string }>();
-    for (const row of snapshotRows) {
-      const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
-      const qty = Number(row.quantity) || 0;
-      const date = (row.snapshot_date ?? "").slice(0, 10);
-      if (!code) continue;
-      const ex = byProduct.get(code);
-      if (!ex || date >= ex.date) byProduct.set(code, { qty, date });
-    }
+    // 수량: inventory_stock_snapshot 최신 snapshot_date 기준, dest_warehouse별 합산 후 product_code별 합 (총합 = 일반 + 쿠팡)
+    const maxDate = snapshotRows.length > 0
+      ? snapshotRows.reduce((max, r) => {
+          const d = (r.snapshot_date ?? "").toString().slice(0, 10);
+          return d > max ? d : max;
+        }, "1970-01-01")
+      : "";
     const stockByProduct: Record<string, number> = {};
-    for (const [code, v] of byProduct) {
-      stockByProduct[code] = v.qty;
+    for (const row of snapshotRows) {
+      const date = (row.snapshot_date ?? "").toString().slice(0, 10);
+      if (date !== maxDate) continue;
+      const code = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
+      if (!code) continue;
+      const qty = Number(row.quantity) || 0;
+      stockByProduct[code] = (stockByProduct[code] ?? 0) + qty;
     }
 
     // totalValue = sum(수량 × unit_cost), product_code로 매칭

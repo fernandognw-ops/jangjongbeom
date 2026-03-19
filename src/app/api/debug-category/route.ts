@@ -2,6 +2,7 @@
  * GET /api/debug-category
  * 품목별 category 매핑 상태 확인용
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 

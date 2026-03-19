@@ -3,6 +3,7 @@
  * GET /api/inventory/sync-category
  * product_code 기준 1:1 매칭, snapshot에 category가 비어있을 때 채움
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";

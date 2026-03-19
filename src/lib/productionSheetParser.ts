@@ -3,7 +3,7 @@
  * excelParser(공용 파서) 사용 - 로컬 integrated_sync와 동일 규칙
  */
 
-import { parseExcelFromBuffer } from "@/lib/excelParser";
+import { parseExcelFromBuffer, type RawdataRow } from "@/lib/excelParser";
 
 /** 입고에는 sales_channel 미사용 (출고만 사용) */
 export interface InboundRow {
@@ -28,6 +28,8 @@ export interface StockSnapshotRow {
   quantity: number;
   unit_cost: number;
   dest_warehouse?: string;
+  /** 엑셀 재고일자 → snapshot_date (없으면 오늘) */
+  snapshot_date?: string;
 }
 
 export interface ProductionSheetParseResult {
@@ -35,6 +37,7 @@ export interface ProductionSheetParseResult {
   inbound: InboundRow[];
   outbound: OutboundRow[];
   stockSnapshot: StockSnapshotRow[];
+  rawdata: RawdataRow[];
   currentProductCodes: string[];
   yearInferred?: number;
 }
@@ -64,6 +67,7 @@ export async function parseProductionSheetFromBuffer(
   for (const r of result.inbound) currentProductCodes.add(r.product_code);
   for (const r of result.outbound) currentProductCodes.add(r.product_code);
   for (const r of result.stock) currentProductCodes.add(r.product_code);
+  for (const r of result.rawdata) currentProductCodes.add(r.product_code);
 
   const inbound: InboundRow[] = result.inbound.map((r) => ({
     product_code: r.product_code,
@@ -87,6 +91,7 @@ export async function parseProductionSheetFromBuffer(
     quantity: r.quantity,
     unit_cost: r.unit_cost ?? 0,
     ...(r.dest_warehouse && { dest_warehouse: r.dest_warehouse }),
+    snapshot_date: r.snapshot_date ?? r.stock_date ?? new Date().toISOString().slice(0, 10),
   }));
 
   return {
@@ -94,6 +99,7 @@ export async function parseProductionSheetFromBuffer(
     inbound,
     outbound,
     stockSnapshot,
+    rawdata: result.rawdata ?? [],
     currentProductCodes: Array.from(currentProductCodes),
   };
 }

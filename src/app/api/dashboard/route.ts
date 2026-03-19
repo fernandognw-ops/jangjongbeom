@@ -5,6 +5,7 @@
  * /api/inventory와 동일한 데이터 반환. 404 방지용.
  * 에러 시에도 빈 배열 반환 (500 방지)
  */
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { fetchInventoryData } from "@/lib/inventoryApi";
 import { logApiError } from "@/lib/apiErrorLog";
