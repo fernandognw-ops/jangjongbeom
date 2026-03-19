@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { inbound, outbound, stockSnapshot, rawdata, currentProductCodes, outboundRawRowCount } = result;
+    const { inbound, outbound, stockSnapshot, rawdata, currentProductCodes } = result;
 
     if (inbound.length === 0 && outbound.length === 0 && stockSnapshot.length === 0) {
       return NextResponse.json(
@@ -91,20 +91,12 @@ export async function POST(request: Request) {
     const snapshotDates = [...new Set(stockSnapshot.map((r) => r.snapshot_date ?? "").filter(Boolean))].sort();
 
     const outboundParsedCount = outbound.length;
-    const outboundFilteredCount = outboundRawRowCount != null ? outboundRawRowCount - outboundParsedCount : 0;
 
     const validation = {
       rawdataCount: rawdata?.length > 0 ? rawdata.length : currentProductCodes.length,
       inboundCount: inbound.length,
       outboundCount: outbound.length,
       outboundParsedCount,
-      outboundTrace: outboundRawRowCount != null || outboundFilteredCount > 0
-        ? {
-            rawRows: outboundRawRowCount ?? outboundParsedCount,
-            parsedRows: outboundParsedCount,
-            filteredOut: outboundFilteredCount,
-          }
-        : undefined,
       stockCount: stockSnapshot.length,
       totalStockValue,
       destWarehouseDistribution: whCountTotal,
