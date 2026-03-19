@@ -35,7 +35,7 @@ function SupabaseDiagnosticBanner() {
     },
     empty_data: {
       title: "Supabase 연결됨, 데이터 없음",
-      desc: "inventory_products, inventory_inbound, inventory_outbound 테이블에 데이터를 넣거나, sync_0311_current.py로 재고 스냅샷을 동기화한 뒤 새로고침하세요.",
+      desc: "아래 [생산수불현황 업로드]에서 Excel 파일을 드래그한 뒤 검증 → DB 반영을 클릭하세요.",
     },
   };
   const msg = messages[supabaseFetchStatus];
@@ -92,7 +92,7 @@ export default function DashboardPage() {
           <div className="rounded-2xl border border-slate-200 bg-white py-16 px-4 text-center shadow-card">
             <p className="text-slate-600">Supabase 데이터 로딩 중입니다…</p>
             <p className="mt-2 text-xs text-slate-500">모든 데이터는 Supabase에서 가져옵니다. 15초 이상 걸리면 아래 버튼으로 재시도하세요.</p>
-            <div className="mt-4 flex justify-center">
+            <div className="mt-4 flex flex-wrap justify-center gap-3">
               <button
                 type="button"
                 onClick={() => refresh()}
@@ -100,14 +100,29 @@ export default function DashboardPage() {
               >
                 새로고침
               </button>
+              {!ctx?.supabaseSingleSource && (
+                <button
+                  type="button"
+                  onClick={() => ctx?.switchToLocalMode?.()}
+                  className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 shadow-sm"
+                >
+                  로컬 모드로 전환
+                </button>
+              )}
             </div>
           </div>
         ) : useSupabaseInventory ? (
           /* 박스히어로 스타일 대시보드 (Supabase 전용 - 모든 데이터 Supabase 출처) */
           <>
             <SupabaseDiagnosticBanner />
-            {/* KPI 카드: snapshot 단일 출처 (재고 금액, 품목 수, 수량 EA, SKU 박스) */}
-            {(kpiData || totalValue > 0) && (
+            {/* 데이터 없을 때 업로드 UI를 최상단에 배치 (가장 먼저 보이도록) */}
+            {supabaseFetchStatus === "empty_data" && (
+              <div className="mb-6">
+                <ProductionSheetUploader />
+              </div>
+            )}
+            {/* KPI 카드: snapshot 단일 출처 (재고 금액, 품목 수, 수량 EA, SKU 박스). DB 0건이어도 0으로 표시 */}
+            {(kpiData != null || totalValue > 0 || supabaseFetchStatus === "empty_data") && (
               <>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs text-slate-500">데이터가 안 바뀌면 →</span>
@@ -160,9 +175,12 @@ export default function DashboardPage() {
               </div>
               </>
             )}
-            <div className="mb-6">
-              <ProductionSheetUploader />
-            </div>
+            {/* 데이터 있을 때는 KPI 아래에 업로드 UI */}
+            {supabaseFetchStatus !== "empty_data" && (
+              <div className="mb-6">
+                <ProductionSheetUploader />
+              </div>
+            )}
             <DashboardBoxHero />
             <section className="mt-8" id="top-sku-dashboard">
               <h2 className="mb-3 text-base font-bold text-slate-800 md:text-lg">

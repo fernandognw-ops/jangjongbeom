@@ -71,10 +71,7 @@ export function RunOutDateCard() {
       {!hasAnyStock && !hasAnyOutbound ? (
         <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 md:p-5">
           <p className="text-sm text-amber-800">
-            재고·출고 데이터가 없습니다. Supabase에 입출고·재고 스냅샷을 동기화한 뒤 새로고침하세요.
-          </p>
-          <p className="mt-2 text-xs text-slate-600">
-            <code className="rounded bg-slate-200 px-1.5 py-0.5">npm run bulk-upload</code> 실행 후 대시보드 새로고침
+            재고·출고 데이터가 없습니다. 위 [생산수불현황 업로드]에서 Excel 파일을 업로드한 뒤 DB 반영을 클릭하세요.
           </p>
         </div>
       ) : (

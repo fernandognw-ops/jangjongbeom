@@ -58,7 +58,7 @@ export async function GET() {
       supabaseProject: projectRef,
       hint:
         snapshotData.length === 0 && inboundCount === 0 && outboundCount === 0
-          ? "데이터 없음. bulk-upload 실행 후 새로고침. 배포 URL 사용 시 Vercel env의 Supabase가 .env.local과 다를 수 있음."
+          ? "데이터 없음. 대시보드에서 생산수불현황 Excel 업로드 → DB 반영 후 새로고침. 배포 URL 사용 시 Vercel env의 Supabase가 .env.local과 다를 수 있음."
           : undefined,
       tables: {
         inventory_current_products: currentCount,

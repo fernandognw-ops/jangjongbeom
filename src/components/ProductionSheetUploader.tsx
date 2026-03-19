@@ -2,104 +2,140 @@
 
 import { useState, useCallback } from "react";
 import { useInventory } from "@/context/InventoryContext";
-import { parseProductionSheet } from "@/lib/productionSheetParser";
 
 const ACCEPT = ".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel";
 
-function yearFromFilename(name: string): number | null {
-  if (/26년|2026|_26\b|\(26\)/.test(name)) return 2026;
-  if (/25년|2025|_25\b|\(25\)/.test(name)) return 2025;
-  return null;
+interface ValidationResult {
+  rawdataCount: number;
+  inboundCount: number;
+  outboundCount: number;
+  stockCount: number;
+  totalStockValue: number;
+  destWarehouseDistribution: Record<string, number>;
+  snapshotDates: string[];
+  destWarehouseValid: boolean;
+  invalidDestWarehouses: string[];
+}
+
+interface ParsedData {
+  previewToken: string;
 }
 
 export function ProductionSheetUploader() {
   const { refresh } = useInventory();
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<"idle" | "parsing" | "uploading" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "parsing" | "validated" | "applying" | "success" | "error">("idle");
   const [message, setMessage] = useState<string>("");
   const [progress, setProgress] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
+  const [validation, setValidation] = useState<ValidationResult | null>(null);
+  const [parsedData, setParsedData] = useState<ParsedData | null>(null);
+  const [filename, setFilename] = useState<string>("");
+
+  const reset = useCallback(() => {
+    setFile(null);
+    setValidation(null);
+    setParsedData(null);
+    setFilename("");
+    setMessage("");
+    setProgress("");
+    setStatus("idle");
+  }, []);
 
   const handleFile = useCallback(
     async (f: File | null) => {
-      setFile(f);
-      setMessage("");
-      setProgress("");
-      setStatus("idle");
+      reset();
       if (!f) return;
 
-      const yearHint = yearFromFilename(f.name);
-
+      setFile(f);
       setStatus("parsing");
-      setProgress(yearHint ? `${yearHint}년 데이터 파싱 중…` : "파일 파싱 중…");
-      const result = await parseProductionSheet(f);
+      setProgress("서버에서 파싱 중…");
 
-      if (!result.ok) {
-        setStatus("error");
-        setMessage(result.message);
-        setProgress("");
-        return;
-      }
-
-      if (
-        result.inbound.length === 0 &&
-        result.outbound.length === 0 &&
-        result.stockSnapshot.length === 0
-      ) {
-        setStatus("error");
-        setMessage("입고·출고·재고 시트에서 유효한 데이터를 찾을 수 없습니다.");
-        setProgress("");
-        return;
-      }
-
-      const year = result.yearInferred ?? yearHint;
-      const total = result.inbound.length + result.outbound.length + result.stockSnapshot.length;
-
-      setStatus("uploading");
-      setProgress(year ? `${year}년 데이터 DB 저장 중… (입고 ${result.inbound.length}건, 출고 ${result.outbound.length}건)` : `DB 저장 중… (총 ${total}건)`);
       try {
-        const res = await fetch("/api/production-sheet-upload", {
+        const formData = new FormData();
+        formData.append("file", f);
+
+        const res = await fetch("/api/production-sheet-validate", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            inbound: result.inbound,
-            outbound: result.outbound,
-            stockSnapshot: result.stockSnapshot,
-            currentProductCodes: result.currentProductCodes,
-          }),
+          body: formData,
         });
         const json = await res.json();
 
         if (!res.ok) {
           setStatus("error");
-          setMessage(json.error ?? `업로드 실패 (${res.status})`);
+          setMessage(json.error ?? `검증 실패 (${res.status})`);
+          setProgress("");
           return;
         }
 
-        setStatus("success");
-        setProgress("DB 반영 대기 후 대시보드 갱신…");
-        const parts: string[] = [];
-        if ((json.inbound?.inserted ?? 0) > 0) parts.push(`입고 ${json.inbound.inserted}건`);
-        if ((json.stockSnapshot ?? 0) > 0) parts.push(`재고 ${json.stockSnapshot}건`);
-        if ((json.outbound?.inserted ?? 0) > 0) parts.push(`출고 ${json.outbound.inserted}건`);
-        setMessage(`DB 갱신 완료. ${parts.join(", ")}`);
-        setFile(null);
-        try {
-          // DB 커밋·가시성 확보 후 refresh()로 대시보드 갱신 (Realtime과 동일 방식)
-          await new Promise((r) => setTimeout(r, 1500));
-          await refresh();
-        } catch (e) {
-          console.warn("[업로드] 새로고침 실패:", e);
+        if (!json.ok || !json.validation || !json.previewToken) {
+          setStatus("error");
+          setMessage("검증 결과 형식 오류");
+          setProgress("");
+          return;
         }
+
+        setValidation(json.validation);
+        setParsedData({ previewToken: json.previewToken });
+        setFilename(f.name);
+        setStatus("validated");
         setProgress("");
+        setMessage("");
       } catch (e) {
         setStatus("error");
         setProgress("");
-        setMessage(e instanceof Error ? e.message : "업로드 중 오류가 발생했습니다.");
+        setMessage(e instanceof Error ? e.message : "파싱 중 오류가 발생했습니다.");
       }
     },
-    [refresh]
+    [reset]
   );
+
+  const handleApply = useCallback(async () => {
+    if (!parsedData || !validation?.destWarehouseValid) return;
+
+    setStatus("applying");
+    setProgress("DB 반영 중…");
+
+    try {
+      const res = await fetch("/api/production-sheet-commit", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-source": "web",
+        },
+        body: JSON.stringify({ previewToken: parsedData.previewToken }),
+      });
+      const json = await res.json();
+
+      if (!res.ok) {
+        setStatus("error");
+        setMessage(json.error ?? `반영 실패 (${res.status})`);
+        setProgress("");
+        return;
+      }
+
+      setStatus("success");
+      const parts: string[] = [];
+      if ((json.inbound?.inserted ?? 0) > 0) parts.push(`입고 ${json.inbound.inserted}건`);
+      if ((json.outbound?.inserted ?? 0) > 0) parts.push(`출고 ${json.outbound.inserted}건`);
+      if ((json.stockSnapshot ?? 0) > 0) parts.push(`재고 ${json.stockSnapshot}건`);
+      setMessage(`DB 갱신 완료. ${parts.join(", ")}`);
+      setProgress("");
+
+      try {
+        await new Promise((r) => setTimeout(r, 1500));
+        await refresh();
+      } catch (e) {
+        console.warn("[업로드] 새로고침 실패:", e);
+      }
+
+      reset();
+    } catch (e) {
+      setStatus("error");
+      setProgress("");
+      setMessage(e instanceof Error ? e.message : "반영 중 오류가 발생했습니다.");
+    }
+  }, [parsedData, validation?.destWarehouseValid, filename, refresh, reset]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -135,16 +171,18 @@ export function ProductionSheetUploader() {
     [handleFile]
   );
 
+  const canApply = validation?.destWarehouseValid && parsedData?.previewToken && status === "validated";
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
       <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 md:text-base">
-        생산수불현황 업로드
+        생산수불현황 업로드 (웹 UI 승인 기반)
       </h2>
       <p className="mt-1 text-xs text-slate-500 md:text-sm">
-        담당자가 매일 아침 집계한 생산수불현황.xlsx를 드래그 앤 드롭하여 DB를 갱신합니다.
+        1단계: 파일 업로드 → 서버 검증 → 2단계: DB 반영 클릭
       </p>
       <p className="mt-0.5 text-xs text-slate-500 md:text-sm">
-        노형우 과장 수불 붙여넣기 — 중복은 알아서 거름
+        웹 UI 승인 경로만 DB 반영 (로컬 스크립트·직접 API 호출 차단)
       </p>
 
       <div
@@ -168,28 +206,77 @@ export function ProductionSheetUploader() {
           htmlFor="production-sheet-input"
           className="pointer-events-none flex w-full flex-col items-center justify-center px-4 py-6"
         >
-          {status === "parsing" || status === "uploading" ? (
+          {status === "parsing" || status === "applying" ? (
             <div className="flex flex-col items-center gap-1">
-              <span className="text-sm text-indigo-600">{progress || (status === "parsing" ? "파일 파싱 중…" : "DB 저장 중…")}</span>
-              <span className="text-xs text-slate-500">{status === "parsing" ? "날짜 변환 중…" : "배치 저장 중…"}</span>
+              <span className="text-sm text-indigo-600">{progress || (status === "parsing" ? "파싱 중…" : "DB 반영 중…")}</span>
             </div>
+          ) : status === "validated" ? (
+            <span className="text-sm font-medium text-emerald-600">{filename} — 검증 완료, DB 반영 버튼 클릭</span>
           ) : file ? (
             <span className="text-sm font-medium text-indigo-600">{file.name}</span>
           ) : (
             <>
-              <span className="text-4xl text-slate-400" aria-hidden>
-                📄
-              </span>
+              <span className="text-4xl text-slate-400" aria-hidden>📄</span>
               <span className="mt-2 text-sm text-slate-600">
                 생산수불현황.xlsx를 여기에 드래그하거나 클릭하여 선택
               </span>
-              <span className="mt-1 text-xs text-slate-500">
-                입고·출고·재고 시트 필수
-              </span>
+              <span className="mt-1 text-xs text-slate-500">입고·출고·재고 시트 필수</span>
             </>
           )}
         </label>
       </div>
+
+      {/* 검증 결과 */}
+      {validation && status === "validated" && (
+        <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-600">업로드 전 검증</h3>
+          <p className="mt-0.5 text-[10px] text-slate-500">이상 없을 때만 DB 반영 버튼 활성화</p>
+          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm md:grid-cols-3">
+            <dt className="text-slate-500">rawdata 건수</dt>
+            <dd className="font-mono">{validation.rawdataCount}건</dd>
+            <dt className="text-slate-500">입고 건수</dt>
+            <dd className="font-mono">{validation.inboundCount}건</dd>
+            <dt className="text-slate-500">출고 건수</dt>
+            <dd className="font-mono">{validation.outboundCount}건</dd>
+            <dt className="text-slate-500">재고 건수</dt>
+            <dd className="font-mono">{validation.stockCount}건</dd>
+            <dt className="text-slate-500">재고 총 금액</dt>
+            <dd className="font-mono">{validation.totalStockValue.toLocaleString()}원</dd>
+            <dt className="text-slate-500">일반 / 쿠팡 분포</dt>
+            <dd className="font-mono">
+              일반 {validation.destWarehouseDistribution["일반"] ?? 0} / 쿠팡 {validation.destWarehouseDistribution["쿠팡"] ?? 0}
+            </dd>
+            <dt className="text-slate-500">snapshot_date</dt>
+            <dd className="font-mono text-xs">{validation.snapshotDates.join(", ") || "-"}</dd>
+          </dl>
+          {!validation.destWarehouseValid && (
+            <p className="mt-2 text-xs text-red-600">
+              dest_warehouse 오류: {validation.invalidDestWarehouses.join(", ")} — 반영 버튼 비활성화
+            </p>
+          )}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleApply}
+              disabled={!canApply}
+              className={`rounded-lg px-4 py-2 text-sm font-medium ${
+                canApply
+                  ? "bg-indigo-500 text-white hover:bg-indigo-600"
+                  : "cursor-not-allowed bg-slate-300 text-slate-500"
+              }`}
+            >
+              DB 반영
+            </button>
+            <button
+              type="button"
+              onClick={reset}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              취소
+            </button>
+          </div>
+        </div>
+      )}
 
       {message && (
         <div
