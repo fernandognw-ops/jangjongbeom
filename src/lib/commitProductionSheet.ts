@@ -1,6 +1,7 @@
 /**
  * 웹 승인 기반 DB 반영 로직 (서버 전용)
  * - 당월 stock_snapshot만 반영 (과거월 보호)
+ * - inbound/outbound/stock_snapshot 적재 전 inventory_products 기준 enrichment
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -14,6 +15,13 @@ const TABLE_CURRENT = "inventory_current_products";
 const TABLE_SNAPSHOT = "inventory_stock_snapshot";
 const BATCH = 300;
 
+interface ProductEnrichment {
+  product_name: string;
+  category: string;
+  pack_size: number;
+  unit_cost: number;
+}
+
 function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
   const s = String(ch ?? "").trim().toLowerCase();
   if (s === "쿠팡" || s.includes("쿠팡") || s === "coupang") return "coupang";
@@ -24,6 +32,38 @@ function ensureDestWarehouse(wh: string | undefined | null): string {
   const s = String(wh ?? "").trim();
   if (!s) return "일반";
   return toDestWarehouse(s);
+}
+
+async function fetchProductEnrichmentMap(
+  supabase: SupabaseClient,
+  productCodes: string[],
+  onWarning?: (msg: string) => void
+): Promise<Map<string, ProductEnrichment>> {
+  const codes = [...new Set(productCodes)].filter(Boolean);
+  if (codes.length === 0) return new Map();
+  const map = new Map<string, ProductEnrichment>();
+  for (let i = 0; i < codes.length; i += 500) {
+    const batch = codes.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from(TABLE_PRODUCTS)
+      .select("product_code,product_name,category,pack_size,unit_cost")
+      .in("product_code", batch);
+    if (error) throw new Error(`제품 조회 실패: ${error.message}`);
+    for (const r of data ?? []) {
+      const row = r as { product_code: string; product_name?: string; category?: string; pack_size?: number; unit_cost?: number };
+      map.set(row.product_code, {
+        product_name: (row.product_name ?? row.product_code).trim() || row.product_code,
+        category: (row.category ?? "기타").trim() || "기타",
+        pack_size: Math.max(1, row.pack_size ?? 1),
+        unit_cost: Number(row.unit_cost) || 0,
+      });
+    }
+  }
+  const missing = codes.filter((c) => !map.has(c));
+  if (missing.length > 0 && onWarning) {
+    onWarning(`[enrichment] inventory_products에 없는 product_code: ${missing.slice(0, 10).join(", ")}${missing.length > 10 ? ` 외 ${missing.length - 10}건` : ""}`);
+  }
+  return map;
 }
 
 export interface CommitInput {
@@ -89,19 +129,39 @@ export async function commitProductionSheet(
     }
   }
 
+  const allCodes = new Set<string>();
+  for (const r of inbound) allCodes.add(r.product_code);
+  for (const r of outbound) allCodes.add(r.product_code);
+  for (const r of stockSnapshot) allCodes.add(r.product_code);
+  const productMap = await fetchProductEnrichmentMap(
+    supabase,
+    Array.from(allCodes),
+    (msg) => console.warn(msg)
+  );
+
   let inboundInserted = 0;
   if (inbound.length > 0) {
     const dates = [...new Set(inbound.map((r) => r.inbound_date))];
     if (dates.length > 0) {
       await supabase.from(TABLE_INBOUND).delete().in("inbound_date", dates);
     }
-    const rows = inbound.map((r) => ({
-      product_code: r.product_code,
-      quantity: r.quantity,
-      inbound_date: r.inbound_date,
-      dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
-      ...(r.category && { category: r.category }),
-    }));
+    const rows = inbound.map((r) => {
+      const p = productMap.get(r.product_code);
+      const unitPrice = p?.unit_cost ?? 0;
+      const qty = r.quantity ?? 0;
+      const totalPrice = qty * unitPrice;
+      return {
+        product_code: r.product_code,
+        product_name: p?.product_name ?? r.product_code,
+        category: p?.category ?? "기타",
+        pack_size: p?.pack_size ?? 1,
+        quantity: qty,
+        inbound_date: r.inbound_date,
+        dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
+        unit_price: unitPrice,
+        total_price: totalPrice,
+      };
+    });
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
       const { error } = await supabase.from(TABLE_INBOUND).insert(batch);
@@ -117,14 +177,24 @@ export async function commitProductionSheet(
     if (dates.length > 0) {
       await supabase.from(TABLE_OUTBOUND).delete().in("outbound_date", dates);
     }
-    const rows = outbound.map((r) => ({
-      product_code: r.product_code,
-      quantity: r.quantity,
-      outbound_date: r.outbound_date,
-      sales_channel: ensureChannel(r.sales_channel),
-      dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
-      ...(r.category && { category: r.category }),
-    }));
+    const rows = outbound.map((r) => {
+      const p = productMap.get(r.product_code);
+      const unitPrice = p?.unit_cost ?? 0;
+      const qty = r.quantity ?? 0;
+      const totalPrice = qty * unitPrice;
+      return {
+        product_code: r.product_code,
+        product_name: p?.product_name ?? r.product_code,
+        category: p?.category ?? "기타",
+        pack_size: p?.pack_size ?? 1,
+        quantity: qty,
+        outbound_date: r.outbound_date,
+        sales_channel: ensureChannel(r.sales_channel),
+        dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
+        unit_price: unitPrice,
+        total_price: totalPrice,
+      };
+    });
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
       const { error } = await supabase.from(TABLE_OUTBOUND).insert(batch);
@@ -152,31 +222,27 @@ export async function commitProductionSheet(
     const monthEnd = today.slice(0, 7) + "-" + String(lastDay).padStart(2, "0");
 
     const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
-    const [existingSnap, productsCost] = await Promise.all([
-      supabase.from(TABLE_SNAPSHOT).select("product_code,dest_warehouse,unit_cost").in("product_code", codes),
-      supabase.from(TABLE_PRODUCTS).select("product_code,unit_cost").in("product_code", codes),
-    ]);
+    const existingSnap = await supabase.from(TABLE_SNAPSHOT).select("product_code,dest_warehouse,unit_cost").in("product_code", codes);
     const costByKey = new Map<string, number>();
-    const costByCode = new Map<string, number>();
     for (const r of existingSnap.data ?? []) {
       const row = r as { product_code: string; dest_warehouse?: string; unit_cost: number };
       const key = `${row.product_code}|${(row.dest_warehouse ?? "").trim() || "일반"}`;
       if ((row.unit_cost ?? 0) > 0) costByKey.set(key, row.unit_cost);
     }
-    for (const r of productsCost.data ?? []) {
-      const p = r as { product_code: string; unit_cost: number };
-      if ((p.unit_cost ?? 0) > 0) costByCode.set(p.product_code, p.unit_cost);
-    }
 
     const snapshotRows = stockSnapshot.map((s) => {
+      const p = productMap.get(s.product_code);
       const wh = ensureDestWarehouse(s.dest_warehouse);
       const snap = (s.snapshot_date ?? today).slice(0, 10);
       let cost = s.unit_cost ?? 0;
-      if (cost <= 0) cost = costByKey.get(`${s.product_code}|${wh}`) ?? costByCode.get(s.product_code) ?? 0;
+      if (cost <= 0) cost = costByKey.get(`${s.product_code}|${wh}`) ?? p?.unit_cost ?? 0;
       const qty = s.quantity ?? 0;
       const totalPrice = qty * cost;
       return {
         product_code: s.product_code,
+        product_name: p?.product_name ?? s.product_code,
+        category: p?.category ?? "기타",
+        pack_size: p?.pack_size ?? 1,
         dest_warehouse: wh,
         quantity: qty,
         unit_cost: cost,

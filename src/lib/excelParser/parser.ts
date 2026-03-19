@@ -37,6 +37,9 @@ function findCol(
     excl.add(norm("합계원가"));
     excl.add(norm("합계금액"));
   }
+  if (synonymsKey === "category") {
+    for (const pc of (SYNONYMS.product_code ?? [])) excl.add(norm(pc));
+  }
   for (let i = 0; i < row.length; i++) {
     const v = norm(String(row[i] ?? ""));
     if (excl.size > 0 && [...excl].some((ex) => v.includes(ex))) continue;
@@ -446,6 +449,8 @@ export interface ParseResult {
   stock: StockRow[];
   rawdata: RawdataRow[];
   sheetNames: string[];
+  /** 출고 시트 원본 데이터 행 수 (필터 전, 0-indexed DATA_START_ROW 이후) */
+  outboundRawRowCount?: number;
 }
 
 export interface ParseError {
@@ -508,6 +513,7 @@ export function parseExcelFromBuffer(
   const inbound = parseInboundSheet(inboundData, filename);
   const outbound = parseOutboundSheet(outboundData, filename);
   const stock = parseStockSheet(stockData, filename);
+  const outboundRawRowCount = Math.max(0, outboundData.length - DATA_START_ROW);
 
   let rawdata: RawdataRow[] = [];
   const rawdataSheetName = findRawdataSheet();
@@ -526,5 +532,6 @@ export function parseExcelFromBuffer(
     stock,
     rawdata,
     sheetNames,
+    outboundRawRowCount,
   };
 }

@@ -7,6 +7,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { createClient } from "@supabase/supabase-js";
 import { consumePreviewToken } from "@/lib/previewTokenStore";
 import { commitProductionSheet, type CommitInput } from "@/lib/commitProductionSheet";
@@ -124,6 +125,12 @@ export async function POST(request: Request) {
       });
     } catch (logErr) {
       console.warn("[production-sheet-commit] upload_logs insert 실패:", logErr);
+    }
+
+    try {
+      revalidatePath("/");
+    } catch {
+      /* ignore */
     }
 
     return NextResponse.json({
