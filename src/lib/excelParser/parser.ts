@@ -12,7 +12,7 @@ import {
 } from "./rules";
 import {
   normalizeValue,
-  classifyWarehouseGroup,
+  toDestWarehouse,
   toSalesChannel,
 } from "./classifier";
 
@@ -228,7 +228,7 @@ export function parseInboundSheet(
     const name =
       idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
-    const whGroup = classifyWarehouseGroup(centerRaw);
+    const destWh = toDestWarehouse(centerRaw);
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
     const unit = idxUnit >= 0 ? safeFloat(row[idxUnit]) : 0;
@@ -240,9 +240,9 @@ export function parseInboundSheet(
       quantity: qty,
       inbound_center: centerRaw,
       inbound_date: dateStr,
-      warehouse_group: whGroup,
+      warehouse_group: destWh,
       event_type: "inbound",
-      dest_warehouse: centerRaw || undefined,
+      dest_warehouse: destWh,
       category: cat || "기타",
       pack_size: pack > 0 ? pack : 1,
       unit_price: unit,
@@ -286,8 +286,8 @@ export function parseOutboundSheet(
 
     const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
-    const whGroup = classifyWarehouseGroup(centerRaw);
     const scRaw = idxSc >= 0 ? String(row[idxSc] ?? "").trim() : "";
+    const destWh = toDestWarehouse(scRaw || centerRaw);
     const salesChannel = toSalesChannel(scRaw || centerRaw);
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
@@ -300,10 +300,10 @@ export function parseOutboundSheet(
       quantity: qty,
       outbound_center: centerRaw,
       outbound_date: dateStr,
-      warehouse_group: whGroup,
+      warehouse_group: destWh,
       sales_channel: salesChannel,
       event_type: "outbound",
-      dest_warehouse: centerRaw || undefined,
+      dest_warehouse: destWh,
       category: cat || "기타",
       pack_size: pack > 0 ? pack : 1,
       unit_price: unit,
@@ -344,12 +344,11 @@ export function parseStockSheet(
     const qty = safeInt(row[idxQty]);
     const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
-    const center = centerRaw || "제이에스";
+    const destWh = toDestWarehouse(centerRaw);
     const dateVal = row[idxDate];
     const dateStr = parseDate(dateVal, year, today);
     const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
     const total = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
-    const whGroup = classifyWarehouseGroup(center);
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
 
@@ -357,11 +356,11 @@ export function parseStockSheet(
       product_code: code,
       product_name: name || code,
       quantity: qty,
-      storage_center: center,
+      storage_center: centerRaw,
       stock_date: dateStr ?? today,
-      warehouse_group: whGroup,
+      warehouse_group: destWh,
       event_type: "stock",
-      dest_warehouse: center,
+      dest_warehouse: destWh,
       unit_cost: cost,
       total_price: total > 0 ? total : 0,
       snapshot_date: dateStr ?? today,
@@ -372,11 +371,80 @@ export function parseStockSheet(
   return rows;
 }
 
+const RAWDATA_HEADER_POOL = [
+  ["품목코드", "품번"],
+  ["품목명", "제품명", "품명"],
+];
+
+function findHeaderRowRawdata(data: unknown[][]): number {
+  for (let r = 0; r < Math.min(10, data.length); r++) {
+    const row = (data[r] ?? []) as Row;
+    const hasCode = RAWDATA_HEADER_POOL[0].some((n) =>
+      row.some((c) => norm(String(c ?? "")).includes(norm(n)))
+    );
+    const hasName = RAWDATA_HEADER_POOL[1].some((n) =>
+      row.some((c) => norm(String(c ?? "")).includes(norm(n)))
+    );
+    if (hasCode && hasName) return r;
+  }
+  return -1;
+}
+
+export function parseRawdataSheet(
+  data: unknown[][],
+  filename?: string
+): RawdataRow[] {
+  const hr = findHeaderRowRawdata(data);
+  if (hr < 0) return [];
+
+  const headerRow = (data[hr] ?? []) as Row;
+  const idxCode = findCol(headerRow, "product_code");
+  const idxName = findCol(headerRow, "product_name");
+  const idxCost = findCol(headerRow, "unit_cost");
+  const idxCat = findCol(headerRow, "category");
+  const idxPack = findCol(headerRow, "pack_size");
+
+  if (idxCode < 0) return [];
+
+  const rows: RawdataRow[] = [];
+  for (let i = hr + 1; i < data.length; i++) {
+    const row = (data[i] ?? []) as Row;
+    const code = String(row[idxCode] ?? "").trim();
+    if (!code || code.toLowerCase() === "nan") continue;
+    const digits = (code.match(/\d/g) ?? []).length;
+    if (code.length < 5 || digits < code.length * 0.5) continue;
+
+    const name =
+      idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
+    const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
+    const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
+    const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
+
+    rows.push({
+      product_code: code,
+      product_name: name || code,
+      unit_cost: cost || 0,
+      category: cat || "기타",
+      pack_size: pack > 0 ? pack : 1,
+    });
+  }
+  return rows;
+}
+
+export interface RawdataRow {
+  product_code: string;
+  product_name: string;
+  unit_cost: number;
+  category: string;
+  pack_size: number;
+}
+
 export interface ParseResult {
   ok: true;
   inbound: InboundRow[];
   outbound: OutboundRow[];
   stock: StockRow[];
+  rawdata: RawdataRow[];
   sheetNames: string[];
 }
 
@@ -422,6 +490,17 @@ export function parseExcelFromBuffer(
     }) as unknown[][]) ?? [];
   };
 
+  const findRawdataSheet = (): string | null => {
+    const candidates = ["rawdata", "제품현황_일반", "제품현황_상세", "제품현황", "품절관리_일반", "품절관리"];
+    for (const want of candidates) {
+      const found = sheetNames.find(
+        (s) => norm(s).includes(norm(want)) || (want === "rawdata" && norm(s).includes("raw") && norm(s).includes("data"))
+      );
+      if (found) return found;
+    }
+    return null;
+  };
+
   const inboundData = getSheetData("입고");
   const outboundData = getSheetData("출고");
   const stockData = getSheetData("재고");
@@ -430,11 +509,22 @@ export function parseExcelFromBuffer(
   const outbound = parseOutboundSheet(outboundData, filename);
   const stock = parseStockSheet(stockData, filename);
 
+  let rawdata: RawdataRow[] = [];
+  const rawdataSheetName = findRawdataSheet();
+  if (rawdataSheetName && wb.Sheets[rawdataSheetName]) {
+    const rawdataData = XLSX.utils.sheet_to_json(wb.Sheets[rawdataSheetName], {
+      header: 1,
+      defval: "",
+    }) as unknown[][];
+    rawdata = parseRawdataSheet(rawdataData ?? [], filename);
+  }
+
   return {
     ok: true,
     inbound,
     outbound,
     stock,
+    rawdata,
     sheetNames,
   };
 }
