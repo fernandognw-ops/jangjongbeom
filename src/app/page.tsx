@@ -1,6 +1,6 @@
 "use client";
 
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { useInventory } from "@/context/InventoryContext";
 import { ShortageList } from "@/components/ShortageList";
 import { RunOutDateCard } from "@/components/RunOutDateCard";
@@ -67,6 +67,20 @@ export default function DashboardPage() {
   const supabaseFetchStatus = ctx?.supabaseFetchStatus ?? "idle";
   const kpiData = ctx?.kpiData;
   const refresh = ctx?.refresh ?? (() => window.location.reload());
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const uploadVisible = useSupabaseInventory && (supabaseFetchStatus === "empty_data" || supabaseFetchStatus === "ok");
+    console.log("[Dashboard] 데이터 소스 디버그", {
+      supabaseFetchStatus,
+      supabaseFetchError: ctx?.supabaseFetchError,
+      useSupabaseInventory,
+      kpiData: kpiData ?? null,
+      totalValue,
+      uploadUI: uploadVisible ? "표시" : "숨김",
+      uploadReason: !useSupabaseInventory ? "localStorage 모드" : supabaseFetchStatus === "empty_data" ? "DB 0건" : supabaseFetchStatus === "ok" ? "데이터 있음(하단)" : "fetch_error 등",
+    });
+  }, [supabaseFetchStatus, ctx?.supabaseFetchError, useSupabaseInventory, kpiData, totalValue]);
 
   return (
     <div

@@ -320,14 +320,48 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         error?: string;
       };
 
-      if (data.error) throw new Error(data.error);
       const items = data.items ?? [];
-      if (items.length === 0 && (data.totalValue ?? 0) === 0) {
+      const totalVal = data.totalValue ?? 0;
+      const isEmpty = items.length === 0 && totalVal === 0;
+      const isNoSnapshot = data.error === "no_snapshot";
+      if (isEmpty || isNoSnapshot) {
         setSupabaseFetchStatus("empty_data");
-        setUseSupabaseInventory(false);
+        setUseSupabaseInventory(true);
+        storage.clearAllInventoryKeys?.();
+        setBaseStockState({ ...DEFAULT_STOCK });
+        setBaseStockByProductState({});
+        setTransactions([]);
+        setDailyStockState({ ...DEFAULT_STOCK });
+        setProductsState([]);
+        setSupabaseProducts([]);
+        setSupabaseInbound([]);
+        setSupabaseOutbound([]);
+        setSupabaseStockSnapshot([]);
+        setDailyVelocityByProduct({});
+        setKpiData({ productCount: 0, totalValue: 0, totalQuantity: 0, totalSku: 0 });
+        setCategoryTrendData({
+          months: [],
+          categories: [],
+          chartData: [],
+          momRates: {},
+          monthlyTotals: {},
+          momIndicators: {
+            outbound: null,
+            inbound: null,
+            thisMonthOutbound: 0,
+            thisMonthInbound: 0,
+            thisMonthOutboundValue: 0,
+            thisMonthInboundValue: 0,
+            thisMonthOutboundCoupang: 0,
+            thisMonthOutboundGeneral: 0,
+            thisMonthInboundByWarehouse: {},
+          },
+        });
+        setCategoryTrendLoaded(true);
         setIsSupabaseLoading(false);
         return;
       }
+      if (data.error) throw new Error(data.error);
 
       let summaryProducts: InventoryProduct[] = [];
       try {
