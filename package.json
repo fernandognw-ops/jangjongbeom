@@ -10,7 +10,7 @@
     "dev:3000": "next dev -p 3000",
     "dev:reset": "powershell -ExecutionPolicy Bypass -File ./scripts/restart-dev.ps1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3007",
     "lint": "next lint",
     "bulk-upload": "node scripts/bulk-upload-production-sheet.mjs",
     "update-category": "node scripts/update-category-from-excel.mjs",
@@ -20,7 +20,11 @@
     "sync-all-maram": "python scripts/sync_all_maram.py",
     "update-stock-costs": "python scripts/update_stock_costs.py",
     "sync-current-products": "python scripts/sync_current_products.py",
-    "verify-excel": "node scripts/verify_excel_totals.mjs"
+    "verify-excel": "node scripts/verify_excel_totals.mjs",
+    "parse-for-validation": "npx tsx scripts/parse_excel_for_validation.ts",
+    "check-inventory-sync": "node scripts/check_inventory_sync.mjs",
+    "verify-supabase-unified": "node scripts/verify_supabase_unified.mjs",
+    "verify-reset": "node scripts/verify_reset_complete.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.0",
@@ -37,8 +41,10 @@
     "autoprefixer": "^10.4.20",
     "eslint": "^8",
     "eslint-config-next": "14.2.18",
+    "pg": "^8.20.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }

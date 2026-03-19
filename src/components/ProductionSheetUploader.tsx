@@ -9,9 +9,12 @@ interface ValidationResult {
   rawdataCount: number;
   inboundCount: number;
   outboundCount: number;
+  outboundParsedCount?: number;
+  outboundTrace?: { rawRows?: number; parsedRows: number; filteredOut?: number };
   stockCount: number;
   totalStockValue: number;
   destWarehouseDistribution: Record<string, number>;
+  destWarehouseBySource?: { inbound: Record<string, number>; outbound: Record<string, number>; stock: Record<string, number> };
   snapshotDates: string[];
   destWarehouseValid: boolean;
   invalidDestWarehouses: string[];
@@ -237,15 +240,33 @@ export function ProductionSheetUploader() {
             <dt className="text-slate-500">입고 건수</dt>
             <dd className="font-mono">{validation.inboundCount}건</dd>
             <dt className="text-slate-500">출고 건수</dt>
-            <dd className="font-mono">{validation.outboundCount}건</dd>
+            <dd className="font-mono">
+              {validation.outboundTrace && (validation.outboundTrace.filteredOut ?? 0) > 0 ? (
+                <>
+                  {validation.outboundTrace.rawRows}건 (원본) → {validation.outboundCount}건 (필터 후, {validation.outboundTrace.filteredOut}건 제외)
+                </>
+              ) : (
+                `${validation.outboundCount}건`
+              )}
+            </dd>
             <dt className="text-slate-500">재고 건수</dt>
             <dd className="font-mono">{validation.stockCount}건</dd>
             <dt className="text-slate-500">재고 총 금액</dt>
             <dd className="font-mono">{validation.totalStockValue.toLocaleString()}원</dd>
-            <dt className="text-slate-500">일반 / 쿠팡 분포</dt>
+            <dt className="text-slate-500">입고+출고+재고 합산 행 기준 채널 분포</dt>
             <dd className="font-mono">
               일반 {validation.destWarehouseDistribution["일반"] ?? 0} / 쿠팡 {validation.destWarehouseDistribution["쿠팡"] ?? 0}
             </dd>
+            {validation.destWarehouseBySource && (
+              <>
+                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs">채널 분포 상세</dt>
+                <dd className="col-span-2 md:col-span-3 text-xs text-slate-600">
+                  입고: 일반 {(validation.destWarehouseBySource.inbound?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.inbound?.["쿠팡"] ?? 0)} · 
+                  출고: 일반 {(validation.destWarehouseBySource.outbound?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.outbound?.["쿠팡"] ?? 0)} · 
+                  재고: 일반 {(validation.destWarehouseBySource.stock?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.stock?.["쿠팡"] ?? 0)}
+                </dd>
+              </>
+            )}
             <dt className="text-slate-500">snapshot_date</dt>
             <dd className="font-mono text-xs">{validation.snapshotDates.join(", ") || "-"}</dd>
           </dl>

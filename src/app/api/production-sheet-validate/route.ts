@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { inbound, outbound, stockSnapshot, rawdata, currentProductCodes } = result;
+    const { inbound, outbound, stockSnapshot, rawdata, currentProductCodes, outboundRawRowCount } = result;
 
     if (inbound.length === 0 && outbound.length === 0 && stockSnapshot.length === 0) {
       return NextResponse.json(
@@ -67,38 +67,48 @@ export async function POST(request: Request) {
     const uniqueInvalid = [...new Set(invalidWh)];
     const destWarehouseValid = uniqueInvalid.length === 0;
 
-    const whCount: Record<string, number> = { 일반: 0, 쿠팡: 0 };
+    const whCountInbound: Record<string, number> = { 일반: 0, 쿠팡: 0 };
+    const whCountOutbound: Record<string, number> = { 일반: 0, 쿠팡: 0 };
+    const whCountStock: Record<string, number> = { 일반: 0, 쿠팡: 0 };
     for (const r of inbound) {
       const wh = ensureDestWarehouse(r.dest_warehouse);
-      whCount[wh] = (whCount[wh] ?? 0) + 1;
+      whCountInbound[wh] = (whCountInbound[wh] ?? 0) + 1;
     }
     for (const r of outbound) {
       const wh = ensureDestWarehouse(r.dest_warehouse);
-      whCount[wh] = (whCount[wh] ?? 0) + 1;
+      whCountOutbound[wh] = (whCountOutbound[wh] ?? 0) + 1;
     }
     for (const r of stockSnapshot) {
       const wh = ensureDestWarehouse(r.dest_warehouse);
-      whCount[wh] = (whCount[wh] ?? 0) + 1;
+      whCountStock[wh] = (whCountStock[wh] ?? 0) + 1;
     }
+    const whCountTotal = {
+      일반: (whCountInbound["일반"] ?? 0) + (whCountOutbound["일반"] ?? 0) + (whCountStock["일반"] ?? 0),
+      쿠팡: (whCountInbound["쿠팡"] ?? 0) + (whCountOutbound["쿠팡"] ?? 0) + (whCountStock["쿠팡"] ?? 0),
+    };
 
     const totalStockValue = stockSnapshot.reduce((sum, r) => sum + (r.quantity ?? 0) * (r.unit_cost ?? 0), 0);
     const snapshotDates = [...new Set(stockSnapshot.map((r) => r.snapshot_date ?? "").filter(Boolean))].sort();
 
-    const outboundByKey = new Map<string, number>();
-    for (const r of outbound) {
-      const wh = ensureDestWarehouse(r.dest_warehouse);
-      const k = `${r.product_code}|${r.outbound_date}|${wh}`;
-      outboundByKey.set(k, (outboundByKey.get(k) ?? 0) + r.quantity);
-    }
-    const outboundInsertCount = outboundByKey.size;
+    const outboundParsedCount = outbound.length;
+    const outboundFilteredCount = outboundRawRowCount != null ? outboundRawRowCount - outboundParsedCount : 0;
 
     const validation = {
       rawdataCount: rawdata?.length > 0 ? rawdata.length : currentProductCodes.length,
       inboundCount: inbound.length,
-      outboundCount: outboundInsertCount,
+      outboundCount: outbound.length,
+      outboundParsedCount,
+      outboundTrace: outboundRawRowCount != null || outboundFilteredCount > 0
+        ? {
+            rawRows: outboundRawRowCount ?? outboundParsedCount,
+            parsedRows: outboundParsedCount,
+            filteredOut: outboundFilteredCount,
+          }
+        : undefined,
       stockCount: stockSnapshot.length,
       totalStockValue,
-      destWarehouseDistribution: whCount,
+      destWarehouseDistribution: whCountTotal,
+      destWarehouseBySource: { inbound: whCountInbound, outbound: whCountOutbound, stock: whCountStock },
       snapshotDates,
       destWarehouseValid,
       invalidDestWarehouses: uniqueInvalid,

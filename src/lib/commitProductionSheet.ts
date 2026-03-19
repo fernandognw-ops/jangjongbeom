@@ -117,19 +117,14 @@ export async function commitProductionSheet(
     if (dates.length > 0) {
       await supabase.from(TABLE_OUTBOUND).delete().in("outbound_date", dates);
     }
-    const byKey = new Map<string, { product_code: string; quantity: number; outbound_date: string; sales_channel: "coupang" | "general"; dest_warehouse: string; category?: string }>();
-    for (const r of outbound) {
-      const wh = ensureDestWarehouse(r.dest_warehouse);
-      const ch = ensureChannel(r.sales_channel);
-      const k = `${r.product_code}|${r.outbound_date}|${wh}`;
-      const existing = byKey.get(k);
-      if (existing) {
-        existing.quantity += r.quantity;
-      } else {
-        byKey.set(k, { product_code: r.product_code, quantity: r.quantity, outbound_date: r.outbound_date, sales_channel: ch, dest_warehouse: wh, ...(r.category && { category: r.category }) });
-      }
-    }
-    const rows = Array.from(byKey.values());
+    const rows = outbound.map((r) => ({
+      product_code: r.product_code,
+      quantity: r.quantity,
+      outbound_date: r.outbound_date,
+      sales_channel: ensureChannel(r.sales_channel),
+      dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
+      ...(r.category && { category: r.category }),
+    }));
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
       const { error } = await supabase.from(TABLE_OUTBOUND).insert(batch);

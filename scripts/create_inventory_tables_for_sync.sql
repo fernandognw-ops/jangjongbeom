@@ -35,18 +35,20 @@ CREATE TABLE IF NOT EXISTS inventory_inbound (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_upsert ON inventory_inbound (product_code, inbound_date);
 
--- 3. inventory_stock_snapshot (재고 시트) - product_code 단일 PK 또는 (product_code, dest_warehouse)
+-- 3. inventory_stock_snapshot (재고 시트) - 날짜별·센터별 확정 재고 스냅샷
+-- product_code + dest_warehouse + snapshot_date 복합 PK (센터별 행 유지)
 CREATE TABLE IF NOT EXISTS inventory_stock_snapshot (
-  product_code TEXT PRIMARY KEY,
-  dest_warehouse TEXT DEFAULT '',
+  product_code TEXT NOT NULL,
+  dest_warehouse TEXT NOT NULL DEFAULT '일반',
+  snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
   product_name TEXT DEFAULT '',
   category TEXT DEFAULT '',
   pack_size INTEGER DEFAULT 1,
   quantity INTEGER NOT NULL DEFAULT 0,
-  snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
   unit_cost NUMERIC(12,2) DEFAULT 0,
   total_price NUMERIC(14,2) DEFAULT 0,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (product_code, dest_warehouse, snapshot_date)
 );
 
 -- 4. inventory_current_products (대시보드 현재 품목 목록 - stock+inbound+outbound에서 수집)
@@ -73,7 +75,11 @@ CREATE TABLE IF NOT EXISTS inventory_outbound (
   sales_channel TEXT NOT NULL DEFAULT 'general',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_outbound_upsert ON inventory_outbound (product_code, outbound_date, sales_channel);
+-- 출고: 1 row = 1 트랜잭션 (병합 없음). PK는 id(uuid).
+-- CREATE UNIQUE INDEX 제거됨 - 동일 품목·날짜·창고에 여러 행 허용
+CREATE INDEX IF NOT EXISTS idx_inv_outbound_date ON inventory_outbound(outbound_date DESC);
+CREATE INDEX IF NOT EXISTS idx_inv_outbound_product ON inventory_outbound(product_code);
+CREATE INDEX IF NOT EXISTS idx_inv_outbound_channel ON inventory_outbound(sales_channel);
 
 -- RLS
 ALTER TABLE inventory_products ENABLE ROW LEVEL SECURITY;
