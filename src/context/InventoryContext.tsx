@@ -327,7 +327,6 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       if (isEmpty || isNoSnapshot) {
         setSupabaseFetchStatus("empty_data");
         setUseSupabaseInventory(true);
-        storage.clearAllInventoryKeys?.();
         setBaseStockState({ ...DEFAULT_STOCK });
         setBaseStockByProductState({});
         setTransactions([]);
