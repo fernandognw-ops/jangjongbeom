@@ -73,6 +73,8 @@ interface InventoryContextValue {
   refresh: () => void;
   /** 로딩 중 Supabase 대기 없이 로컬(localStorage) 모드로 전환 */
   switchToLocalMode?: () => void;
+  /** Supabase 단일 출처 모드: 로컬 모드 복원 비활성화 */
+  supabaseSingleSource?: boolean;
   useSupabaseInventory: boolean;
   /** Supabase fetch 실패 시 원인 (localStorage 모드일 때만 의미 있음) */
   supabaseFetchStatus: SupabaseFetchStatus;
@@ -843,6 +845,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       resetAll,
       refresh,
       switchToLocalMode,
+      supabaseSingleSource: true,
       useSupabaseInventory,
       supabaseFetchStatus,
       supabaseFetchError,
