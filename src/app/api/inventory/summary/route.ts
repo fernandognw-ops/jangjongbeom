@@ -15,7 +15,7 @@ import {
   normalizeCode,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct, StockSnapshotRow } from "@/lib/inventoryApi";
-import { normalizeDestWarehouse } from "@/lib/inventoryChannels";
+import { normalizeDestWarehouse, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_SNAPSHOT = "inventory_stock_snapshot";
@@ -126,7 +126,7 @@ export async function GET() {
         const code = normalizeCode(r.product_code) || String(r.product_code ?? "").trim();
         const qty = toNumber(r.quantity);
         const wh = normalizeDestWarehouse(r.dest_warehouse);
-        if (wh === "쿠팡") {
+        if (wh === WAREHOUSE_COUPANG) {
           stockByProductByChannel.coupang[code] = (stockByProductByChannel.coupang[code] ?? 0) + qty;
         } else {
           stockByProductByChannel.general[code] = (stockByProductByChannel.general[code] ?? 0) + qty;

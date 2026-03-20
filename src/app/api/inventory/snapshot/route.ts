@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
-import { normalizeDestWarehouse } from "@/lib/inventoryChannels";
+import { normalizeDestWarehouse, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -133,7 +133,7 @@ export async function GET(request: Request) {
 
       stockByWarehouse[wh] = (stockByWarehouse[wh] ?? 0) + qty;
 
-      if (wh === "쿠팡") {
+      if (wh === WAREHOUSE_COUPANG) {
         stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
       } else {
         stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;

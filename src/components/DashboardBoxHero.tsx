@@ -13,7 +13,7 @@ import {
   STANDARD_CATEGORIES,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct } from "@/lib/inventoryApi";
-import { normalizeDestWarehouse } from "@/lib/inventoryChannels";
+import { isCoupangNormalizedWarehouse, normalizeDestWarehouse } from "@/lib/inventoryChannels";
 
 type Channel = "all" | "coupang" | "general";
 
@@ -318,7 +318,7 @@ export function DashboardBoxHero() {
     let coupang = 0;
     let general = 0;
     for (const [wh, qty] of Object.entries(stockByWarehouse)) {
-      if (normalizeDestWarehouse(wh) === "쿠팡") coupang += qty;
+      if (isCoupangNormalizedWarehouse(wh)) coupang += qty;
       else general += qty;
     }
     return { coupangStockTotal: coupang, generalStockTotal: general };
@@ -418,8 +418,8 @@ export function DashboardBoxHero() {
                 .map(([wh, qty]) => (
                   <div key={wh} className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
                     <span className="text-sm text-slate-600">{wh}</span>
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${normalizeDestWarehouse(wh) === "쿠팡" ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
-                      {normalizeDestWarehouse(wh) === "쿠팡" ? "(쿠팡)" : "(일반)"}
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${isCoupangNormalizedWarehouse(wh) ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
+                      {isCoupangNormalizedWarehouse(wh) ? "(쿠팡)" : "(일반)"}
                     </span>
                     <span className="font-bold tabular-nums text-slate-800">{qty.toLocaleString()}EA</span>
                   </div>

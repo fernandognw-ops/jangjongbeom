@@ -2,7 +2,7 @@
  * inventory_stock_snapshot 행 집계 — quick / kpi 공통
  * - 모든 DB 행을 합산 (동일 PK 중복 행이 있어도 SUM(quantity)와 일치)
  */
-import { normalizeDestWarehouse } from "@/lib/inventoryChannels";
+import { normalizeDestWarehouse, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 
 export type SnapshotRow = {
   product_code?: string;
@@ -57,7 +57,7 @@ export function aggregateSnapshotRowsForDashboard(
     if (price <= 0 && qty > 0) price = qty * toNum(r.unit_cost);
 
     stockByWarehouse[wh] = (stockByWarehouse[wh] ?? 0) + qty;
-    if (wh === "쿠팡") {
+    if (wh === WAREHOUSE_COUPANG) {
       stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
     } else {
       stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;
