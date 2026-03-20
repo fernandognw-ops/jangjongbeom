@@ -29,8 +29,8 @@ function effectivePack(
 ): number {
   const n = toNum(rowPack);
   if (n > 0) return Math.max(1, n);
-  const fb = code && packByCode?.get(code);
-  return Math.max(1, fb ?? 1);
+  const fb = code ? packByCode?.get(code) : undefined;
+  return Math.max(1, toNum(fb ?? 0) || 1);
 }
 
 /**
