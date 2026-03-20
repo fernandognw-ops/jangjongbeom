@@ -15,6 +15,7 @@ import {
   normalizeCode,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct, StockSnapshotRow } from "@/lib/inventoryApi";
+import { normalizeDestWarehouse } from "@/lib/inventoryChannels";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_SNAPSHOT = "inventory_stock_snapshot";
@@ -26,28 +27,16 @@ function toNumber(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** dest_warehouse(입고처)가 쿠팡 입고인지. 테이칼튼, 테이칼튼 1공장 → 쿠팡 */
+/** dest_warehouse(판매채널)가 쿠팡인지. "쿠팡" 또는 legacy 테이칼튼 */
 function isCoupangInbound(dest: string | null | undefined): boolean {
   const s = String(dest ?? "").trim();
-  return s.includes("테이칼튼");
+  return s === "쿠팡" || s.includes("테이칼튼");
 }
 
-/** dest_warehouse(입고처)가 일반 입고인지. 제이에스 → 일반 */
+/** dest_warehouse(판매채널)가 일반인지. "일반" 또는 legacy 제이에스/컬리 */
 function isGeneralInbound(dest: string | null | undefined): boolean {
   const s = String(dest ?? "").trim();
-  return s.includes("제이에스");
-}
-
-/** dest_warehouse(=창고명)가 쿠팡 재고인지. 테이칼튼, 테이칼튼1공장 → 쿠팡 */
-function isCoupangStock(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim().replace(/\s/g, "").toLowerCase();
-  return s.includes("테이칼튼") || s === "coupang";
-}
-
-/** dest_warehouse(=창고명)가 일반 재고인지. 제이에스, 컬리 → 일반 */
-function isGeneralStock(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim();
-  return s.includes("제이에스") || s.includes("컬리") || s.toLowerCase() === "general";
+  return s === "일반" || s.includes("제이에스") || s.includes("컬리");
 }
 
 export async function GET() {
@@ -136,7 +125,8 @@ export async function GET() {
       for (const r of stockSnapshotRows) {
         const code = normalizeCode(r.product_code) || String(r.product_code ?? "").trim();
         const qty = toNumber(r.quantity);
-        if (isCoupangStock(r.dest_warehouse)) {
+        const wh = normalizeDestWarehouse(r.dest_warehouse);
+        if (wh === "쿠팡") {
           stockByProductByChannel.coupang[code] = (stockByProductByChannel.coupang[code] ?? 0) + qty;
         } else {
           stockByProductByChannel.general[code] = (stockByProductByChannel.general[code] ?? 0) + qty;

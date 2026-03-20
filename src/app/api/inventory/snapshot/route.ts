@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
+import { normalizeDestWarehouse } from "@/lib/inventoryChannels";
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -20,18 +21,6 @@ function toNum(v: unknown): number {
 function isCoupangChannel(ch: string | null | undefined): boolean {
   const s = String(ch ?? "").trim().toLowerCase();
   return s === "coupang" || s === "쿠팡" || s.includes("쿠팡");
-}
-
-/** dest_warehouse(=창고명)가 쿠팡 재고인지. 테이칼튼, 테이칼튼1공장 → 쿠팡 */
-function isCoupangStock(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim().replace(/\s/g, "").toLowerCase();
-  return s.includes("테이칼튼") || s === "coupang";
-}
-
-/** dest_warehouse(=창고명)가 일반 재고인지. 제이에스, 컬리 → 일반 */
-function isGeneralStock(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim();
-  return s.includes("제이에스") || s.includes("컬리") || s.toLowerCase() === "general";
 }
 
 const PAGE_SIZE = 1000;
@@ -130,15 +119,12 @@ export async function GET(request: Request) {
     const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
     const stockByWarehouse: Record<string, number> = {};
     const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string; category: string }> = {};
-    const seenRow = new Set<string>();
 
+    // 모든 스냅샷 행 합산 (quick API와 동일 — 중복 행도 DB SUM과 일치)
     for (const r of rows) {
       const code = String(r.product_code ?? "").trim();
-      const wh = String(r.dest_warehouse ?? "").trim() || "제이에스";
-      const rowKey = `${code}|${wh}`;
-      if (seenRow.has(rowKey)) continue;
-      seenRow.add(rowKey);
-
+      if (!code) continue;
+      const wh = normalizeDestWarehouse(r.dest_warehouse);
       const qty = toNum(r.quantity);
       const pack = Math.max(1, toNum(r.pack_size));
       let price = toNum(r.total_price);
@@ -147,7 +133,7 @@ export async function GET(request: Request) {
 
       stockByWarehouse[wh] = (stockByWarehouse[wh] ?? 0) + qty;
 
-      if (isCoupangStock(r.dest_warehouse)) {
+      if (wh === "쿠팡") {
         stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
       } else {
         stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;
@@ -155,8 +141,9 @@ export async function GET(request: Request) {
       const validCat = cat && !/^\d{10,}$/.test(cat) && cat !== "기타" && cat !== "전체";
       if (!mergedByProduct[code]) {
         mergedByProduct[code] = { qty: 0, price: 0, pack, name: String(r.product_name ?? "").trim() || code, category: validCat ? cat : "" };
-      } else if (validCat) {
-        mergedByProduct[code].category = cat;
+      } else {
+        mergedByProduct[code].pack = Math.max(mergedByProduct[code].pack, pack);
+        if (validCat) mergedByProduct[code].category = cat;
       }
       mergedByProduct[code].qty += qty;
       mergedByProduct[code].price += price;

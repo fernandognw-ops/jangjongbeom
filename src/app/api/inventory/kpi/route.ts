@@ -8,6 +8,10 @@
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import {
+  aggregateSnapshotRowsForDashboard,
+  type SnapshotRow,
+} from "@/lib/inventorySnapshotAggregate";
 
 const TABLE_SNAPSHOT = "inventory_stock_snapshot";
 const TABLE_PRODUCTS = "inventory_products";
@@ -74,15 +78,7 @@ export async function GET() {
       );
     }
 
-    const rows = (data ?? []) as Array<{
-      product_code?: string;
-      quantity?: unknown;
-      pack_size?: unknown;
-      total_price?: unknown;
-      unit_cost?: unknown;
-      dest_warehouse?: string;
-      snapshot_date?: string;
-    }>;
+    const rows = (data ?? []) as SnapshotRow[];
 
     const codes = [...new Set(rows.map((r) => String(r.product_code ?? "").trim()).filter(Boolean))];
     const packByCode = new Map<string, number>();
@@ -98,33 +94,14 @@ export async function GET() {
       }
     }
 
-    const seen = new Set<string>();
-    let totalValue = 0;
-    let totalQuantity = 0;
-    let totalSku = 0;
-    const productCodes = new Set<string>();
+    const agg = aggregateSnapshotRowsForDashboard(rows, new Map(), packByCode);
+    const { productCount, totalValue, totalQuantity, totalSku } = agg;
 
-    for (const r of rows) {
-      const key = `${String(r.product_code ?? "").trim()}|${String(r.dest_warehouse ?? "").trim()}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const code = String(r.product_code ?? "").trim();
-      if (code) productCodes.add(code);
-      let price = toNum(r.total_price);
-      if (price <= 0 && toNum(r.quantity) > 0) price = toNum(r.quantity) * toNum(r.unit_cost);
-      const qty = toNum(r.quantity);
-      const pack = toNum(r.pack_size) > 0 ? toNum(r.pack_size) : packByCode.get(code) ?? 1;
-      totalValue += price;
-      totalQuantity += qty;
-      totalSku += Math.floor(qty / pack);
-    }
-    totalValue = Math.round(totalValue);
-
-    log(`KPI 완료`, { productCount: productCodes.size, totalValue, totalQuantity, totalSku });
+    log(`KPI 완료`, { productCount, totalValue, totalQuantity, totalSku });
 
     return NextResponse.json(
       {
-        productCount: productCodes.size,
+        productCount,
         totalValue,
         totalQuantity,
         totalSku,
