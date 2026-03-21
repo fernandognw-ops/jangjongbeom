@@ -13,7 +13,7 @@ import {
   STANDARD_CATEGORIES,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct } from "@/lib/inventoryApi";
-import { isCoupangNormalizedWarehouse, normalizeDestWarehouse } from "@/lib/inventoryChannels";
+import { isCoupangChannel } from "@/lib/inventoryChannels";
 
 type Channel = "all" | "coupang" | "general";
 
@@ -106,7 +106,8 @@ export function DashboardBoxHero() {
     dailyVelocityByProductCoupang: contextDailyVelocityCoupang = {},
     dailyVelocityByProductGeneral: contextDailyVelocityGeneral = {},
     stockByProductByChannel,
-    stockByWarehouse = {},
+    channelTotals: channelTotalsFromCtx,
+    stockByWarehouse: stockByWarehouseLegacy,
     stockSnapshot = [],
     safetyStockByProduct = {},
     todayInOutCount = { inbound: 0, outbound: 0 },
@@ -128,6 +129,10 @@ export function DashboardBoxHero() {
   const [visibleCount, setVisibleCount] = useState(50);
 
   const momIndicators = categoryTrendData?.momIndicators ?? null;
+  const channelTotals = useMemo(
+    () => channelTotalsFromCtx ?? stockByWarehouseLegacy ?? {},
+    [channelTotalsFromCtx, stockByWarehouseLegacy]
+  );
   const aiForecastByProduct = contextAiForecast ?? {};
 
   const stockByProductRaw = useMemo(
@@ -313,16 +318,16 @@ export function DashboardBoxHero() {
     return Object.values(stockByProductRaw).filter((q) => q < 0).length;
   }, [stockByProductRaw]);
 
-  /** API의 stockByWarehouse는 dest_warehouse 정규화 키만 사용: "쿠팡" | "일반" (quick/snapshot과 동일) */
+  /** channelTotals = quick API — `channelForSnapshotRow`(sales_channel 우선, 판매채널만, 보관센터 추론 없음) */
   const { coupangStockTotal, generalStockTotal } = useMemo(() => {
     let coupang = 0;
     let general = 0;
-    for (const [wh, qty] of Object.entries(stockByWarehouse)) {
-      if (isCoupangNormalizedWarehouse(wh)) coupang += qty;
+    for (const [wh, qty] of Object.entries(channelTotals)) {
+      if (isCoupangChannel(wh)) coupang += qty;
       else general += qty;
     }
     return { coupangStockTotal: coupang, generalStockTotal: general };
-  }, [stockByWarehouse]);
+  }, [channelTotals]);
 
   const channelTheme = {
     all: {
@@ -409,17 +414,17 @@ export function DashboardBoxHero() {
           <span>쿠팡: <span className="font-semibold text-orange-600">{coupangStockTotal.toLocaleString()}EA</span></span>
           <span>일반: <span className="font-semibold text-sky-600">{generalStockTotal.toLocaleString()}EA</span></span>
         </div>
-        {Object.keys(stockByWarehouse).length > 0 && (
+        {Object.keys(channelTotals).length > 0 && (
           <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 min-w-0">
-            <div className="text-xs font-medium uppercase tracking-wider text-slate-500">창고별 재고</div>
+            <div className="text-xs font-medium uppercase tracking-wider text-slate-500">채널별 재고</div>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
-              {Object.entries(stockByWarehouse)
+              {Object.entries(channelTotals)
                 .sort(([, a], [, b]) => b - a)
-                .map(([wh, qty]) => (
-                  <div key={wh} className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
-                    <span className="text-sm text-slate-600">{wh}</span>
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${isCoupangNormalizedWarehouse(wh) ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
-                      {isCoupangNormalizedWarehouse(wh) ? "(쿠팡)" : "(일반)"}
+                .map(([ch, qty]) => (
+                  <div key={ch} className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
+                    <span className="text-sm text-slate-600">{ch}</span>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${isCoupangChannel(ch) ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
+                      {isCoupangChannel(ch) ? "(쿠팡)" : "(일반)"}
                     </span>
                     <span className="font-bold tabular-nums text-slate-800">{qty.toLocaleString()}EA</span>
                   </div>
@@ -610,15 +615,23 @@ export function DashboardBoxHero() {
                 )}
               </div>
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-600">
-                {Object.entries(momIndicators.thisMonthInboundByWarehouse ?? {}).length > 0
-                  ? Object.entries(momIndicators.thisMonthInboundByWarehouse ?? {})
+                {Object.entries(
+                  momIndicators.thisMonthInboundByChannel ??
+                    momIndicators.thisMonthInboundByWarehouse ??
+                    {}
+                ).length > 0
+                  ? Object.entries(
+                      momIndicators.thisMonthInboundByChannel ??
+                        momIndicators.thisMonthInboundByWarehouse ??
+                        {}
+                    )
                       .sort(([, a], [, b]) => b - a)
-                      .map(([wh, qty]) => (
-                        <span key={wh}>{wh}: {qty.toLocaleString()}EA</span>
+                      .map(([ch, qty]) => (
+                        <span key={ch}>{ch}: {qty.toLocaleString()}EA</span>
                       ))
-                  : <span>창고별 데이터 없음</span>}
+                  : <span>채널별 데이터 없음</span>}
               </div>
-              <div className="mt-0.5 text-[10px] text-slate-500">입고처(창고) 기준 · 전월 대비</div>
+              <div className="mt-0.5 text-[10px] text-slate-500">입고처 → 판매채널(쿠팡/일반) 기준 · 전월 대비</div>
             </div>
           </>
         )}

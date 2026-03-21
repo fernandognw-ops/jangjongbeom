@@ -51,8 +51,9 @@ export function SupabaseInventoryRefresh() {
       const d = await res.json();
       if (d.ok) {
         const t = d.tables;
+        const proj = d.supabaseProject ? ` [Supabase: ${d.supabaseProject}]` : "";
         setDiagResult(
-          `현재품목 ${t.inventory_current_products}건 | 재고스냅샷 ${t.inventory_stock_snapshot}건 | 입고 ${t.inventory_inbound}건 | 출고 ${t.inventory_outbound}건 | 재고금액 ${d.totalValue?.toLocaleString() ?? 0}원`
+          `현재품목 ${t.inventory_current_products}건 | 재고스냅샷 ${t.inventory_stock_snapshot}건 | 입고 ${t.inventory_inbound}건 | 출고 ${t.inventory_outbound}건 | 재고금액 ${d.totalValue?.toLocaleString() ?? 0}원${proj}`
         );
       } else {
         setDiagResult(d.error ?? "진단 실패");

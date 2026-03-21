@@ -174,6 +174,28 @@ export const storage = {
     localStorage.removeItem(STORAGE_KEYS.products);
   },
 
+  /** Supabase 단일 출처 모드: 로컬 재고 데이터만 삭제 (sync-code 유지) */
+  clearLocalInventoryData() {
+    if (typeof window === "undefined") return;
+    localStorage.removeItem(STORAGE_KEYS.stock);
+    localStorage.removeItem(STORAGE_KEYS.baseStock);
+    localStorage.removeItem(STORAGE_KEYS.baseStockByProduct);
+    localStorage.removeItem(STORAGE_KEYS.dailyStock);
+    localStorage.removeItem(STORAGE_KEYS.transactions);
+    localStorage.removeItem(STORAGE_KEYS.products);
+  },
+
+  /** 웹 업로드 단일 반영: inventory-* 키 전체 삭제 (캐시/과거 데이터 제거) */
+  clearAllInventoryKeys() {
+    if (typeof window === "undefined") return;
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("inventory-")) keysToRemove.push(key);
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+  },
+
   /** 전체 데이터 백업 (JSON) */
   exportBackup(): string {
     if (typeof window === "undefined") return "{}";

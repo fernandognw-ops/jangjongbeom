@@ -56,16 +56,11 @@ export function TopSkuByCategoryDashboard() {
     return ctx;
   }, [dailyVelocityByProduct, dailyVelByProduct]);
 
-  /** 3개월 출고량 (EA) - inventoryOutbound 없으면 일평균×90일 추정 */
+  /** 3개월 출고량 (EA) - inventory_outbound 기반만 (fallback 제거, DB 0건이면 0) */
   const quantityFor90d = useMemo(() => {
-    const fromOutbound = inventoryOutbound.length > 0;
-    if (fromOutbound) return totalOutbound90d;
-    const fallback: Record<string, number> = {};
-    for (const [code, vel] of Object.entries(effectiveDailyVel)) {
-      if (vel > 0) fallback[code] = vel * RANKING_DAYS;
-    }
-    return fallback;
-  }, [inventoryOutbound.length, totalOutbound90d, effectiveDailyVel]);
+    if (inventoryOutbound.length === 0) return {} as Record<string, number>;
+    return totalOutbound90d;
+  }, [inventoryOutbound.length, totalOutbound90d]);
 
   /** 3개월 매출 (원) - 주력 품목 선정용 */
   const revenueFor90d = useMemo(() => {
@@ -81,16 +76,11 @@ export function TopSkuByCategoryDashboard() {
     return result;
   }, [inventoryProducts, quantityFor90d]);
 
-  /** 1개월 매출용: 최근 30일 출고량 × 단가 (표시용) */
+  /** 1개월 매출용: 최근 30일 출고량 × 단가 (표시용) - inventory_outbound 기반만 */
   const quantityFor30d = useMemo(() => {
-    const fromOutbound = inventoryOutbound.length > 0;
-    if (fromOutbound) return totalOutbound30d;
-    const fallback: Record<string, number> = {};
-    for (const [code, vel] of Object.entries(effectiveDailyVel)) {
-      if (vel > 0) fallback[code] = vel * SALES_DAYS;
-    }
-    return fallback;
-  }, [inventoryOutbound.length, totalOutbound30d, effectiveDailyVel]);
+    if (inventoryOutbound.length === 0) return {} as Record<string, number>;
+    return totalOutbound30d;
+  }, [inventoryOutbound.length, totalOutbound30d]);
 
   const revenueFor30d = useMemo(() => {
     const result: Record<string, number> = {};
@@ -139,19 +129,11 @@ export function TopSkuByCategoryDashboard() {
     return byCat;
   }, [inventoryProducts, revenueFor90d, quantityFor90d]);
 
-  /** 1주일 판매량 (권장 입고 계산용) */
+  /** 1주일 판매량 (권장 입고 계산용) - inventory_outbound 기반만 */
   const oneWeekSalesByProduct = useMemo(() => {
-    const fromOutbound = inventoryOutbound.length > 0;
-    if (fromOutbound) {
-      const total7 = computeTotalOutboundByProduct(inventoryOutbound, RECOMMENDED_WEEK_DAYS);
-      return total7;
-    }
-    const fallback: Record<string, number> = {};
-    for (const [code, vel] of Object.entries(effectiveDailyVel)) {
-      if (vel > 0) fallback[code] = vel * RECOMMENDED_WEEK_DAYS;
-    }
-    return fallback;
-  }, [inventoryOutbound, effectiveDailyVel]);
+    if (inventoryOutbound.length === 0) return {} as Record<string, number>;
+    return computeTotalOutboundByProduct(inventoryOutbound, RECOMMENDED_WEEK_DAYS);
+  }, [inventoryOutbound]);
 
   /** 테이블용 행 데이터: 상위 SKU + 재고/입고 정보 */
   const tableRows = useMemo(() => {

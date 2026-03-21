@@ -89,7 +89,7 @@ async function main() {
   }
 
   console.log("\n4. 다음 단계:");
-  console.log("   - 마이그레이션 SQL 실행 후");
+  console.log("   - migrate_outbound_no_merge.sql, migrate_inbound_no_merge.sql 실행 후");
   console.log("   - 대시보드에서 Excel 업로드 → 검증 (rawdata 480, inbound 172, outbound 2965, stock 414)");
   console.log("   - 수치 일치 시 DB 반영 클릭");
   console.log("   - node scripts/run_outbound_migration.mjs --verify 로 최종 확인\n");
@@ -102,6 +102,7 @@ async function verify() {
     "inventory_inbound",
     "inventory_outbound",
     "inventory_stock_snapshot",
+    "inventory_upload_logs",
   ];
   const counts = {};
   for (const t of tables) {
@@ -113,6 +114,7 @@ async function verify() {
   console.log("  inventory_inbound:", counts.inventory_inbound, "(기대: 172)");
   console.log("  inventory_outbound:", counts.inventory_outbound, "(기대: 2965)");
   console.log("  inventory_stock_snapshot:", counts.inventory_stock_snapshot, "(기대: 414)");
+  console.log("  inventory_upload_logs:", counts.inventory_upload_logs ?? "(테이블 없을 수 있음)");
 
   const ok =
     counts.inventory_outbound === 2965 &&
@@ -122,16 +124,12 @@ async function verify() {
   console.log("\n검증:", ok ? "통과" : "불일치 (기대값과 비교)");
 }
 
-async function executeMigration() {
+async function runMigrationSql(sql) {
   const dbUrl = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
   if (!dbUrl) {
     console.error("오류: DATABASE_URL 또는 SUPABASE_DB_URL 필요");
-    console.error("Supabase 대시보드 → Project Settings → Database → Connection string (URI) 복사");
-    console.error(".env.local에 DATABASE_URL=postgresql://... 추가");
     process.exit(1);
   }
-  const migrationPath = join(__dirname, "migrate_outbound_no_merge.sql");
-  const sql = readFileSync(migrationPath, "utf-8");
   const { default: pg } = await import("pg");
   const client = new pg.Client({ connectionString: dbUrl });
   try {
@@ -148,8 +146,16 @@ async function executeMigration() {
 
 const isVerify = process.argv.includes("--verify");
 const isExecute = process.argv.includes("--execute");
-if (isExecute) {
-  executeMigration().catch((e) => {
+const isExecuteInbound = process.argv.includes("--execute-inbound");
+if (isExecuteInbound) {
+  const sql = readFileSync(join(__dirname, "migrate_inbound_no_merge.sql"), "utf-8");
+  runMigrationSql(sql).catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+} else if (isExecute) {
+  const sql = readFileSync(join(__dirname, "migrate_outbound_no_merge.sql"), "utf-8");
+  runMigrationSql(sql).catch((e) => {
     console.error(e);
     process.exit(1);
   });

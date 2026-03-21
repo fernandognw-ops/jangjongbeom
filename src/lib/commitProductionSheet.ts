@@ -7,6 +7,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { InboundRow, OutboundRow, StockSnapshotRow } from "@/lib/productionSheetParser";
 import { toDestWarehouse } from "@/lib/excelParser/classifier";
+import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_INBOUND = "inventory_inbound";
@@ -32,6 +33,11 @@ function ensureDestWarehouse(wh: string | undefined | null): string {
   const s = String(wh ?? "").trim();
   if (!s) return "일반";
   return toDestWarehouse(s);
+}
+
+function ensurePhysicalWarehouse(wh: string | undefined | null): string {
+  const s = String(wh ?? "").trim();
+  return s || "미지정";
 }
 
 async function fetchProductEnrichmentMap(
@@ -222,20 +228,39 @@ export async function commitProductionSheet(
     const monthEnd = today.slice(0, 7) + "-" + String(lastDay).padStart(2, "0");
 
     const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
-    const existingSnap = await supabase.from(TABLE_SNAPSHOT).select("product_code,dest_warehouse,unit_cost").in("product_code", codes);
+    const existingSnap = await supabase
+      .from(TABLE_SNAPSHOT)
+      .select("product_code,dest_warehouse,storage_center,unit_cost,sales_channel")
+      .in("product_code", codes);
     const costByKey = new Map<string, number>();
     for (const r of existingSnap.data ?? []) {
-      const row = r as { product_code: string; dest_warehouse?: string; unit_cost: number };
-      const key = `${row.product_code}|${(row.dest_warehouse ?? "").trim() || "일반"}`;
+      const row = r as {
+        product_code: string;
+        dest_warehouse?: string;
+        storage_center?: string;
+        sales_channel?: string;
+        unit_cost: number;
+      };
+      const ch = normalizeSalesChannelKr(row.dest_warehouse ?? row.sales_channel ?? "");
+      const st = (row.storage_center ?? "").trim() || "미지정";
+      const key = `${row.product_code}|${ch}|${st}`;
       if ((row.unit_cost ?? 0) > 0) costByKey.set(key, row.unit_cost);
     }
 
+    /** dest_warehouse=판매채널, storage_center=보관센터. sales_channel은 레거시 스키마 호환용으로 동일 값 복제 */
     const snapshotRows = stockSnapshot.map((s) => {
       const p = productMap.get(s.product_code);
-      const wh = ensureDestWarehouse(s.dest_warehouse);
+      const channel = normalizeSalesChannelKr(s.dest_warehouse ?? "");
+      const storage = ensurePhysicalWarehouse(s.storage_center);
       const snap = (s.snapshot_date ?? today).slice(0, 10);
       let cost = s.unit_cost ?? 0;
-      if (cost <= 0) cost = costByKey.get(`${s.product_code}|${wh}`) ?? p?.unit_cost ?? 0;
+      if (cost <= 0) {
+        cost =
+          costByKey.get(`${s.product_code}|${channel}|${storage}`) ??
+          costByKey.get(`${s.product_code}|${channel}|미지정`) ??
+          p?.unit_cost ??
+          0;
+      }
       const qty = s.quantity ?? 0;
       const totalPrice = qty * cost;
       return {
@@ -243,7 +268,9 @@ export async function commitProductionSheet(
         product_name: p?.product_name ?? s.product_code,
         category: p?.category ?? "기타",
         pack_size: p?.pack_size ?? 1,
-        dest_warehouse: wh,
+        dest_warehouse: channel,
+        storage_center: storage,
+        sales_channel: channel,
         quantity: qty,
         unit_cost: cost,
         total_price: totalPrice,
@@ -262,7 +289,12 @@ export async function commitProductionSheet(
         await supabase.from(TABLE_SNAPSHOT).delete().in("snapshot_date", datesToReplace);
       }
       for (let i = 0; i < currentMonthRows.length; i += BATCH) {
-        const batch = currentMonthRows.slice(i, i + BATCH);
+        const batch = currentMonthRows.slice(i, i + BATCH) as Array<
+          Record<string, unknown> & { dest_warehouse: string; storage_center: string }
+        >;
+        if (i === 0 && batch[0] && !("storage_center" in batch[0])) {
+          throw new Error("재고 스냅샷 insert: storage_center 누락 (코드 오류)");
+        }
         const { error } = await supabase.from(TABLE_SNAPSHOT).insert(batch);
         if (error) throw new Error(`재고 스냅샷 저장 실패: ${error.message}`);
         stockSnapshotCount += batch.length;

@@ -15,7 +15,8 @@ import {
   normalizeCode,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct, StockSnapshotRow } from "@/lib/inventoryApi";
-import { normalizeDestWarehouse, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
+import { WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
+import { channelForSnapshotRow, type SnapshotRow } from "@/lib/inventorySnapshotAggregate";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_SNAPSHOT = "inventory_stock_snapshot";
@@ -62,7 +63,9 @@ export async function GET() {
     const [productsRes, snapshotRes, currentRes, outboundAggRes, todayCountRes, inboundRes] =
       await Promise.all([
         supabase.from(TABLE_PRODUCTS).select("*").order("product_code"),
-        supabase.from(TABLE_SNAPSHOT).select("product_code,quantity,unit_cost,snapshot_date,dest_warehouse"),
+        supabase
+          .from(TABLE_SNAPSHOT)
+          .select("product_code,quantity,unit_cost,snapshot_date,dest_warehouse,sales_channel,storage_center"),
         supabase.from(TABLE_CURRENT).select("product_code"),
         supabase.rpc("get_outbound_product_agg", { p_days: 90 }),
         supabase.rpc("get_today_inout_count"),
@@ -78,7 +81,7 @@ export async function GET() {
     }
 
     const products = (productsRes.data ?? []) as InventoryProduct[];
-    const allSnapshotRows = (snapshotRes.data ?? []) as { product_code: string; quantity: unknown; unit_cost: unknown; snapshot_date: string; dest_warehouse?: string }[];
+    const allSnapshotRows = (snapshotRes.data ?? []) as { product_code: string; quantity: unknown; unit_cost: unknown; snapshot_date: string; dest_warehouse?: string; sales_channel?: string }[];
     // 최신 snapshot_date만 사용 (재고 자산은 가장 최신 데이터 기준)
     const maxSnapshotDate = allSnapshotRows.length > 0
       ? allSnapshotRows.reduce((max, r) => {
@@ -125,7 +128,7 @@ export async function GET() {
       for (const r of stockSnapshotRows) {
         const code = normalizeCode(r.product_code) || String(r.product_code ?? "").trim();
         const qty = toNumber(r.quantity);
-        const wh = normalizeDestWarehouse(r.dest_warehouse);
+        const wh = channelForSnapshotRow(r as SnapshotRow);
         if (wh === WAREHOUSE_COUPANG) {
           stockByProductByChannel.coupang[code] = (stockByProductByChannel.coupang[code] ?? 0) + qty;
         } else {

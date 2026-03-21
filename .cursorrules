@@ -60,13 +60,14 @@
 - `테이칼튼` 포함 → 쿠팡.
 - 비어있으면 일반.
 
-### 2.3 stockByWarehouse
-- **소스**: `dest_warehouse` on `inventory_stock_snapshot`.
-- **기본 창고**: 비어있으면 `"제이에스"`.
+### 2.3 channelTotals (판매채널별 재고)
+- **소스**: `inventory_stock_snapshot.sales_channel` — 엑셀 「판매 채널」→ `normalizeSalesChannelKr` → `"쿠팡"` \| `"일반"`.
+- **dest_warehouse**: 보관/물류 센터명만 (채널 추론에 사용하지 않음). 구행은 `channelForSnapshotRow`가 `dest_warehouse`로 레거시 폴백.
+- **필드명**: API/Context는 `channelTotals` (구명 `stockByWarehouse`는 동일 객체 호환용).
 
 ### 2.4 stockByProductByChannel
-- **coupang**: 쿠팡 창고 재고 합산.
-- **general**: 일반 창고 재고 합산.
+- **coupang**: 쿠팡 채널 재고 합산 (`dest_warehouse` → 쿠팡).
+- **general**: 일반 채널 재고 합산.
 - **전체**: coupang + general.
 
 ---

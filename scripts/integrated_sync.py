@@ -7,7 +7,7 @@
 [매핑 - 품목코드 기준]
   rawdata   → inventory_products      (Upsert)
   입고      → inventory_inbound       (Upsert, product_code+inbound_date)
-  재고      → inventory_stock_snapshot (기존 삭제 후 최신 재고로 교체)
+  재고      → inventory_stock_snapshot (product_code+dest_warehouse+snapshot_date, 당월만 replace/upsert)
   출고      → inventory_outbound       (Upsert, product_code+outbound_date+sales_channel)
 
 [컬럼 매핑 - 정확 일치 우선]
@@ -20,10 +20,16 @@
   출고:      품목코드, 품목명→제품명, 품목 또는 품목구분→category, 입수량, 수량,
              출고처→dest_warehouse, 출고일자→outbound_date, 원가→unit_price, 합계→total_price, 매출구분→sales_channel
 
+[운영 정책]
+  ★ 실제 DB 반영은 웹 업로드만 사용. 로컬 integrated_sync.py는 운영 DB 반영에 사용하지 않음.
+  - 웹: 대시보드 → Excel 업로드 → 검증 → DB 반영
+  - 로컬: --dry-run / --validate 전용 (파싱·검증만, DB 미반영)
+
 [사용법]
-  npm run sync-excel "경로/엑셀.xlsx"        # 파일만 올리면 테이블 업데이트
-  npm run sync-excel "경로/엑셀.xlsx" -- --reset  # 기존 데이터 삭제 후 재업로드
-  python scripts/integrated_sync.py "경로/엑셀.xlsx" --dry-run  # 시뮬레이션
+  python scripts/integrated_sync.py "경로/엑셀.xlsx"        # 기본 dry-run (DB 미반영)
+  python scripts/integrated_sync.py "경로/엑셀.xlsx" --dry-run   # 파싱/매핑 결과만 출력
+  python scripts/integrated_sync.py "경로/엑셀.xlsx" --validate  # 웹 vs Python 파싱 비교
+  python scripts/integrated_sync.py "경로/엑셀.xlsx" --apply    # [비권장] 로컬 DB 반영
 
 환경변수: .env.local (NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY)
 """
@@ -31,7 +37,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -135,6 +143,34 @@ def find_latest_supul_file() -> Optional[str]:
         except (PermissionError, OSError):
             continue
 
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return candidates[0][1]
+
+
+def find_latest_supul_in_dir(dir_path: str) -> Optional[str]:
+    """지정 폴더(및 하위 폴더)에서 수불현황/생산수불현황 .xlsx 중 가장 최신 파일 반환."""
+    candidates: list[tuple[float, str]] = []
+    patterns_lower = [p.lower() for p in SUPUL_FILENAME_PATTERNS]
+    try:
+        for root, _dirs, files in os.walk(dir_path):
+            for name in files:
+                if not name.lower().endswith(".xlsx"):
+                    continue
+                if name.startswith("~$"):
+                    continue
+                name_lower = name.lower()
+                if any(pat in name_lower for pat in patterns_lower):
+                    full_path = os.path.join(root, name)
+                    if os.path.isfile(full_path):
+                        try:
+                            mtime = os.path.getmtime(full_path)
+                            candidates.append((mtime, full_path))
+                        except OSError:
+                            pass
+    except (PermissionError, OSError):
+        pass
     if not candidates:
         return None
     candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
@@ -249,11 +285,256 @@ def parse_date(val: Any) -> Optional[str]:
     return None
 
 
+def to_dest_warehouse(original: Any) -> str:
+    """
+    원본 창고명/센터명/매출구분 → 판매채널 ("일반" | "쿠팡")
+    - "테이칼튼", "테이칼튼 1공장", "쿠팡", "coupang" → "쿠팡"
+    - "제이에스", "컬리", 기타, 빈값 → "일반"
+    """
+    s = str(original or "").strip().lower()
+    if not s:
+        return "일반"
+    if "테이칼튼" in s or "쿠팡" in s or "coupang" in s:
+        return "쿠팡"
+    return "일반"
+
+
 def to_sales_channel(val: Any) -> str:
-    s = str(val or "").strip().lower()
+    """판매채널 → sales_channel DB값 (coupang | general)"""
+    g = to_dest_warehouse(val)
+    return "coupang" if g == "쿠팡" else "general"
+
+
+def normalize_sales_channel_kr(original: Any) -> str:
+    """엑셀 「판매 채널」→ "쿠팡" | "일반" (보관센터 추론 없음)"""
+    s = str(original or "").strip().lower()
+    if not s:
+        return "일반"
     if "쿠팡" in s or "coupang" in s:
-        return "coupang"
-    return "general"
+        return "쿠팡"
+    return "일반"
+
+
+def log_channel_mapping_stats(
+    label: str,
+    rows: list[dict],
+    raw_key: str,
+    dest_key: str = "dest_warehouse",
+) -> None:
+    """원본→매핑 결과 로그 및 빈값/쿠팡/일반 건수 출력"""
+    total = len(rows)
+    empty = coupang = general = 0
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        raw = str(r.get(raw_key) or "").strip()
+        dest = str(r.get(dest_key) or "").strip() or "일반"
+        if not raw:
+            empty += 1
+        elif dest == "쿠팡":
+            coupang += 1
+        else:
+            general += 1
+        key = (raw or "(빈값)", dest or "(빈값)")
+        if key not in seen:
+            seen.add(key)
+            print(f"    [매핑] {label} {key[0]!r} → {key[1]!r}")
+    print(f"    {label} 매핑: 전체 {total}건 | 빈값→일반 {empty}건 | 쿠팡 {coupang}건 | 일반 {general}건")
+
+
+def run_web_parse(excel_path: str) -> Optional[dict]:
+    """웹 파서 실행 (tsx) 결과 JSON 반환. 실패 시 None."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.dirname(script_dir)
+    tsx_cli = os.path.join(root_dir, "node_modules", "tsx", "dist", "cli.mjs")
+    if os.path.isfile(tsx_cli):
+        cmd = ["node", tsx_cli, "scripts/parse_excel_for_validation.ts", excel_path]
+    else:
+        cmd = ["npx", "tsx", "scripts/parse_excel_for_validation.ts", excel_path]
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=root_dir,
+            capture_output=True,
+            timeout=90,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or b"").decode("utf-8", errors="replace")[:500]
+            print(f"    [검증] 웹 파서 실행 실패: {err}")
+            return None
+        out = result.stdout
+        if not out:
+            print("    [검증] 웹 파서 출력 없음")
+            return None
+        return json.loads(out.decode("utf-8", errors="replace"))
+    except FileNotFoundError:
+        print("    [검증] npm 없음. Node.js 설치 후 npm install 실행.")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"    [검증] 웹 파서 출력 파싱 실패: {e}")
+        return None
+    except subprocess.TimeoutExpired:
+        print("    [검증] 웹 파서 실행 타임아웃")
+        return None
+
+
+def _norm_row(r: dict, keys: list[str]) -> tuple:
+    """비교용 정규화: (product_code, dest_warehouse, date, quantity, ...)"""
+    return tuple(str(r.get(k) or "").strip()[:20] for k in keys)
+
+
+def _agg_by_key(rows: list[dict], key_fields: list[str], qty_field: str = "quantity") -> dict[tuple, dict]:
+    """key_fields 기준 수량 합산"""
+    out: dict[tuple, dict] = {}
+    for r in rows:
+        k = _norm_row(r, key_fields)
+        if k not in out:
+            out[k] = dict(r)
+            out[k][qty_field] = 0
+        out[k][qty_field] = (out[k].get(qty_field) or 0) + (r.get(qty_field) or 0)
+    return out
+
+
+def _compare_section(
+    label: str,
+    py_rows: list[dict],
+    web_rows: list[dict],
+    key_fields: list[str],
+    date_field: str,
+    qty_field: str = "quantity",
+) -> list[str]:
+    """섹션별 비교. 차이 목록 반환."""
+    diffs: list[str] = []
+    py_by_key = _agg_by_key(py_rows, key_fields, qty_field)
+    web_by_key = _agg_by_key(web_rows, key_fields, qty_field)
+    all_keys = set(py_by_key) | set(web_by_key)
+    for k in sorted(all_keys):
+        py_r = py_by_key.get(k)
+        web_r = web_by_key.get(k)
+        if not py_r:
+            diffs.append(f"  [{label}] 웹에만 있음: {k} qty={web_r.get(qty_field)} (원인: 헤더/행필터 차이)")
+            continue
+        if not web_r:
+            diffs.append(f"  [{label}] Python에만 있음: {k} qty={py_r.get(qty_field)} (원인: 헤더/행필터 차이)")
+            continue
+        if str(py_r.get(qty_field)) != str(web_r.get(qty_field)):
+            diffs.append(f"  [{label}] 수량 불일치 {k}: Python={py_r.get(qty_field)} vs 웹={web_r.get(qty_field)} (원인: 매핑/집계)")
+        if date_field and str(py_r.get(date_field, ""))[:10] != str(web_r.get(date_field, ""))[:10]:
+            diffs.append(f"  [{label}] 날짜 불일치 {k}: Python={py_r.get(date_field)} vs 웹={web_r.get(date_field)} (원인: 날짜파싱)")
+    return diffs
+
+
+def _compare_stock(
+    py_rows: list[dict],
+    web_rows: list[dict],
+) -> list[str]:
+    """재고 비교 (unit_cost 포함) — 키: 품목×판매채널(dest)×보관센터×일자"""
+    diffs: list[str] = []
+    py_by_key: dict[tuple, dict] = {}
+    for r in py_rows:
+        ch = normalize_sales_channel_kr(str(r.get("dest_warehouse") or r.get("sales_channel") or ""))
+        k = (
+            str(r.get("product_code") or "").strip(),
+            ch,
+            str(r.get("storage_center") or "").strip() or "미지정",
+            str(r.get("snapshot_date") or "")[:10],
+        )
+        py_by_key[k] = r
+    web_by_key: dict[tuple, dict] = {}
+    for r in web_rows:
+        ch = normalize_sales_channel_kr(str(r.get("dest_warehouse") or r.get("sales_channel") or ""))
+        k = (
+            str(r.get("product_code") or "").strip(),
+            ch,
+            str(r.get("storage_center") or "").strip() or "미지정",
+            str(r.get("snapshot_date") or "")[:10],
+        )
+        web_by_key[k] = r
+    all_keys = set(py_by_key) | set(web_by_key)
+    for k in sorted(all_keys):
+        py_r = py_by_key.get(k)
+        web_r = web_by_key.get(k)
+        if not py_r:
+            diffs.append(f"  [재고] 웹에만 있음: {k} qty={web_r.get('quantity')} unit_cost={web_r.get('unit_cost')}")
+            continue
+        if not web_r:
+            diffs.append(f"  [재고] Python에만 있음: {k} qty={py_r.get('quantity')} unit_cost={py_r.get('unit_cost')}")
+            continue
+        if str(py_r.get("quantity")) != str(web_r.get("quantity")):
+            diffs.append(f"  [재고] 수량 불일치 {k}: Python={py_r.get('quantity')} vs 웹={web_r.get('quantity')}")
+        py_cost = float(py_r.get("unit_cost") or 0)
+        web_cost = float(web_r.get("unit_cost") or 0)
+        if abs(py_cost - web_cost) > 0.01:
+            diffs.append(f"  [재고] unit_cost 불일치 {k}: Python={py_cost} vs 웹={web_cost} (원인: 원가컬럼매핑)")
+    return diffs
+
+
+def validate_parse_consistency(
+    path: str,
+    inbound_rows: list[dict],
+    outbound_rows: list[dict],
+    stock_rows: list[dict],
+) -> bool:
+    """웹 파서 vs Python 파서 결과 비교. 일치 시 True."""
+    web = run_web_parse(path)
+    if not web or not web.get("ok"):
+        return False
+    all_diffs: list[str] = []
+    py_in = [{"product_code": r["product_code"], "dest_warehouse": str(r.get("dest_warehouse") or "").strip() or "일반", "inbound_date": str(r.get("inbound_date") or "")[:10], "quantity": r.get("quantity")} for r in inbound_rows]
+    web_in = web.get("inbound") or []
+    d = _compare_section("입고", py_in, web_in, ["product_code", "dest_warehouse", "inbound_date"], "inbound_date")
+    all_diffs.extend(d)
+    py_out = [{"product_code": r["product_code"], "dest_warehouse": str(r.get("dest_warehouse") or "").strip() or "일반", "outbound_date": str(r.get("outbound_date") or "")[:10], "quantity": r.get("quantity"), "sales_channel": r.get("sales_channel")} for r in outbound_rows]
+    web_out = web.get("outbound") or []
+    d = _compare_section("출고", py_out, web_out, ["product_code", "dest_warehouse", "outbound_date"], "outbound_date")
+    all_diffs.extend(d)
+    py_stock = [
+        {
+            "product_code": r["product_code"],
+            "dest_warehouse": normalize_sales_channel_kr(str(r.get("dest_warehouse") or r.get("sales_channel") or "")),
+            "storage_center": str(r.get("storage_center") or "").strip() or "미지정",
+            "snapshot_date": str(r.get("snapshot_date") or "")[:10],
+            "quantity": r.get("quantity"),
+            "unit_cost": r.get("unit_cost") or 0,
+        }
+        for r in stock_rows
+    ]
+    web_stock = web.get("stockSnapshot") or []
+    d = _compare_stock(py_stock, web_stock)
+    all_diffs.extend(d)
+    if all_diffs:
+        print("\n[검증] 웹 vs Python 파싱 불일치:")
+        for x in all_diffs[:50]:
+            print(x)
+        if len(all_diffs) > 50:
+            print(f"    ... 외 {len(all_diffs) - 50}건")
+        return False
+    print("\n[검증] 웹 vs Python 파싱 일치: OK")
+    return True
+
+
+def validate_stock_duplicates(stock_rows: list[dict]) -> bool:
+    """(product_code, 판매채널(dest_warehouse), storage_center, snapshot_date) 중복 검증."""
+    seen: dict[tuple[str, str, str, str], list[int]] = {}
+    for i, r in enumerate(stock_rows):
+        code = str(r.get("product_code") or "").strip()
+        ch = normalize_sales_channel_kr(str(r.get("dest_warehouse") or r.get("sales_channel") or ""))
+        st = str(r.get("storage_center") or "").strip() or "미지정"
+        snap = str(r.get("snapshot_date") or "")[:10] or datetime.now().strftime("%Y-%m-%d")
+        key = (code, ch, st, snap)
+        if key not in seen:
+            seen[key] = []
+        seen[key].append(i + 1)
+    dups = [(k, v) for k, v in seen.items() if len(v) > 1]
+    if dups:
+        print(f"\n[검증] inventory_stock_snapshot 원본 중복: {len(dups)}건 (집계 시 수량 합산됨)")
+        for k, v in dups[:10]:
+            print(f"    {k}: 엑셀 행 {v}")
+        if len(dups) > 10:
+            print(f"    ... 외 {len(dups) - 10}건")
+        print(f"    → 집계 후 적재 시 유일키 보장됨")
+    else:
+        print("\n[검증] inventory_stock_snapshot 원본 중복 없음: OK")
+    return True
 
 
 def validate_sheets(sheet_names: list[str]) -> dict[str, str]:
@@ -371,15 +652,19 @@ def load_inbound(path: str, sheet_name: str) -> list[dict]:
     idx_pack = find_col_exact(df, hr, ["입수량"])
     if idx_pack < 0:
         idx_pack = find_col(df, hr, ["입수량"])
-    idx_qty = find_col_exact(df, hr, ["수량"])
+    idx_qty = find_col_exact(df, hr, ["입고 수량"])
     if idx_qty < 0:
-        idx_qty = find_col(df, hr, ["입고수량"])
-    idx_wh = find_col_exact(df, hr, ["입고처"])
+        idx_qty = _find_col_exclude(df, hr, ["수량", "입고수량"], exclude=["입수량", "금액", "원가", "일자"])
+    idx_wh = find_col_exact(df, hr, ["입고처", "입고 센터"])
+    if idx_wh < 0:
+        idx_wh = find_col(df, hr, ["입고처", "입고 센터", "판매 채널"])
     idx_date = find_col_exact(df, hr, ["입고일자"])
     if idx_date < 0:
-        idx_date = find_col(df, hr, ["입고일자", "입고일", "입고일자 주차"])
+        idx_date = find_col(df, hr, ["입고일자", "입고 일자", "입고일", "입고일자 주차"])
     idx_unit = find_col_exact(df, hr, ["원가"])
     idx_total = find_col_exact(df, hr, ["합계원가"])
+    if idx_total < 0:
+        idx_total = find_col(df, hr, ["합계 금액", "합계원가"])
 
     if idx_code < 0 or idx_qty < 0 or idx_date < 0:
         return []
@@ -400,7 +685,8 @@ def load_inbound(path: str, sheet_name: str) -> list[dict]:
         name = name or code
         cat = str(df.iloc[i, idx_cat] or "").strip() if idx_cat >= 0 else ""
         pack = safe_int(df.iloc[i, idx_pack]) if idx_pack >= 0 else 1
-        wh = str(df.iloc[i, idx_wh] or "").strip() if idx_wh >= 0 else ""
+        wh_raw = str(df.iloc[i, idx_wh] or "").strip() if idx_wh >= 0 else ""
+        wh = to_dest_warehouse(wh_raw)
         unit = safe_float(df.iloc[i, idx_unit]) if idx_unit >= 0 else None
         total = safe_float(df.iloc[i, idx_total]) if idx_total >= 0 else None
 
@@ -410,7 +696,8 @@ def load_inbound(path: str, sheet_name: str) -> list[dict]:
             "category": cat or "기타",
             "pack_size": pack if pack > 0 else 1,
             "quantity": qty,
-            "dest_warehouse": wh or None,
+            "dest_warehouse": wh,
+            "dest_warehouse_raw": wh_raw,
             "inbound_date": date_str,
             "unit_price": unit or 0,
             "total_price": total or 0,
@@ -446,12 +733,15 @@ def load_stock(path: str, sheet_name: str, debug: bool = False, check_product: s
         idx_qty = find_col_exact(df, hr, ["수량"])
     if debug:
         print(f"    [DEBUG] 수량 컬럼 idx_qty={idx_qty}, 헤더={df.iloc[hr, idx_qty] if idx_qty >= 0 else None!r}")
-    idx_wh = find_col_exact(df, hr, ["창고명"])
-    if idx_wh < 0:
-        idx_wh = find_col(df, hr, ["창고명", "창고", "보관장소", "보관처", "입고처", "warehouse", "dest_warehouse"])
+    idx_sales_ch = find_col_exact(df, hr, ["판매 채널"])
+    if idx_sales_ch < 0:
+        idx_sales_ch = find_col(df, hr, ["판매채널", "판매 채널명"])
+    idx_storage = find_col(df, hr, ["보관 센터", "재고 센터", "창고명", "창고", "보관장소", "보관처", "입고처", "warehouse", "dest_warehouse"])
     if debug:
-        wh_col = df.iloc[hr, idx_wh] if idx_wh >= 0 else None
-        print(f"    [DEBUG] 창고 컬럼: idx={idx_wh}, 헤더={wh_col!r}")
+        print(
+            f"    [DEBUG] 판매채널 idx={idx_sales_ch}, 보관센터 idx={idx_storage}, "
+            f"헤더 sales={df.iloc[hr, idx_sales_ch] if idx_sales_ch >= 0 else None!r}"
+        )
     idx_date = find_col_exact(df, hr, ["재고일자"])
     if idx_date < 0:
         idx_date = find_col(df, hr, ["재고일자", "재고일"])
@@ -461,16 +751,23 @@ def load_stock(path: str, sheet_name: str, debug: bool = False, check_product: s
     # 재고 금액(합계) 우선 - 재고원가는 단가일 수 있음
     idx_total = find_col_exact(df, hr, ["재고 금액"])
     if idx_total < 0:
+        idx_total = find_col_exact(df, hr, ["합계 금액"])
+    if idx_total < 0:
         idx_total = find_col_exact(df, hr, ["재고금액"])
     if idx_total < 0:
-        idx_total = find_col(df, hr, ["재고 금액", "재고금액", "재고원가"])
+        idx_total = find_col(df, hr, ["재고 금액", "합계 금액", "재고금액", "재고원가"])
 
     if idx_code < 0 or idx_qty < 0:
         return []
 
     rows = []
-    # sync_0311과 동일: header_row + 2 (부제목 행 스킵)
-    data_start = min(hr + 2, len(df))
+    # 데이터 시작: header 다음 행. (부제목 있는 엑셀은 hr+2, 0318 형식은 hr+1)
+    data_start = hr + 1
+    if data_start < len(df):
+        first_code = str(df.iloc[data_start, idx_code] or "").strip()
+        digits = sum(1 for c in first_code if c.isdigit())
+        if not first_code or len(first_code) < 5 or digits < len(first_code) * 0.5:
+            data_start = min(hr + 2, len(df))  # 부제목 행 스킵
     for i in range(data_start, len(df)):
         code = str(df.iloc[i, idx_code] or "").strip()
         qty = safe_int(df.iloc[i, idx_qty])
@@ -488,10 +785,18 @@ def load_stock(path: str, sheet_name: str, debug: bool = False, check_product: s
         name = name or code
         cat = str(df.iloc[i, idx_cat] or "").strip() if idx_cat >= 0 else ""
         pack = safe_int(df.iloc[i, idx_pack]) if idx_pack >= 0 else 1
-        wh_raw = str(df.iloc[i, idx_wh] or "").strip() if idx_wh >= 0 else ""
-        wh = wh_raw if wh_raw else "제이에스"
+        sales_raw = str(df.iloc[i, idx_sales_ch] or "").strip() if idx_sales_ch >= 0 else ""
+        storage_raw = str(df.iloc[i, idx_storage] or "").strip() if idx_storage >= 0 else ""
+        wh = normalize_sales_channel_kr(sales_raw)
+        physical = storage_raw or "미지정"
         cost = safe_float(df.iloc[i, idx_cost]) if idx_cost >= 0 else None
         total = safe_float(df.iloc[i, idx_total]) if idx_total >= 0 else None
+        # 재고일자: 엑셀 컬럼 있으면 파싱, 없으면 오늘
+        snap_date = None
+        if idx_date >= 0:
+            snap_date = parse_date(df.iloc[i, idx_date])
+        if not snap_date:
+            snap_date = datetime.now().strftime("%Y-%m-%d")
 
         if check_product and code == check_product:
             row_preview = [str(df.iloc[i, c] or "")[:12] for c in range(min(18, df.shape[1]))]
@@ -502,8 +807,11 @@ def load_stock(path: str, sheet_name: str, debug: bool = False, check_product: s
             "category": cat or "기타",
             "pack_size": pack if pack > 0 else 1,
             "quantity": qty,
-            "dest_warehouse": wh,
-            "snapshot_date": datetime.now().strftime("%Y-%m-%d"),
+            "dest_warehouse": physical,
+            "sales_channel": wh,
+            "dest_warehouse_raw": storage_raw,
+            "sales_channel_raw": sales_raw,
+            "snapshot_date": snap_date,
             "unit_cost": cost or 0,
             "total_price": total or 0,
         })
@@ -532,20 +840,22 @@ def load_outbound(path: str, sheet_name: str) -> list[dict]:
     idx_pack = find_col_exact(df, hr, ["입수량"])
     if idx_pack < 0:
         idx_pack = find_col(df, hr, ["입수량"])
-    idx_qty = find_col_exact(df, hr, ["수량"])
+    idx_qty = find_col_exact(df, hr, ["출고 수량"])
     if idx_qty < 0:
-        idx_qty = find_col(df, hr, ["출고수량"])
-    idx_wh = find_col_exact(df, hr, ["출고처"])
+        idx_qty = _find_col_exclude(df, hr, ["수량", "출고수량"], exclude=["입수량", "금액", "원가", "일자"])
+    idx_wh = find_col_exact(df, hr, ["출고처", "출고 센터"])
+    if idx_wh < 0:
+        idx_wh = find_col(df, hr, ["출고처", "출고 센터"])
     idx_date = find_col_exact(df, hr, ["출고일자"])
     if idx_date < 0:
-        idx_date = find_col(df, hr, ["출고일자", "출고일"])
+        idx_date = find_col(df, hr, ["출고일자", "출고 일자", "출고일"])
     idx_unit = find_col_exact(df, hr, ["원가"])
     idx_total = find_col_exact(df, hr, ["합계"])
     if idx_total < 0:
         idx_total = find_col(df, hr, ["합계", "합계원가"])
     idx_sc = find_col_exact(df, hr, ["매출구분"])
     if idx_sc < 0:
-        idx_sc = find_col(df, hr, ["매출구분", "판매처"])
+        idx_sc = find_col(df, hr, ["매출구분", "매출 구분", "판매처"])
 
     if idx_code < 0 or idx_qty < 0 or idx_date < 0:
         return []
@@ -570,10 +880,13 @@ def load_outbound(path: str, sheet_name: str) -> list[dict]:
         if not cat and idx_cat2 >= 0:
             cat = str(df.iloc[i, idx_cat2] or "").strip()
         pack = safe_int(df.iloc[i, idx_pack]) if idx_pack >= 0 else 1
-        wh = str(df.iloc[i, idx_wh] or "").strip() if idx_wh >= 0 else ""
+        wh_raw = str(df.iloc[i, idx_wh] or "").strip() if idx_wh >= 0 else ""
+        sc_raw = str(df.iloc[i, idx_sc] or "").strip() if idx_sc >= 0 else ""
+        combined_raw = sc_raw or wh_raw
+        wh = to_dest_warehouse(combined_raw)
+        sc = to_sales_channel(combined_raw)
         unit = safe_float(df.iloc[i, idx_unit]) if idx_unit >= 0 else None
         total = safe_float(df.iloc[i, idx_total]) if idx_total >= 0 else None
-        sc = to_sales_channel(df.iloc[i, idx_sc]) if idx_sc >= 0 else "general"
 
         rows.append({
             "product_code": code,
@@ -581,7 +894,8 @@ def load_outbound(path: str, sheet_name: str) -> list[dict]:
             "category": cat or "기타",
             "pack_size": pack if pack > 0 else 1,
             "quantity": qty,
-            "dest_warehouse": wh or None,
+            "dest_warehouse": wh,
+            "dest_warehouse_raw": combined_raw,
             "outbound_date": date_str,
             "unit_price": unit or 0,
             "total_price": total or 0,
@@ -629,11 +943,12 @@ def truncate_table(supabase, table: str, key_column: str = "product_code") -> in
 
 
 def insert_batch(supabase, table: str, rows: list[dict], dry_run: bool) -> int:
+    """[운영 반영 금지] dry_run=True 시 DB 미반영"""
     """테이블에 INSERT (재고 스냅샷용)"""
     if not rows:
         return 0
     if dry_run:
-        print(f"  [DRY-RUN] {table}: {len(rows)}건 insert")
+        print(f"  [운영 반영 금지] [DRY-RUN] {table}: {len(rows)}건 insert")
         return len(rows)
     total = 0
     for i in range(0, len(rows), BATCH_SIZE):
@@ -660,11 +975,24 @@ def delete_by_date_range(supabase, table: str, date_col: str, date_from: str, da
         return False
 
 
+def delete_by_dates(supabase, table: str, date_col: str, dates: list[str], dry_run: bool) -> bool:
+    """지정된 날짜 목록에 해당하는 행 삭제 (재고 스냅샷 당월 교체용)"""
+    if not dates or dry_run:
+        return True
+    try:
+        supabase.table(table).delete().in_(date_col, dates).execute()
+        return True
+    except Exception as e:
+        print(f"    [경고] {table} 날짜별 삭제 실패: {e}")
+        return False
+
+
 def upsert_batch(supabase, table: str, rows: list[dict], on_conflict: list[str], dry_run: bool) -> int:
+    """[운영 반영 금지] dry_run=True 시 DB 미반영"""
     if not rows:
         return 0
     if dry_run:
-        print(f"  [DRY-RUN] {table}: {len(rows)}건 upsert")
+        print(f"  [운영 반영 금지] [DRY-RUN] {table}: {len(rows)}건 upsert")
         return len(rows)
     total = 0
     for i in range(0, len(rows), BATCH_SIZE):
@@ -687,14 +1015,32 @@ def main() -> None:
         default=None,
         help="엑셀 파일 경로 (생략 시 수불현황 포함된 가장 최신 .xlsx 자동 검색)",
     )
-    ap.add_argument("--dry-run", action="store_true", help="실제 DB 반영 없이 시뮬레이션")
+    ap.add_argument("--dry-run", action="store_true", help="DB 반영 없이 파싱/매핑 결과만 출력 (기본값)")
+    ap.add_argument("--validate", action="store_true", help="웹 vs Python 파싱 비교, 재고 중복 검증 (DB 반영 없음)")
+    ap.add_argument("--apply", action="store_true", help="실제 DB 반영 (권장: 웹 업로드 사용. 로컬 DB 직접 적재는 비권장)")
     ap.add_argument("--debug", action="store_true", help="재고 시트 헤더·창고 컬럼 진단 출력")
     ap.add_argument("--check-product", metavar="CODE", help="특정 품목코드 수량 추출 결과 진단 (예: 8809912473788)")
-    ap.add_argument("--reset", action="store_true", help="기존 데이터 삭제 후 재업로드")
+    ap.add_argument("--reset", action="store_true", help="기존 데이터 삭제 후 재업로드 (--apply와 함께 사용)")
     args = ap.parse_args()
 
+    # 웹 업로드 단일 반영: 기본값 dry-run. DB 반영은 --apply 명시 시에만
+    if not args.dry_run and not args.validate and not args.apply:
+        args.dry_run = True
+        print("[운영 반영 금지] 웹 업로드 = 유일한 데이터 반영 경로. 로컬은 dry-run/validate 전용.")
+        print("  DB 반영: 대시보드에서 Excel 업로드 → 검증 → DB 반영 클릭")
+        print("  로컬 DB 반영(비권장): --apply 옵션 사용\n")
+
     if args.file:
-        path = os.path.abspath(args.file)
+        raw_path = os.path.abspath(args.file)
+        if os.path.isdir(raw_path):
+            path = find_latest_supul_in_dir(raw_path)
+            if not path:
+                raise SystemExit(
+                    f"오류: 폴더 내에 '수불현황' 또는 '생산수불현황'이 포함된 .xlsx 파일이 없습니다.\n  폴더: {raw_path}"
+                )
+            print(f"[폴더 검색] {raw_path}\n[사용 파일] {path}")
+        else:
+            path = raw_path
     else:
         path = find_latest_supul_file()
         if not path:
@@ -705,7 +1051,7 @@ def main() -> None:
             )
         print(f"[자동 검색] 사용 파일: {path}")
 
-    if not os.path.exists(path):
+    if not os.path.exists(path) or not os.path.isfile(path):
         raise SystemExit(f"오류: 파일 없음 - {path}")
 
     try:
@@ -716,11 +1062,6 @@ def main() -> None:
     except Exception:
         pass
 
-    url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
-    key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        raise SystemExit("오류: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY 필요 (.env.local)")
-
     xl = pd.ExcelFile(path)
     sheet_map = validate_sheets(xl.sheet_names)
     print(f"[1] 시트 검증 완료: {sheet_map}")
@@ -730,28 +1071,33 @@ def main() -> None:
         raw_rows = load_rawdata(path, sheet_map["rawdata"])
     print(f"[2] rawdata 파싱: {len(raw_rows)}건" + (" (시트 없음, 입고/재고/출고에서 품목 추출)" if not raw_rows and not sheet_map.get("rawdata") else ""))
 
-    from common.parser import parse_inbound_excel, parse_outbound_excel, parse_stock_excel
-
-    inbound_rows = parse_inbound_excel(path, sheet_map["입고"], filename=os.path.basename(path), debug=args.debug)
+    inbound_rows = load_inbound(path, sheet_map["입고"])
     print(f"    입고 파싱: {len(inbound_rows)}건")
 
-    stock_rows = parse_stock_excel(path, sheet_map["재고"], filename=os.path.basename(path), debug=args.debug)
+    outbound_rows = load_outbound(path, sheet_map["출고"])
+    print(f"    출고 파싱: {len(outbound_rows)}건")
+
+    stock_rows = load_stock(path, sheet_map["재고"], debug=args.debug, check_product=args.check_product)
     stock_sum = sum(
         float(r.get("total_price") or 0) if (r.get("total_price") or 0) > 0
         else float(r.get("quantity") or 0) * float(r.get("unit_cost") or 0)
         for r in stock_rows
     )
-    # 창고별 분포 진단
+    # 판매채널별 분포 (엑셀 「판매 채널」)
     wh_dist: dict[str, int] = {}
     for r in stock_rows:
-        wh = str(r.get("dest_warehouse") or "").strip() or "제이에스"
+        wh = normalize_sales_channel_kr(str(r.get("dest_warehouse") or r.get("sales_channel") or ""))
         wh_dist[wh] = wh_dist.get(wh, 0) + 1
     wh_info = ", ".join(f"{k}:{v}건" for k, v in sorted(wh_dist.items(), key=lambda x: -x[1]))
     print(f"    재고 파싱: {len(stock_rows)}건 (엑셀 총합 {stock_sum:,.0f}원)")
-    if len(wh_dist) <= 1 and wh_dist.get("제이에스", 0) == len(stock_rows):
-        print(f"    ⚠ 창고 구분: 모두 제이에스. 재고 시트에 '창고명'/'입고처' 컬럼이 있는지 확인하세요.")
-    else:
-        print(f"    창고별: {wh_info}")
+    print(f"    판매채널별: {wh_info}")
+
+    if inbound_rows:
+        log_channel_mapping_stats("입고", inbound_rows, "dest_warehouse_raw", "dest_warehouse")
+    if outbound_rows:
+        log_channel_mapping_stats("출고", outbound_rows, "dest_warehouse_raw", "dest_warehouse")
+    if stock_rows:
+        log_channel_mapping_stats("재고", stock_rows, "sales_channel_raw", "dest_warehouse")
 
     if args.check_product:
         code = str(args.check_product).strip()
@@ -759,17 +1105,40 @@ def main() -> None:
         matches_partial = [r for r in stock_rows if code in str(r.get("product_code", "")).strip() or str(r.get("product_code", "")).strip() in code]
         agg_check: dict[str, int] = {}
         for r in matches:
-            wh = str(r.get("dest_warehouse", "")).strip() or "제이에스"
+            wh = normalize_sales_channel_kr(str(r.get("dest_warehouse") or r.get("sales_channel") or ""))
             agg_check[wh] = agg_check.get(wh, 0) + r["quantity"]
         total_check = sum(agg_check.values())
-        print(f"    [진단] 품목 {code}: 엑셀 원본 {len(matches)}행 (유사 {len(matches_partial)}행) → 창고별 {agg_check} → 합계 {total_check}")
+        print(f"    [진단] 품목 {code}: 엑셀 원본 {len(matches)}행 (유사 {len(matches_partial)}행) → 채널별 {agg_check} → 합계 {total_check}")
 
-    outbound_rows = parse_outbound_excel(path, sheet_map["출고"], filename=os.path.basename(path), debug=args.debug)
-    print(f"    출고 파싱: {len(outbound_rows)}건")
-
-    if args.dry_run:
-        print("\n[DRY-RUN] DB 반영 생략")
+    if args.dry_run or args.validate:
+        print("\n" + "=" * 60)
+        print("[검증 모드] DB 반영 없이 파싱/매핑 결과 출력")
+        print("=" * 60)
+        print(f"\n[파싱 요약] 입고 {len(inbound_rows)}건 | 출고 {len(outbound_rows)}건 | 재고 {len(stock_rows)}건")
+        if stock_rows:
+            validate_stock_duplicates(stock_rows)
+        if args.validate:
+            validate_parse_consistency(path, inbound_rows, outbound_rows, stock_rows)
+        if args.dry_run:
+            print("\n[DRY-RUN] DB 반영 생략")
+        else:
+            print("\n[VALIDATE] 검증 완료")
         return
+
+    # --apply 시 운영 반영 차단: 웹 UI 승인 경로만 DB 반영 허용
+    if args.apply:
+        allow_script = os.environ.get("ALLOW_SCRIPT_APPLY", "").lower() in ("true", "1", "yes")
+        if not allow_script:
+            raise SystemExit(
+                "[운영 반영 차단] 로컬 스크립트로 DB 반영 불가. 웹 UI 승인 경로만 허용.\n"
+                "  DB 반영: 대시보드 → Excel 업로드 → 검증 → DB 반영 클릭\n"
+                "  (로컬 테스트용: ALLOW_SCRIPT_APPLY=true 설정 시 --apply 허용)"
+            )
+
+    url = os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
+    key = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        raise SystemExit("오류: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY 필요 (.env.local)")
 
     supabase = create_client(url, key)
 
@@ -841,16 +1210,32 @@ def main() -> None:
             except Exception as e:
                 print(f"    {TABLE_RAWDATA} FK 보완 실패: {e}")
 
-    # 입고: [품목코드+날짜] 기준 집계 후 upsert (product_code, inbound_date)
+    # 입고: [품목코드+날짜+채널]별 수량 합산 후, (product_code, inbound_date)당 수량 많은 채널로 1행
+    # DB unique: (product_code, inbound_date) → 1행만 저장 가능
     if inbound_rows:
-        agg: dict[tuple, dict] = {}
+        by_key: dict[tuple[str, str, str], dict] = {}
         for r in inbound_rows:
-            k = (r["product_code"], r["inbound_date"])
-            if k not in agg:
-                agg[k] = dict(r)
-                agg[k]["quantity"] = 0
-            agg[k]["quantity"] += r["quantity"]
-        inbound_merged = list(agg.values())
+            wh = str(r.get("dest_warehouse") or "").strip() or "일반"
+            k = (r["product_code"], r["inbound_date"], wh)
+            if k not in by_key:
+                by_key[k] = {**r, "quantity": 0}
+                by_key[k].pop("dest_warehouse_raw", None)
+            by_key[k]["quantity"] += r["quantity"]
+        # (product_code, inbound_date)당: 수량 합산, dest_warehouse=수량 많은 채널
+        by_pd: dict[tuple[str, str], dict] = {}
+        for r in by_key.values():
+            pk = (r["product_code"], r["inbound_date"])
+            if pk not in by_pd:
+                by_pd[pk] = dict(r)
+                by_pd[pk]["_best_qty"] = r["quantity"]
+            else:
+                by_pd[pk]["quantity"] += r["quantity"]
+                if r["quantity"] > by_pd[pk]["_best_qty"]:
+                    by_pd[pk]["dest_warehouse"] = r["dest_warehouse"]
+                    by_pd[pk]["_best_qty"] = r["quantity"]
+        for r in by_pd.values():
+            r.pop("_best_qty", None)
+        inbound_merged = list(by_pd.values())
         month_start, month_end = get_current_month_range()
         # 수불 교체: 당월만 삭제 후 upsert (당월 이전 데이터는 유지)
         if not args.dry_run and inbound_merged:
@@ -883,18 +1268,28 @@ def main() -> None:
         except TableNotFoundError as e:
             _exit_missing_tables(e.table)
 
-    # 재고: 기존 데이터 삭제 후 최신 재고로 전체 교체 (product_code + dest_warehouse별 창고 구분)
+    # 재고: product_code + dest_warehouse(판매채널) + storage_center + snapshot_date
+    # 당월만 replace/upsert, 전월 이전은 변경하지 않음
     if stock_rows:
         try:
-            # (product_code, dest_warehouse)별 집계 - 쿠팡/일반 창고별 개별 수량 유지
-            agg: dict[tuple[str, str], dict] = {}
+            month_start, month_end = get_current_month_range()
+            agg: dict[tuple[str, str, str, str], dict] = {}
             for r in stock_rows:
                 code = r["product_code"]
-                wh = str(r.get("dest_warehouse") or "").strip() or "제이에스"
-                key = (code, wh)
+                ch = normalize_sales_channel_kr(str(r.get("dest_warehouse") or r.get("sales_channel") or ""))
+                st = str(r.get("storage_center") or "").strip() or "미지정"
+                snap = str(r.get("snapshot_date") or "")[:10]
+                if not snap:
+                    snap = datetime.now().strftime("%Y-%m-%d")
+                key = (code, ch, st, snap)
                 if key not in agg:
                     agg[key] = dict(r)
-                    agg[key]["dest_warehouse"] = wh
+                    agg[key].pop("dest_warehouse_raw", None)
+                    agg[key].pop("sales_channel_raw", None)
+                    agg[key]["dest_warehouse"] = ch
+                    agg[key]["sales_channel"] = ch
+                    agg[key]["storage_center"] = st
+                    agg[key]["snapshot_date"] = snap
                     agg[key]["quantity"] = 0
                     agg[key]["total_price"] = 0.0
                 agg[key]["quantity"] += r["quantity"]
@@ -903,15 +1298,21 @@ def main() -> None:
                 r["total_price"] = round(r.get("total_price") or 0, 2)
             stock_merged = list(agg.values())
 
+            # 당월만 처리 (전월 이전 snapshot은 변경하지 않음)
+            stock_current_month = [r for r in stock_merged if month_start <= (r.get("snapshot_date") or "")[:10] <= month_end]
+            stock_skipped = len(stock_merged) - len(stock_current_month)
+            if stock_skipped > 0:
+                print(f"    {TABLE_STOCK}: 전월 이전 {stock_skipped}건 제외 (변경 없음)")
+
             if args.check_product:
                 code = str(args.check_product).strip()
-                merged_for_code = [r for r in stock_merged if str(r.get("product_code", "")).strip() == code]
+                merged_for_code = [r for r in stock_current_month if str(r.get("product_code", "")).strip() == code]
                 total_merged = sum(r["quantity"] for r in merged_for_code)
-                print(f"    [진단] 품목 {code}: 집계 후 DB 저장 예정 {[(r['dest_warehouse'], r['quantity']) for r in merged_for_code]} → 합계 {total_merged}")
+                print(f"    [진단] 품목 {code}: 집계 후 DB 저장 예정 {[(r['dest_warehouse'], r.get('storage_center'), r['snapshot_date'], r['quantity']) for r in merged_for_code]} → 합계 {total_merged}")
 
             # unit_cost/total_price가 0이면 inventory_products에서 보완 (엑셀에 원가 컬럼 없을 때)
-            if not args.dry_run and stock_merged:
-                codes = list({r["product_code"] for r in stock_merged})
+            if not args.dry_run and stock_current_month:
+                codes = list({r["product_code"] for r in stock_current_month})
                 cost_map: dict[str, float] = {}
                 for i in range(0, len(codes), BATCH_SIZE):
                     batch = codes[i : i + BATCH_SIZE]
@@ -920,32 +1321,21 @@ def main() -> None:
                         uc = (row.get("unit_cost") or 0)
                         if uc > 0:
                             cost_map[str(row.get("product_code", ""))] = float(uc)
-                for r in stock_merged:
+                for r in stock_current_month:
                     if (r.get("unit_cost") or 0) <= 0 and r["product_code"] in cost_map:
                         r["unit_cost"] = cost_map[r["product_code"]]
                     if (r.get("total_price") or 0) <= 0 and (r.get("unit_cost") or 0) > 0:
                         r["total_price"] = round(r["quantity"] * r["unit_cost"], 2)
 
-            merged_sum = sum(float(r.get("total_price") or 0) for r in stock_merged)
-            # product_code 단일 PK: 품목당 1행. 수량이 가장 많은 창고를 dest_warehouse로 저장
-            if not args.dry_run:
-                n_del = truncate_table(supabase, TABLE_STOCK, "product_code")
-                if n_del != 0:
-                    msg = f"기존 {n_del}행 삭제" if n_del > 0 else "기존 데이터 삭제"
-                    print(f"    {TABLE_STOCK}: {msg}")
-            by_code: dict[str, dict] = {}
-            for r in stock_merged:
-                code = r["product_code"]
-                if code not in by_code or r["quantity"] > by_code[code]["quantity"]:
-                    by_code[code] = dict(r)
-                else:
-                    by_code[code]["quantity"] += r["quantity"]
-                    by_code[code]["total_price"] = (by_code[code].get("total_price") or 0) + float(r.get("total_price") or 0)
-            for x in by_code.values():
-                x["total_price"] = round(x.get("total_price") or 0, 2)
-            stock_for_db = list(by_code.values())
-            n = insert_batch(supabase, TABLE_STOCK, stock_for_db, args.dry_run)
-            print(f"    {TABLE_STOCK}: {n}건 삽입 (품목 {len(stock_for_db)}건, 창고: {len(set(r['dest_warehouse'] for r in stock_for_db))}개, 합계 {merged_sum:,.0f}원)")
+            merged_sum = sum(float(r.get("total_price") or 0) for r in stock_current_month)
+            # 당월 snapshot_date만 삭제 후 insert (이미 삭제했으므로 insert로 충분, upsert 제약 불필요)
+            if not args.dry_run and stock_current_month:
+                dates_to_replace = list({(r.get("snapshot_date") or "")[:10] for r in stock_current_month})
+                dates_to_replace = [d for d in dates_to_replace if d and month_start <= d <= month_end]
+                if dates_to_replace and delete_by_dates(supabase, TABLE_STOCK, "snapshot_date", dates_to_replace, args.dry_run):
+                    print(f"    {TABLE_STOCK}: 당월 {dates_to_replace[0]}{'~' + dates_to_replace[-1] if len(dates_to_replace) > 1 else ''} 기존 삭제 후")
+            n = insert_batch(supabase, TABLE_STOCK, stock_current_month, args.dry_run)
+            print(f"    {TABLE_STOCK}: {n}건 insert (품목·센터·날짜별 {len(stock_current_month)}행, 합계 {merged_sum:,.0f}원)")
         except TableNotFoundError as e:
             _exit_missing_tables(e.table)
 
@@ -956,6 +1346,7 @@ def main() -> None:
             k = (r["product_code"], r["outbound_date"], r["sales_channel"])
             if k not in agg:
                 agg[k] = dict(r)
+                agg[k].pop("dest_warehouse_raw", None)
                 agg[k]["quantity"] = 0
             agg[k]["quantity"] += r["quantity"]
         outbound_merged = list(agg.values())

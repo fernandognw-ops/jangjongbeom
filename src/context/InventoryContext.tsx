@@ -89,7 +89,9 @@ interface InventoryContextValue {
   inventoryOutbound?: InventoryOutbound[];
   stockSnapshot?: StockSnapshotRow[];
   stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
-  /** 창고별 재고 수량 (테이칼튼, 제이에스 등) */
+  /** 판매채널별 재고 수량 — `channelForSnapshotRow`(sales_channel 우선) → `"쿠팡"` | `"일반"` */
+  channelTotals?: Record<string, number>;
+  /** @deprecated channelTotals와 동일 (호환용) */
   stockByWarehouse?: Record<string, number>;
   todayInOutCount?: { inbound: number; outbound: number };
   /** 수요 예측: 제품별 권장 발주량 (부족분만) */
@@ -121,6 +123,8 @@ interface InventoryContextValue {
       thisMonthInboundValue?: number;
       thisMonthOutboundCoupang?: number;
       thisMonthOutboundGeneral?: number;
+      thisMonthInboundByChannel?: Record<string, number>;
+      /** @deprecated API 구버전 — thisMonthInboundByChannel 사용 */
       thisMonthInboundByWarehouse?: Record<string, number>;
     };
   } | null;
@@ -248,7 +252,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [dailyVelocityByProductCoupang, setDailyVelocityByProductCoupang] = useState<Record<string, number>>({});
   const [dailyVelocityByProductGeneral, setDailyVelocityByProductGeneral] = useState<Record<string, number>>({});
   const [stockByChannelFromApi, setStockByChannelFromApi] = useState<{ coupang: Record<string, number>; general: Record<string, number> }>({ coupang: {}, general: {} });
-  const [stockByWarehouse, setStockByWarehouse] = useState<Record<string, number>>({});
+  const [channelTotals, setChannelTotals] = useState<Record<string, number>>({});
   const [categoryTrendData, setCategoryTrendData] = useState<InventoryContextValue["categoryTrendData"]>(null);
   const [categoryTrendLoaded, setCategoryTrendLoaded] = useState<boolean | null>(null);
   const [aiForecastByProduct, setAiForecastByProduct] = useState<Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>>({});
@@ -316,6 +320,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         totalSku?: number;
         dailyVelocityByProduct?: Record<string, number>;
         stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
+        channelTotals?: Record<string, number>;
         stockByWarehouse?: Record<string, number>;
         error?: string;
       };
@@ -337,6 +342,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         setSupabaseOutbound([]);
         setSupabaseStockSnapshot([]);
         setDailyVelocityByProduct({});
+        setChannelTotals({});
         setKpiData({ productCount: 0, totalValue: 0, totalQuantity: 0, totalSku: 0 });
         setCategoryTrendData({
           months: [],
@@ -353,7 +359,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
             thisMonthInboundValue: 0,
             thisMonthOutboundCoupang: 0,
             thisMonthOutboundGeneral: 0,
-            thisMonthInboundByWarehouse: {},
+            thisMonthInboundByChannel: {},
           },
         });
         setCategoryTrendLoaded(true);
@@ -423,7 +429,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setSupabaseStockSnapshot(snapshot);
       setDailyVelocityByProduct(data.dailyVelocityByProduct ?? {});
       setStockByChannelFromApi(data.stockByChannel ?? { coupang: {}, general: {} });
-      setStockByWarehouse(data.stockByWarehouse ?? {});
+      setChannelTotals(data.channelTotals ?? data.stockByWarehouse ?? {});
       setSupabaseInbound([]);
       setSupabaseOutbound([]);
       setSupabaseSummary(null);
@@ -441,12 +447,13 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       // 2단계: 전체 snapshot(dailyVelocity) + 판매·입고·예측 백그라운드
       fetch(`/api/inventory/snapshot?${cacheBust}`, opts)
         .then((r) => r.ok ? r.json() : null)
-        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; stockByWarehouse?: Record<string, number> } | null) => {
+        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; channelTotals?: Record<string, number>; stockByWarehouse?: Record<string, number> } | null) => {
           if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
           if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
           if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
           if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
-          if (fullData?.stockByWarehouse) setStockByWarehouse(fullData.stockByWarehouse);
+          const ch = fullData?.channelTotals ?? fullData?.stockByWarehouse;
+          if (ch && Object.keys(ch).length > 0) setChannelTotals(ch);
         })
         .catch(() => {});
 
@@ -889,7 +896,8 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       inventoryOutbound: useSupabaseInventory ? supabaseOutbound : undefined,
       stockSnapshot: useSupabaseInventory ? supabaseStockSnapshot : undefined,
       stockByProductByChannel: supabaseDerived?.stockByProductByChannel,
-      stockByWarehouse: useSupabaseInventory ? stockByWarehouse : undefined,
+      channelTotals: useSupabaseInventory ? channelTotals : undefined,
+      stockByWarehouse: useSupabaseInventory ? channelTotals : undefined,
       todayInOutCount: supabaseDerived?.todayInOutCount,
       recommendedOrderByProduct: supabaseDerived?.recommendedOrderByProduct,
       avg14DayOutboundByProduct: supabaseDerived?.avg14DayOutboundByProduct ?? {},
@@ -934,7 +942,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       supabaseOutbound,
       supabaseStockSnapshot,
       supabaseDerived?.stockByProductByChannel,
-      stockByWarehouse,
+      channelTotals,
       supabaseDerived?.todayInOutCount,
       supabaseDerived?.recommendedOrderByProduct,
       supabaseDerived?.avg14DayOutboundByProduct,

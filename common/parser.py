@@ -17,7 +17,12 @@ from .rules import (
     SYNONYMS,
     QTY_EXCLUDE,
 )
-from .classifier import normalize_value, classify_warehouse_group, to_sales_channel
+from .classifier import (
+    normalize_value,
+    classify_warehouse_group,
+    to_sales_channel,
+    normalize_sales_channel_kr,
+)
 
 # pandas는 호출 측에서 import (로컬만 사용, 웹은 TypeScript)
 try:
@@ -370,7 +375,8 @@ def parse_stock_excel(
     idx_code = _find_col(header_row, "product_code")
     idx_name = _find_col(header_row, "product_name")
     idx_qty = _find_qty_col(header_row, "stock")
-    idx_center = _find_col(header_row, "storage_center")
+    idx_storage = _find_col(header_row, "storage_center")
+    idx_sales_ch = _find_col(header_row, "stock_sales_channel")
     idx_date = _find_col(header_row, "stock_date")
     idx_cost = _find_col(header_row, "unit_cost")
     idx_total = _find_col(header_row, "total_price")
@@ -381,7 +387,8 @@ def parse_stock_excel(
         "product_code": idx_code,
         "product_name": idx_name,
         "quantity": idx_qty,
-        "storage_center": idx_center,
+        "storage_center": idx_storage,
+        "stock_sales_channel": idx_sales_ch,
         "stock_date": idx_date,
         "unit_cost": idx_cost,
         "total_price": idx_total,
@@ -404,13 +411,15 @@ def parse_stock_excel(
         qty = _safe_int(row.iloc[idx_qty] if idx_qty < len(row) else 0)
         name = str(row.iloc[idx_name] or "").strip() if idx_name >= 0 else ""
         name = name or code
-        center_raw = str(row.iloc[idx_center] or "").strip() if idx_center >= 0 else ""
-        center = center_raw if center_raw else "제이에스"
+        center_raw = str(row.iloc[idx_storage] or "").strip() if idx_storage >= 0 else ""
+        sales_raw = str(row.iloc[idx_sales_ch] or "").strip() if idx_sales_ch >= 0 else ""
+        sales_kr = normalize_sales_channel_kr(sales_raw)
+        center = center_raw if center_raw else "미지정"
         date_val = row.iloc[idx_date] if idx_date < len(row) else None
         date_str = _parse_date(date_val, year, today)
         cost = _safe_float(row.iloc[idx_cost]) if idx_cost >= 0 else 0.0
         total = _safe_float(row.iloc[idx_total]) if idx_total >= 0 else 0.0
-        wh_group = classify_warehouse_group(center)
+        wh_group = sales_kr
         cat = str(row.iloc[idx_cat] or "").strip() if idx_cat >= 0 else ""
         pack = _safe_int(row.iloc[idx_pack]) if idx_pack >= 0 else 1
 
@@ -424,7 +433,9 @@ def parse_stock_excel(
             "stock_date": date_str or today,
             "warehouse_group": wh_group,
             "event_type": "stock",
-            "dest_warehouse": center,
+            "dest_warehouse": sales_kr,
+            "sales_channel": sales_kr,
+            "sales_channel_raw": sales_raw,
             "unit_cost": cost,
             "total_price": total if total > 0 else 0,
             "snapshot_date": date_str or today,

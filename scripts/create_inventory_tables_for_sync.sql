@@ -33,13 +33,20 @@ CREATE TABLE IF NOT EXISTS inventory_inbound (
   total_price NUMERIC(14,2) DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_upsert ON inventory_inbound (product_code, inbound_date);
+-- 입고: 1 row = 1 입고 행 (병합 없음). PK는 id(uuid).
+-- CREATE UNIQUE INDEX 제거됨 - 동일 품목·날짜에 여러 행 허용
+CREATE INDEX IF NOT EXISTS idx_inv_inbound_date ON inventory_inbound(inbound_date DESC);
+CREATE INDEX IF NOT EXISTS idx_inv_inbound_product ON inventory_inbound(product_code);
+CREATE INDEX IF NOT EXISTS idx_inv_inbound_warehouse ON inventory_inbound(dest_warehouse);
 
--- 3. inventory_stock_snapshot (재고 시트) - 날짜별·센터별 확정 재고 스냅샷
--- product_code + dest_warehouse + snapshot_date 복합 PK (센터별 행 유지)
+-- 3. inventory_stock_snapshot (재고 시트) - 날짜·판매채널·보관센터별 행
+-- dest_warehouse = 엑셀 「판매 채널」→ 쿠팡|일반, storage_center = 「보관 센터」
+-- sales_channel = 레거시 호환(신규 적재 시 dest_warehouse와 동일)
 CREATE TABLE IF NOT EXISTS inventory_stock_snapshot (
   product_code TEXT NOT NULL,
   dest_warehouse TEXT NOT NULL DEFAULT '일반',
+  storage_center TEXT NOT NULL DEFAULT '미지정',
+  sales_channel TEXT NOT NULL DEFAULT '일반',
   snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
   product_name TEXT DEFAULT '',
   category TEXT DEFAULT '',
@@ -48,7 +55,7 @@ CREATE TABLE IF NOT EXISTS inventory_stock_snapshot (
   unit_cost NUMERIC(12,2) DEFAULT 0,
   total_price NUMERIC(14,2) DEFAULT 0,
   updated_at TIMESTAMPTZ DEFAULT NOW(),
-  PRIMARY KEY (product_code, dest_warehouse, snapshot_date)
+  PRIMARY KEY (product_code, dest_warehouse, storage_center, snapshot_date)
 );
 
 -- 4. inventory_current_products (대시보드 현재 품목 목록 - stock+inbound+outbound에서 수집)

@@ -10,11 +10,8 @@ import {
   SYNONYMS,
   QTY_EXCLUDE,
 } from "./rules";
-import {
-  normalizeValue,
-  toDestWarehouse,
-  toSalesChannel,
-} from "./classifier";
+import { normalizeValue, toDestWarehouse, toSalesChannel } from "./classifier";
+import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
 
 type Row = unknown[];
 
@@ -185,8 +182,10 @@ export interface StockRow {
   product_code: string;
   product_name: string;
   quantity: number;
+  /** 엑셀 「보관 센터」등 — 물리 센터명 */
   storage_center: string;
   stock_date: string;
+  /** 엑셀 「판매 채널」→ "쿠팡"|"일반" — DB `dest_warehouse`에 저장 (보관센터와 분리) */
   warehouse_group: string;
   event_type: "stock";
   dest_warehouse: string;
@@ -327,6 +326,7 @@ export function parseStockSheet(
   const idxName = findCol(headerRow, "product_name");
   const idxQty = findQtyCol(headerRow);
   const idxCenter = findCol(headerRow, "storage_center");
+  const idxSalesCh = findCol(headerRow, "sales_channel");
   const idxDate = findCol(headerRow, "stock_date");
   const idxCost = findCol(headerRow, "unit_cost");
   const idxTotal = findCol(headerRow, "total_price");
@@ -346,8 +346,9 @@ export function parseStockSheet(
 
     const qty = safeInt(row[idxQty]);
     const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
-    const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
-    const destWh = toDestWarehouse(centerRaw);
+    const storageRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
+    const salesChannelRaw = idxSalesCh >= 0 ? String(row[idxSalesCh] ?? "").trim() : "";
+    const channelKr = normalizeSalesChannelKr(salesChannelRaw || storageRaw);
     const dateVal = row[idxDate];
     const dateStr = parseDate(dateVal, year, today);
     const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
@@ -359,11 +360,11 @@ export function parseStockSheet(
       product_code: code,
       product_name: name || code,
       quantity: qty,
-      storage_center: centerRaw,
+      storage_center: storageRaw,
       stock_date: dateStr ?? today,
-      warehouse_group: destWh,
+      warehouse_group: channelKr,
       event_type: "stock",
-      dest_warehouse: destWh,
+      dest_warehouse: channelKr,
       unit_cost: cost,
       total_price: total > 0 ? total : 0,
       snapshot_date: dateStr ?? today,
@@ -442,6 +443,16 @@ export interface RawdataRow {
   pack_size: number;
 }
 
+/** 재고 시트 헤더(2행)만 보고 「판매 채널」열 인식 여부 — DB NULL 원인 진단용 */
+export function inspectStockSheetHeaders(data: unknown[][]): { salesChannelColumnFound: boolean; salesChannelColumnIndex: number } {
+  if (data.length <= HEADER_ROW) {
+    return { salesChannelColumnFound: false, salesChannelColumnIndex: -1 };
+  }
+  const headerRow = (data[HEADER_ROW] ?? []) as Row;
+  const idx = findCol(headerRow, "stock_sales_channel");
+  return { salesChannelColumnFound: idx >= 0, salesChannelColumnIndex: idx };
+}
+
 export interface ParseResult {
   ok: true;
   inbound: InboundRow[];
@@ -451,6 +462,8 @@ export interface ParseResult {
   sheetNames: string[];
   /** 출고 시트 원본 데이터 행 수 (필터 전, 0-indexed DATA_START_ROW 이후) */
   outboundRawRowCount?: number;
+  /** 재고 시트에서 SYNONYMS.stock_sales_channel 매칭 열을 찾았는지 (false면 전부 일반으로만 파싱됨) */
+  stockSheetDiagnostics?: { salesChannelColumnFound: boolean; salesChannelColumnIndex: number };
 }
 
 export interface ParseError {
@@ -513,6 +526,7 @@ export function parseExcelFromBuffer(
   const inbound = parseInboundSheet(inboundData, filename);
   const outbound = parseOutboundSheet(outboundData, filename);
   const stock = parseStockSheet(stockData, filename);
+  const stockSheetDiagnostics = inspectStockSheetHeaders(stockData);
   const outboundRawRowCount = Math.max(0, outboundData.length - DATA_START_ROW);
 
   let rawdata: RawdataRow[] = [];
@@ -533,5 +547,6 @@ export function parseExcelFromBuffer(
     rawdata,
     sheetNames,
     outboundRawRowCount,
+    stockSheetDiagnostics,
   };
 }

@@ -414,8 +414,9 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`\n[3] API로 Bulk 업로드 중... (${API_URL})`);
-  console.log(`  입고 ${inbound.length}건, 출고 ${outbound.length}건, 재고 ${stockSnapshot.length}건 (배치 ${BATCH_SIZE}건씩)`);
+  console.log(`\n[3] API로 Bulk 업로드 시도... (${API_URL})`);
+  console.log(`  ⚠ 운영 정책: 웹 UI에서만 DB 반영 가능. 스크립트 호출은 403 차단됨.`);
+  console.log(`  → 대시보드에서 Excel 업로드 → 검증 → DB 반영 클릭`);
   const res = await fetch(`${API_URL}/api/production-sheet-upload`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -429,7 +430,12 @@ async function main() {
 
   const json = await res.json();
   if (!res.ok) {
-    console.error("업로드 실패:", json.error || res.statusText);
+    if (res.status === 403) {
+      console.error("업로드 차단:", json.error || "웹 UI에서만 DB 반영 가능");
+      console.error("→ 대시보드에서 Excel 업로드 → 검증 → DB 반영 클릭");
+    } else {
+      console.error("업로드 실패:", json.error || res.statusText);
+    }
     process.exit(1);
   }
 

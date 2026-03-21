@@ -1,6 +1,6 @@
 /**
- * 센터명/창고명/매출구분 → 판매채널 분류 (common/classifier.py와 동일)
- * dest_warehouse에는 "일반" 또는 "쿠팡"만 저장
+ * 입고/출고 등 레거시: 센터명 → 채널 분류 (common/classifier.py와 동일)
+ * 재고 시트는 엑셀 「판매 채널」컬럼 + normalizeSalesChannelKr(@/lib/inventoryChannels) 사용
  */
 
 export function normalizeValue(val: string | number | null | undefined): string {

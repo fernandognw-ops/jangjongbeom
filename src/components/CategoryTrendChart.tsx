@@ -81,6 +81,8 @@ export interface CategoryTrendData {
     thisMonthInboundValue?: number;
     thisMonthOutboundCoupang?: number;
     thisMonthOutboundGeneral?: number;
+    thisMonthInboundByChannel?: Record<string, number>;
+    /** @deprecated thisMonthInboundByChannel */
     thisMonthInboundByWarehouse?: Record<string, number>;
   };
 }
@@ -112,12 +114,17 @@ export function CategoryTrendChart() {
 
   useEffect(() => {
     if (contextCategoryTrend) {
-      setData(contextCategoryTrend as CategoryTrendData);
-      setSelectedCategories(new Set(contextCategoryTrend?.categories ?? []));
+      const ct = contextCategoryTrend as CategoryTrendData;
+      setData(ct);
+      setSelectedCategories(new Set(ct?.categories ?? []));
       setError(null);
       setLoading(false);
+      const catCount = ct?.categories?.length ?? 0;
+      const chartLen = ct?.chartData?.length ?? 0;
+      console.log("[CategoryTrendChart] 데이터 수신 | 소스: inventory_* (DB) | categories:", catCount, "| chartData rows:", chartLen);
     } else if (contextCategoryTrend === null && categoryTrendLoaded === true) {
       setLoading(false);
+      console.log("[CategoryTrendChart] 데이터 없음 (DB 0건 또는 empty)");
     } else {
       setLoading(true);
     }
@@ -953,15 +960,15 @@ export function CategoryTrendChart() {
               )}
             </div>
             <div className="mt-1 flex flex-wrap gap-x-4 text-[11px] text-zinc-400">
-              {Object.entries(mom.thisMonthInboundByWarehouse ?? {}).length > 0
-                ? Object.entries(mom.thisMonthInboundByWarehouse ?? {})
+              {Object.entries(mom.thisMonthInboundByChannel ?? mom.thisMonthInboundByWarehouse ?? {}).length > 0
+                ? Object.entries(mom.thisMonthInboundByChannel ?? mom.thisMonthInboundByWarehouse ?? {})
                     .sort(([, a], [, b]) => b - a)
-                    .map(([wh, qty]) => (
-                      <span key={wh}>{wh}: {qty.toLocaleString()}EA</span>
+                    .map(([ch, qty]) => (
+                      <span key={ch}>{ch}: {qty.toLocaleString()}EA</span>
                     ))
-                : <span>창고별 데이터 없음</span>}
+                : <span>채널별 데이터 없음</span>}
             </div>
-            <div className="mt-0.5 text-[10px] text-zinc-500">입고처(창고) 기준 · 1일~오늘 누적 · 전월 대비</div>
+            <div className="mt-0.5 text-[10px] text-zinc-500">입고처 → 판매채널(쿠팡/일반) 기준 · 1일~오늘 누적 · 전월 대비</div>
           </div>
         </div>
         </div>

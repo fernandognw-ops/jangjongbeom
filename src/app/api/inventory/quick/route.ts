@@ -92,16 +92,34 @@ export async function GET(request: Request) {
       if (fallbackMaxDate && fallbackRes.data && fallbackRes.data.length > 0) {
         const { data: fallbackData, error: fallbackErr } = await supabase
           .from(tableName)
-          .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,category,snapshot_date")
+          .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,storage_center,sales_channel,category,snapshot_date")
           .eq("snapshot_date", fallbackMaxDate);
         if (!fallbackErr && fallbackData?.length) {
           const rows = fallbackData as SnapshotRow[];
-          const agg = aggregateSnapshotRowsForDashboard(rows, new Map());
+          const agg = aggregateSnapshotRowsForDashboard(rows, new Map(), undefined, { debug });
+          const rowCount = rows.length;
+          const snapDate = fallbackMaxDate ?? "";
+          const srcCounts = agg.debug_aggregate?.debug_used_channel_source_counts;
+          const { debug_aggregate: fbDbg, ...aggRest } = agg;
           return NextResponse.json(
             {
-              ...agg,
+              ...aggRest,
               _supabase_project_ref: projectRef,
               _fallback_used: true,
+              ...(debug && {
+                snapshot_date: snapDate,
+                row_count: rowCount,
+                ...(srcCounts && {
+                  debug_used_channel_source_counts: {
+                    sales_channel_used: srcCounts.sales_channel_used,
+                    dest_warehouse_fallback_used: srcCounts.dest_warehouse_fallback_used,
+                    ...(typeof srcCounts.empty_source === "number" ? { empty_source: srcCounts.empty_source } : {}),
+                  },
+                }),
+                ...(fbDbg && {
+                  _debug: { ...fbDbg, branch: "fallback_max_date", ui_data_path_note: "동일(quick). 이후 snapshot이 channelTotals 덮어쓸 수 있음." },
+                }),
+              }),
             },
             { headers: { "Cache-Control": "no-store, max-age=0" } }
           );
@@ -141,7 +159,7 @@ export async function GET(request: Request) {
 
     const { data, error } = await supabase
       .from(tableName)
-      .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,category,snapshot_date")
+      .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,storage_center,sales_channel,category,snapshot_date")
       .eq("snapshot_date", maxDate);
 
     if (debug) {
@@ -195,8 +213,10 @@ export async function GET(request: Request) {
       }
     }
 
-    const agg = aggregateSnapshotRowsForDashboard(rows, productFallback);
-    const { items, totalValue, totalQuantity, totalSku, productCount, stockByChannel, stockByWarehouse } = agg;
+    const agg = aggregateSnapshotRowsForDashboard(rows, productFallback, undefined, { debug });
+    const { items, totalValue, totalQuantity, totalSku, productCount, stockByChannel, channelTotals, debug_aggregate } = agg;
+
+    const srcCounts = debug_aggregate?.debug_used_channel_source_counts;
 
     if (debug && _debug) {
       _debug.branch = "success";
@@ -206,6 +226,11 @@ export async function GET(request: Request) {
       _debug.rowCount = rows.length;
       _debug.sumQuantityRows = rows.reduce((s, r) => s + toNum(r.quantity), 0);
       _debug.sumQuantityEqualsTotalQty = _debug.sumQuantityRows === totalQuantity;
+      if (debug_aggregate) {
+        Object.assign(_debug, debug_aggregate);
+      }
+      _debug.ui_data_path_note =
+        "Dashboard 상단·하단 채널 수치는 InventoryContext.refresh()가 먼저 이 quick 응답의 channelTotals를 쓰고, 이어서 /api/inventory/snapshot(비-lite)가 성공하면 channelTotals를 덮어쓸 수 있음. 수치가 다르면 snapshot 응답과 비교할 것.";
     }
 
     return NextResponse.json(
@@ -216,8 +241,21 @@ export async function GET(request: Request) {
         totalSku,
         productCount,
         stockByChannel,
-        stockByWarehouse,
+        channelTotals,
+        /** @deprecated 호환용 — channelTotals와 동일(dest_warehouse=판매채널) */
+        stockByWarehouse: channelTotals,
         _supabase_project_ref: projectRef,
+        ...(debug && {
+          snapshot_date: maxDate,
+          row_count: rows.length,
+          ...(srcCounts && {
+            debug_used_channel_source_counts: {
+              sales_channel_used: srcCounts.sales_channel_used,
+              dest_warehouse_fallback_used: srcCounts.dest_warehouse_fallback_used,
+              ...(typeof srcCounts.empty_source === "number" ? { empty_source: srcCounts.empty_source } : {}),
+            },
+          }),
+        }),
         ...(debug && { _debug }),
       },
       { headers: { "Cache-Control": "no-store, max-age=0" } }

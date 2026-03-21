@@ -27,7 +27,10 @@ export interface StockSnapshotRow {
   product_code: string;
   quantity: number;
   unit_cost: number;
+  /** 판매채널 — DB `dest_warehouse` ("쿠팡"|"일반") */
   dest_warehouse?: string;
+  /** 보관센터 — DB `storage_center` */
+  storage_center?: string;
   /** 엑셀 재고일자 → snapshot_date (없으면 오늘) */
   snapshot_date?: string;
 }
@@ -40,6 +43,10 @@ export interface ProductionSheetParseResult {
   rawdata: RawdataRow[];
   currentProductCodes: string[];
   yearInferred?: number;
+  /** 출고 시트 원본 데이터 행 수 (필터 전) */
+  outboundRawRowCount?: number;
+  /** 재고 시트 헤더에 「판매 채널」열이 잡혔는지 — false면 파서가 채널 열을 못 찾아 전부 일반 처리 */
+  stockSalesChannelColumnFound?: boolean;
 }
 
 export interface ProductionSheetParseError {
@@ -90,7 +97,8 @@ export async function parseProductionSheetFromBuffer(
     product_code: r.product_code,
     quantity: r.quantity,
     unit_cost: r.unit_cost ?? 0,
-    ...(r.dest_warehouse && { dest_warehouse: r.dest_warehouse }),
+    dest_warehouse: r.dest_warehouse,
+    storage_center: r.storage_center,
     snapshot_date: r.snapshot_date ?? r.stock_date ?? new Date().toISOString().slice(0, 10),
   }));
 
@@ -101,6 +109,8 @@ export async function parseProductionSheetFromBuffer(
     stockSnapshot,
     rawdata: result.rawdata ?? [],
     currentProductCodes: Array.from(currentProductCodes),
+    outboundRawRowCount: result.outboundRawRowCount,
+    stockSalesChannelColumnFound: result.stockSheetDiagnostics?.salesChannelColumnFound,
   };
 }
 

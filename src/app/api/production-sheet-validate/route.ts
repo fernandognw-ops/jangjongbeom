@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server";
 import { parseProductionSheetFromBuffer } from "@/lib/productionSheetParser";
 import { toDestWarehouse } from "@/lib/excelParser/classifier";
+import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
 import { createPreviewToken } from "@/lib/previewTokenStore";
 
 const VALID_DEST_WAREHOUSES = ["일반", "쿠팡"];
@@ -42,7 +43,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { inbound, outbound, stockSnapshot, rawdata, currentProductCodes } = result;
+    const { inbound, outbound, stockSnapshot, rawdata, currentProductCodes, stockSalesChannelColumnFound } = result;
 
     if (inbound.length === 0 && outbound.length === 0 && stockSnapshot.length === 0) {
       return NextResponse.json(
@@ -60,10 +61,7 @@ export async function POST(request: Request) {
       const wh = r.dest_warehouse ?? "일반";
       if (!validateDestWarehouse(wh)) invalidWh.push(`출고: ${wh}`);
     }
-    for (const r of stockSnapshot) {
-      const wh = r.dest_warehouse ?? "일반";
-      if (!validateDestWarehouse(wh)) invalidWh.push(`재고: ${wh}`);
-    }
+    // 재고: dest_warehouse = 판매채널(쿠팡|일반), storage_center = 보관센터 — 엑셀 컬럼 그대로
     const uniqueInvalid = [...new Set(invalidWh)];
     const destWarehouseValid = uniqueInvalid.length === 0;
 
@@ -79,8 +77,8 @@ export async function POST(request: Request) {
       whCountOutbound[wh] = (whCountOutbound[wh] ?? 0) + 1;
     }
     for (const r of stockSnapshot) {
-      const wh = ensureDestWarehouse(r.dest_warehouse);
-      whCountStock[wh] = (whCountStock[wh] ?? 0) + 1;
+      const ch = normalizeSalesChannelKr(r.dest_warehouse ?? "");
+      whCountStock[ch] = (whCountStock[ch] ?? 0) + 1;
     }
     const whCountTotal = {
       일반: (whCountInbound["일반"] ?? 0) + (whCountOutbound["일반"] ?? 0) + (whCountStock["일반"] ?? 0),
@@ -116,10 +114,18 @@ export async function POST(request: Request) {
       validation,
     });
 
+    const warnings: string[] = [];
+    if (stockSnapshot.length > 0 && stockSalesChannelColumnFound === false) {
+      warnings.push(
+        "재고 시트에서 「판매 채널」 헤더를 찾지 못했습니다. 파싱된 채널은 모두 「일반」으로만 채워집니다. 헤더를 '판매 채널' 또는 '판매채널' 등으로 맞추거나 docs/재고_판매채널_컬럼.md를 확인하세요."
+      );
+    }
+
     return NextResponse.json({
       ok: true,
       validation,
       previewToken,
+      warnings: warnings.length ? warnings : undefined,
       hint: "검증 완료. DB 반영을 위해 previewToken을 사용해 /api/production-sheet-commit 호출",
     });
   } catch (e) {

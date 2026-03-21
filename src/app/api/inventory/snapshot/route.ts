@@ -4,12 +4,16 @@
  *
  * - product_code, quantity, pack_size, total_price
  * - dailyVelocityByProduct: 최근 30일 출고 합산 / 30 (일일 평균 판매량)
+ *
+ * 재고 채널 집계: **sales_channel(엑셀 판매채널) 우선**, 비어 있을 때만 dest_warehouse.
+ * dest_warehouse 단독으로 채널을 정하지 않음 — `resolveSnapshotChannelWithSource` 단일 구현.
  */
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
-import { normalizeDestWarehouse, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
+import { WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
+import { resolveSnapshotChannelWithSource, type SnapshotRow } from "@/lib/inventorySnapshotAggregate";
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -84,14 +88,14 @@ export async function GET(request: Request) {
     const maxDate = (maxDateRes?.data?.[0] as { snapshot_date?: string })?.snapshot_date?.slice(0, 10) ?? "";
     if (!maxDate) {
       return NextResponse.json(
-        { items: [], totalValue: 0, totalQuantity: 0, totalSku: 0, dailyVelocityByProduct: {}, stockByChannel: { coupang: {}, general: {} }, stockByWarehouse: {}, error: "no_snapshot" },
+        { items: [], totalValue: 0, totalQuantity: 0, totalSku: 0, dailyVelocityByProduct: {}, stockByChannel: { coupang: {}, general: {} }, channelTotals: {}, stockByWarehouse: {}, error: "no_snapshot" },
         { status: 200 }
       );
     }
 
     const { data: snapshotData, error } = await supabase
       .from("inventory_stock_snapshot")
-      .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,category,snapshot_date")
+      .select("product_code,product_name,quantity,pack_size,total_price,unit_cost,dest_warehouse,storage_center,sales_channel,category,snapshot_date")
       .eq("snapshot_date", maxDate)
       .order("product_code");
 
@@ -102,7 +106,7 @@ export async function GET(request: Request) {
       );
     }
 
-    const rows = (snapshotData ?? []) as Array<{ product_code?: string; product_name?: string; quantity?: unknown; pack_size?: unknown; total_price?: unknown; unit_cost?: unknown; dest_warehouse?: string; category?: string; snapshot_date?: string }>;
+    const rows = (snapshotData ?? []) as SnapshotRow[];
     const productsData = (productsRes?.data ?? []) as Array<{ product_code?: string; group_name?: string; category?: string }>;
     const codeToCategory = new Map<string, string>();
     for (const p of productsData) {
@@ -117,21 +121,21 @@ export async function GET(request: Request) {
       codeToCategory.set(rawCode, cat);
     }
     const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
-    const stockByWarehouse: Record<string, number> = {};
+    const channelTotals: Record<string, number> = {};
     const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string; category: string }> = {};
 
-    // 모든 스냅샷 행 합산 (quick API와 동일 — 중복 행도 DB SUM과 일치)
+    // 모든 스냅샷 행 합산 (quick API와 동일 — sales_channel 우선 채널)
     for (const r of rows) {
       const code = String(r.product_code ?? "").trim();
       if (!code) continue;
-      const wh = normalizeDestWarehouse(r.dest_warehouse);
+      const wh = resolveSnapshotChannelWithSource(r).channel;
       const qty = toNum(r.quantity);
       const pack = Math.max(1, toNum(r.pack_size));
       let price = toNum(r.total_price);
       if (price <= 0 && qty > 0) price = qty * toNum(r.unit_cost);
       const cat = String(r.category ?? "").trim();
 
-      stockByWarehouse[wh] = (stockByWarehouse[wh] ?? 0) + qty;
+      channelTotals[wh] = (channelTotals[wh] ?? 0) + qty;
 
       if (wh === WAREHOUSE_COUPANG) {
         stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
@@ -219,7 +223,9 @@ export async function GET(request: Request) {
       dailyVelocityByProductGeneral,
       outboundByChannel,
       stockByChannel,
-      stockByWarehouse,
+      channelTotals,
+      /** @deprecated 호환용 — channelTotals와 동일 */
+      stockByWarehouse: channelTotals,
     },
     { headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" } }
     );

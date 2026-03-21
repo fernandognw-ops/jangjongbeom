@@ -67,7 +67,7 @@ export async function GET() {
 
     const { data, error } = await supabase
       .from(TABLE_SNAPSHOT)
-      .select("product_code,quantity,pack_size,total_price,unit_cost,dest_warehouse,snapshot_date")
+      .select("product_code,quantity,pack_size,total_price,unit_cost,dest_warehouse,storage_center,sales_channel,snapshot_date")
       .eq("snapshot_date", maxDate);
 
     if (error) {

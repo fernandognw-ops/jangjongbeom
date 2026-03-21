@@ -18,9 +18,12 @@ interface PreviewEntry {
       rawdataCount: number;
       inboundCount: number;
       outboundCount: number;
+      outboundParsedCount?: number;
+      outboundTrace?: { rawRows?: number; parsedRows: number; filteredOut?: number };
       stockCount: number;
       totalStockValue: number;
       destWarehouseDistribution: Record<string, number>;
+      destWarehouseBySource?: { inbound: Record<string, number>; outbound: Record<string, number>; stock: Record<string, number> };
       snapshotDates: string[];
       destWarehouseValid: boolean;
     };
