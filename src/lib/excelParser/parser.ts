@@ -336,7 +336,6 @@ export function parseInboundSheet(
       pack_size: pack > 0 ? pack : 1,
       unit_price: unit,
       total_price: total,
-      sales_channel: channelKr,
     });
   }
   return rows;
@@ -454,15 +453,7 @@ export function parseStockSheet(
   const idxCost = findCol(headerRow, "unit_cost");
   const idxTotal = findCol(headerRow, "total_price");
   const idxCat = findCol(headerRow, "category");
-  const idxPack = findCol(headerRow, "pack_size");
-  findCol(headerRow, "stock_sales_channel") >= 0
-    ? findCol(headerRow, "stock_sales_channel")
-    : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("판매 채널"));
-
-    const idxDate =
-  findCol(headerRow, "stock_date") >= 0
-    ? findCol(headerRow, "stock_date")
-    : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("재고일자"));
+  const idxPack = findCol(headerRow, "pack_size"); 
   const year = yearFromFilename(filename);
   const today = new Date().toISOString().slice(0, 10);
   const filenameDay = defaultDateFromFilename(filename);
