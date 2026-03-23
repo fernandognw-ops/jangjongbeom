@@ -270,14 +270,11 @@ export interface StockRow {
   product_code: string;
   product_name: string;
   quantity: number;
-  /** 엑셀 「보관 센터」등 — 물리 센터명 */
   storage_center: string;
   stock_date: string;
-  /** 엑셀 「판매 채널」→ "쿠팡"|"일반" — DB `dest_warehouse`에 저장 (보관센터와 분리) */
   warehouse_group: string;
   event_type: "stock";
   dest_warehouse: string;
-  /** DB `inventory_stock_snapshot.sales_channel` — `dest_warehouse`와 동일(판매 채널 정규화값) */
   sales_channel?: string;
   unit_cost: number;
   total_price: number;
