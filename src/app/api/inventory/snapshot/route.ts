@@ -12,8 +12,11 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode, normalizeCategory } from "@/lib/inventoryApi";
-import { WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
-import { resolveSnapshotChannelWithSource, type SnapshotRow } from "@/lib/inventorySnapshotAggregate";
+import {
+  buildChannelTotalsAndStockByChannel,
+  resolveSnapshotChannelWithSource,
+  type SnapshotRow,
+} from "@/lib/inventorySnapshotAggregate";
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
@@ -67,6 +70,7 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url);
   const lite = searchParams.get("lite") === "1";
+  const channelDebug = searchParams.get("debug") === "1";
 
   const supabase = createClient(url, key);
 
@@ -120,28 +124,30 @@ export async function GET(request: Request) {
       codeToCategory.set(code, cat);
       codeToCategory.set(rawCode, cat);
     }
-    const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
-    const channelTotals: Record<string, number> = {};
-    const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string; category: string }> = {};
+    const { channelTotals, stockByChannel } = buildChannelTotalsAndStockByChannel(rows);
 
-    // 모든 스냅샷 행 합산 (quick API와 동일 — sales_channel 우선 채널)
+    if (channelDebug || process.env.NODE_ENV === "development") {
+      const n = Math.min(20, rows.length);
+      for (let i = 0; i < n; i++) {
+        const r = rows[i]!;
+        const chosen_channel = resolveSnapshotChannelWithSource(r).channel;
+        console.log("[snapshot/inventory_stock_snapshot row]", i, {
+          dest_warehouse: r.dest_warehouse ?? null,
+          sales_channel: r.sales_channel ?? null,
+          chosen_channel,
+        });
+      }
+    }
+
+    const mergedByProduct: Record<string, { qty: number; price: number; pack: number; name: string; category: string }> = {};
     for (const r of rows) {
       const code = String(r.product_code ?? "").trim();
       if (!code) continue;
-      const wh = resolveSnapshotChannelWithSource(r).channel;
       const qty = toNum(r.quantity);
       const pack = Math.max(1, toNum(r.pack_size));
       let price = toNum(r.total_price);
       if (price <= 0 && qty > 0) price = qty * toNum(r.unit_cost);
       const cat = String(r.category ?? "").trim();
-
-      channelTotals[wh] = (channelTotals[wh] ?? 0) + qty;
-
-      if (wh === WAREHOUSE_COUPANG) {
-        stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
-      } else {
-        stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;
-      }
       const validCat = cat && !/^\d{10,}$/.test(cat) && cat !== "기타" && cat !== "전체";
       if (!mergedByProduct[code]) {
         mergedByProduct[code] = { qty: 0, price: 0, pack, name: String(r.product_name ?? "").trim() || code, category: validCat ? cat : "" };

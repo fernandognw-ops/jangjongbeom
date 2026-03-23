@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { StockMap, Transaction } from "@/lib/types";
@@ -257,6 +258,8 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [categoryTrendLoaded, setCategoryTrendLoaded] = useState<boolean | null>(null);
   const [aiForecastByProduct, setAiForecastByProduct] = useState<Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>>({});
   const [categoryForecastThisMonth, setCategoryForecastThisMonth] = useState<{ thisMonthKey: string; byCategory: Record<string, number> } | undefined>(undefined);
+  /** refresh 1단계 quick 응답의 channelTotals — 2단계 snapshot 덮어쓰기 시 비교용 */
+  const quickChannelTotalsRef = useRef<Record<string, number> | null>(null);
   const [supabaseSummary, setSupabaseSummary] = useState<{
     stockByProduct: Record<string, number>;
     stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
@@ -321,7 +324,6 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         dailyVelocityByProduct?: Record<string, number>;
         stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
         channelTotals?: Record<string, number>;
-        stockByWarehouse?: Record<string, number>;
         error?: string;
       };
 
@@ -429,7 +431,9 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setSupabaseStockSnapshot(snapshot);
       setDailyVelocityByProduct(data.dailyVelocityByProduct ?? {});
       setStockByChannelFromApi(data.stockByChannel ?? { coupang: {}, general: {} });
-      setChannelTotals(data.channelTotals ?? data.stockByWarehouse ?? {});
+      const quickCh = data.channelTotals ?? {};
+      quickChannelTotalsRef.current = quickCh;
+      setChannelTotals(quickCh);
       setSupabaseInbound([]);
       setSupabaseOutbound([]);
       setSupabaseSummary(null);
@@ -447,13 +451,28 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       // 2단계: 전체 snapshot(dailyVelocity) + 판매·입고·예측 백그라운드
       fetch(`/api/inventory/snapshot?${cacheBust}`, opts)
         .then((r) => r.ok ? r.json() : null)
-        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; channelTotals?: Record<string, number>; stockByWarehouse?: Record<string, number> } | null) => {
+        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; channelTotals?: Record<string, number> } | null) => {
           if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
           if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
           if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
           if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
-          const ch = fullData?.channelTotals ?? fullData?.stockByWarehouse;
-          if (ch && Object.keys(ch).length > 0) setChannelTotals(ch);
+          const snapCh = fullData?.channelTotals;
+          if (snapCh && Object.keys(snapCh).length > 0) {
+            const quickCh = quickChannelTotalsRef.current;
+            console.log("[InventoryContext channelTotals] quick vs snapshot", {
+              quick: quickCh,
+              snapshot: snapCh,
+              keysEqual:
+                quickCh &&
+                JSON.stringify([...Object.keys(quickCh)].sort()) === JSON.stringify([...Object.keys(snapCh)].sort()),
+              valuesEqual:
+                quickCh &&
+                [...Object.keys({ ...quickCh, ...snapCh })].every(
+                  (k) => (quickCh[k] ?? 0) === (snapCh[k] ?? 0)
+                ),
+            });
+            setChannelTotals(snapCh);
+          }
         })
         .catch(() => {});
 

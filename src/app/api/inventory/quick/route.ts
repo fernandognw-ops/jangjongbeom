@@ -242,7 +242,7 @@ export async function GET(request: Request) {
         productCount,
         stockByChannel,
         channelTotals,
-        /** @deprecated 호환용 — channelTotals와 동일(dest_warehouse=판매채널) */
+        /** @deprecated 호환 — `channelTotals`와 동일(구 필드명) */
         stockByWarehouse: channelTotals,
         _supabase_project_ref: projectRef,
         ...(debug && {

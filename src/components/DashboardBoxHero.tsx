@@ -13,7 +13,7 @@ import {
   STANDARD_CATEGORIES,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct } from "@/lib/inventoryApi";
-import { isCoupangChannel } from "@/lib/inventoryChannels";
+import { WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 
 type Channel = "all" | "coupang" | "general";
 
@@ -107,7 +107,6 @@ export function DashboardBoxHero() {
     dailyVelocityByProductGeneral: contextDailyVelocityGeneral = {},
     stockByProductByChannel,
     channelTotals: channelTotalsFromCtx,
-    stockByWarehouse: stockByWarehouseLegacy,
     stockSnapshot = [],
     safetyStockByProduct = {},
     todayInOutCount = { inbound: 0, outbound: 0 },
@@ -129,9 +128,10 @@ export function DashboardBoxHero() {
   const [visibleCount, setVisibleCount] = useState(50);
 
   const momIndicators = categoryTrendData?.momIndicators ?? null;
+  /** API `channelTotals`만 사용 (quick·snapshot 동일 집계) */
   const channelTotals = useMemo(
-    () => channelTotalsFromCtx ?? stockByWarehouseLegacy ?? {},
-    [channelTotalsFromCtx, stockByWarehouseLegacy]
+    () => channelTotalsFromCtx ?? {},
+    [channelTotalsFromCtx]
   );
   const aiForecastByProduct = contextAiForecast ?? {};
 
@@ -318,12 +318,12 @@ export function DashboardBoxHero() {
     return Object.values(stockByProductRaw).filter((q) => q < 0).length;
   }, [stockByProductRaw]);
 
-  /** channelTotals = quick API — `channelForSnapshotRow`(sales_channel 우선, 판매채널만, 보관센터 추론 없음) */
+  /** 키는 정규화된 "쿠팡" | "일반" (resolveSnapshotChannelWithSource) */
   const { coupangStockTotal, generalStockTotal } = useMemo(() => {
     let coupang = 0;
     let general = 0;
     for (const [wh, qty] of Object.entries(channelTotals)) {
-      if (isCoupangChannel(wh)) coupang += qty;
+      if (wh === WAREHOUSE_COUPANG) coupang += qty;
       else general += qty;
     }
     return { coupangStockTotal: coupang, generalStockTotal: general };
@@ -423,8 +423,8 @@ export function DashboardBoxHero() {
                 .map(([ch, qty]) => (
                   <div key={ch} className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
                     <span className="text-sm text-slate-600">{ch}</span>
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${isCoupangChannel(ch) ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
-                      {isCoupangChannel(ch) ? "(쿠팡)" : "(일반)"}
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${ch === WAREHOUSE_COUPANG ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
+                      {ch === WAREHOUSE_COUPANG ? "(쿠팡)" : "(일반)"}
                     </span>
                     <span className="font-bold tabular-nums text-slate-800">{qty.toLocaleString()}EA</span>
                   </div>

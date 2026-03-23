@@ -189,6 +189,8 @@ export interface StockRow {
   warehouse_group: string;
   event_type: "stock";
   dest_warehouse: string;
+  /** DB `inventory_stock_snapshot.sales_channel` — `dest_warehouse`와 동일(판매 채널 정규화값) */
+  sales_channel?: string;
   unit_cost: number;
   total_price: number;
   snapshot_date: string;
@@ -326,7 +328,7 @@ export function parseStockSheet(
   const idxName = findCol(headerRow, "product_name");
   const idxQty = findQtyCol(headerRow);
   const idxCenter = findCol(headerRow, "storage_center");
-  const idxSalesCh = findCol(headerRow, "sales_channel");
+  const idxSalesCh = findCol(headerRow, "stock_sales_channel");
   const idxDate = findCol(headerRow, "stock_date");
   const idxCost = findCol(headerRow, "unit_cost");
   const idxTotal = findCol(headerRow, "total_price");
@@ -348,7 +350,7 @@ export function parseStockSheet(
     const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
     const storageRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
     const salesChannelRaw = idxSalesCh >= 0 ? String(row[idxSalesCh] ?? "").trim() : "";
-    const channelKr = normalizeSalesChannelKr(salesChannelRaw || storageRaw);
+    const channelKr = normalizeSalesChannelKr(salesChannelRaw || "");
     const dateVal = row[idxDate];
     const dateStr = parseDate(dateVal, year, today);
     const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
@@ -365,6 +367,7 @@ export function parseStockSheet(
       warehouse_group: channelKr,
       event_type: "stock",
       dest_warehouse: channelKr,
+      sales_channel: channelKr,
       unit_cost: cost,
       total_price: total > 0 ? total : 0,
       snapshot_date: dateStr ?? today,

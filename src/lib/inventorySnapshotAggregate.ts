@@ -1,8 +1,7 @@
 /**
- * inventory_stock_snapshot 행 집계 — quick / KPI 공통
- * - 채널: `dest_warehouse` = 엑셀 「판매 채널」→ "쿠팡"|"일반" (보관센터명으로 추론하지 않음)
- * - 레거시 행: `sales_channel`만 채워진 경우에 한해 동일 규칙으로 정규화
- * - 모든 DB 행을 합산
+ * inventory_stock_snapshot 행 집계 — quick / KPI / snapshot 공통
+ * - 채널은 **`resolveSnapshotChannelWithSource` → `buildChannelTotalsAndStockByChannel` / `applyChannelQtyToMetrics` 단일 경로**
+ * - `sales_channel` 우선, 없으면 `dest_warehouse`를 `normalizeSalesChannelKr`만 적용 (테이칼튼 추론 없음)
  */
 import {
   normalizeSalesChannelKr,
@@ -97,6 +96,50 @@ function toNum(v: unknown): number {
   if (v == null) return 0;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** `resolveSnapshotChannelWithSource`로 정한 채널만 반영 (한 번만 resolve 호출) */
+export function applyChannelQtyToMetrics(
+  code: string,
+  wh: NormalizedWarehouse,
+  qty: number,
+  channelTotals: Record<string, number>,
+  stockByChannel: { coupang: Record<string, number>; general: Record<string, number> }
+): void {
+  if (!code) return;
+  channelTotals[wh] = (channelTotals[wh] ?? 0) + qty;
+  if (wh === WAREHOUSE_COUPANG) {
+    stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
+  } else {
+    stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;
+  }
+}
+
+/**
+ * 재고 스냅샷 행 → channelTotals / stockByChannel — **유일한** 채널 집계 경로 (quick·snapshot·UI 동일)
+ */
+export function addSnapshotRowToChannelMetrics(
+  r: SnapshotRow,
+  channelTotals: Record<string, number>,
+  stockByChannel: { coupang: Record<string, number>; general: Record<string, number> }
+): void {
+  const code = String(r.product_code ?? "").trim();
+  if (!code) return;
+  const wh = resolveSnapshotChannelWithSource(r).channel;
+  const qty = toNum(r.quantity);
+  applyChannelQtyToMetrics(code, wh, qty, channelTotals, stockByChannel);
+}
+
+export function buildChannelTotalsAndStockByChannel(rows: SnapshotRow[]): {
+  channelTotals: Record<string, number>;
+  stockByChannel: { coupang: Record<string, number>; general: Record<string, number> };
+} {
+  const stockByChannel = { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
+  const channelTotals: Record<string, number> = {};
+  for (const r of rows) {
+    addSnapshotRowToChannelMetrics(r, channelTotals, stockByChannel);
+  }
+  return { channelTotals, stockByChannel };
 }
 
 function effectivePack(
@@ -212,12 +255,7 @@ export function aggregateSnapshotRowsForDashboard(
     let price = toNum(r.total_price);
     if (price <= 0 && qty > 0) price = qty * toNum(r.unit_cost);
 
-    channelTotals[wh] = (channelTotals[wh] ?? 0) + qty;
-    if (wh === WAREHOUSE_COUPANG) {
-      stockByChannel.coupang[code] = (stockByChannel.coupang[code] ?? 0) + qty;
-    } else {
-      stockByChannel.general[code] = (stockByChannel.general[code] ?? 0) + qty;
-    }
+    applyChannelQtyToMetrics(code, wh, qty, channelTotals, stockByChannel);
 
     const fallback = productFallback.get(code);
     const name = String(r.product_name ?? "").trim() || fallback?.product_name || code;
