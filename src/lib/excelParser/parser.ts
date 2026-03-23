@@ -62,6 +62,45 @@ function findQtyCol(row: Row): number {
   return -1;
 }
 
+/**
+ * 재고 시트 기준일 열 인덱스.
+ * `findCol(..., "stock_date")`는 동의어 "일자"가 **입고일자** 열과 먼저 매칭되어
+ * 실제 기준일(기준일자) 열을 건너뛰는 경우가 있어 전용 탐색을 사용한다.
+ */
+export function findStockDateColumnIndex(headerRow: Row): { index: number; headerLabel: string } {
+  const cells = headerRow.map((c, i) => ({
+    i,
+    raw: String(c ?? "").trim(),
+    n: norm(String(c ?? "")),
+  }));
+  const strongTerms = [...SYNONYMS.stock_date] as string[];
+  for (const term of strongTerms) {
+    const tn = norm(term);
+    if (tn.length < 2) continue;
+    for (const { i, n, raw } of cells) {
+      if (!n) continue;
+      /* "기준일"만 입고기준일 등과 구분 */
+      if (tn === norm("기준일") && n !== tn && (n.includes("입고") || n.includes("출고"))) {
+        continue;
+      }
+      if (n.includes(tn) || n === tn) {
+        return { index: i, headerLabel: raw };
+      }
+    }
+  }
+  for (const { i, n, raw } of cells) {
+    if (n === "일자" || n === "date" || n === "날짜") {
+      return { index: i, headerLabel: raw };
+    }
+  }
+  for (const { i, n, raw } of cells) {
+    if (!n.includes("일자")) continue;
+    if (n.includes("입고") || n.includes("출고") || n.includes("출하")) continue;
+    return { index: i, headerLabel: raw };
+  }
+  return { index: -1, headerLabel: "" };
+}
+
 function parseDate(
   val: unknown,
   year: number,
@@ -124,6 +163,55 @@ function yearFromFilename(filename: string | undefined): number {
     if (y >= 2020 && y <= 2030) return y;
   }
   return new Date().getFullYear();
+}
+
+/**
+ * 파일명에서 YYYY-MM-DD 또는 YYYYMMDD 추출 (없으면 undefined).
+ * 재고 기준일 셀이 비어 있을 때 snapshot_date 폴백으로 사용.
+ * - YYYY-MM (일 없음) → 해당월 1일로 간주
+ */
+export function defaultDateFromFilename(filename: string | undefined): string | undefined {
+  if (!filename) return undefined;
+  const name = filename.split(/[/\\]/).pop() ?? "";
+  const m1 = name.match(/(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/);
+  if (m1) return `${m1[1]}-${m1[2]}-${m1[3]}`;
+  const m2 = name.match(/(\d{8})/);
+  if (m2) {
+    const s = m2[1];
+    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  }
+  /** YYYY-MM 또는 YYYY.MM (같은 줄에서 일자 없음) — 과거 월 파일명 */
+  const ym = name.match(/(\d{4})[-_.](\d{2})(?![-_.]?\d{2})/);
+  if (ym) return `${ym[1]}-${ym[2]}-01`;
+  /** 25년 3월, 2025년03월 등 */
+  const kor = name.match(/(\d{2,4})년\s*(\d{1,2})월/);
+  if (kor) {
+    let y = parseInt(kor[1], 10);
+    if (y < 100) y += y < 50 ? 2000 : 1900;
+    const mo = parseInt(kor[2], 10);
+    if (mo >= 1 && mo <= 12) return `${y}-${String(mo).padStart(2, "0")}-01`;
+  }
+  return undefined;
+}
+
+/**
+ * 파일명에서 YYYY-MM (달) 추출 — 검증용. full date·년월 패턴·한글 년월
+ */
+export function monthYearFromFilename(filename: string | undefined): string | undefined {
+  const full = defaultDateFromFilename(filename);
+  if (full) return full.slice(0, 7);
+  if (!filename) return undefined;
+  const name = filename.split(/[/\\]/).pop() ?? "";
+  const kor = name.match(/(\d{2,4})년\s*(\d{1,2})월/);
+  if (kor) {
+    let y = parseInt(kor[1], 10);
+    if (y < 100) y += y < 50 ? 2000 : 1900;
+    const mo = parseInt(kor[2], 10);
+    if (mo >= 1 && mo <= 12) return `${y}-${String(mo).padStart(2, "0")}`;
+  }
+  const ym = name.match(/(\d{4})[-_.](\d{2})(?![-_.]?\d{2})/);
+  if (ym) return `${ym[1]}-${ym[2]}`;
+  return undefined;
 }
 
 function safeInt(val: unknown): number {
@@ -317,29 +405,79 @@ export function parseOutboundSheet(
   return rows;
 }
 
+/** 재고 시트 기준일 열 인식·샘플 (검증/로그용) */
+export interface StockSheetDateDiagnostics {
+  stockDateColumnIndex: number;
+  stockDateColumnHeader: string;
+  stockDateColumnFound: boolean;
+  fileDefaultDate: string;
+  filenameExtractedDate: string | undefined;
+  yearFromFilenameHint: number;
+  samples: Array<{
+    rowIndex: number;
+    rawCell: unknown;
+    parsedDate: string;
+    finalSnapshotDate: string;
+  }>;
+}
+
 export function parseStockSheet(
   data: unknown[][],
   filename?: string,
   sheetName = "재고"
-): StockRow[] {
-  if (data.length <= HEADER_ROW) return [];
+): { rows: StockRow[]; dateDiagnostics: StockSheetDateDiagnostics } {
+  const emptyDiag = (fd: string, fn: string | undefined, y: number): StockSheetDateDiagnostics => ({
+    stockDateColumnIndex: -1,
+    stockDateColumnHeader: "",
+    stockDateColumnFound: false,
+    fileDefaultDate: fd,
+    filenameExtractedDate: fn,
+    yearFromFilenameHint: y,
+    samples: [],
+  });
+
+  if (data.length <= HEADER_ROW) {
+    const y = yearFromFilename(filename);
+    const today = new Date().toISOString().slice(0, 10);
+    const fn = defaultDateFromFilename(filename);
+    return { rows: [], dateDiagnostics: emptyDiag(fn ?? today, fn, y) };
+  }
   const headerRow = data[HEADER_ROW] ?? [];
   const idxCode = findCol(headerRow, "product_code");
   const idxName = findCol(headerRow, "product_name");
   const idxQty = findQtyCol(headerRow);
-  const idxCenter = findCol(headerRow, "storage_center");
-  const idxSalesCh = findCol(headerRow, "stock_sales_channel");
-  const idxDate = findCol(headerRow, "stock_date");
+  const idxCenter = findCol(headerRow, "storage_center") >= 0
+  ? findCol(headerRow, "storage_center")
+  : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("보관 센터"));
+  const idxSalesCh = findCol(headerRow, "stock_sales_channel") >= 0
+  ? findCol(headerRow, "stock_sales_channel")
+  : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("판매 채널"));
+  const { index: idxDate, headerLabel: stockDateHeaderLabel } = findStockDateColumnIndex(headerRow);
   const idxCost = findCol(headerRow, "unit_cost");
   const idxTotal = findCol(headerRow, "total_price");
   const idxCat = findCol(headerRow, "category");
   const idxPack = findCol(headerRow, "pack_size");
+  findCol(headerRow, "stock_sales_channel") >= 0
+    ? findCol(headerRow, "stock_sales_channel")
+    : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("판매 채널"));
 
-  if (idxCode < 0 || idxQty < 0) return [];
-
+    const idxDate =
+  findCol(headerRow, "stock_date") >= 0
+    ? findCol(headerRow, "stock_date")
+    : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("재고일자"));
   const year = yearFromFilename(filename);
   const today = new Date().toISOString().slice(0, 10);
+  const filenameDay = defaultDateFromFilename(filename);
+  /** 기준일 셀 공란 시: 파일명 날짜 → 오늘 */
+  const fileDefaultDate = filenameDay ?? today;
+
+  if (idxCode < 0 || idxQty < 0) {
+    return { rows: [], dateDiagnostics: emptyDiag(fileDefaultDate, filenameDay, year) };
+  }
+
   const rows: StockRow[] = [];
+  const samples: StockSheetDateDiagnostics["samples"] = [];
+  const maxSamples = 5;
 
   for (let i = DATA_START_ROW; i < data.length; i++) {
     const row = (data[i] ?? []) as Row;
@@ -351,31 +489,65 @@ export function parseStockSheet(
     const storageRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
     const salesChannelRaw = idxSalesCh >= 0 ? String(row[idxSalesCh] ?? "").trim() : "";
     const channelKr = normalizeSalesChannelKr(salesChannelRaw || "");
-    const dateVal = row[idxDate];
-    const dateStr = parseDate(dateVal, year, today);
+    const dateVal = idxDate >= 0 ? row[idxDate] : undefined;
+    const dateStr = parseDate(dateVal, year, fileDefaultDate);
+    const finalSnap = (dateStr ?? fileDefaultDate).slice(0, 10);
     const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
     const total = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
+
+    if (samples.length < maxSamples) {
+      samples.push({
+        rowIndex: i,
+        rawCell: dateVal,
+        parsedDate: dateStr ?? fileDefaultDate,
+        finalSnapshotDate: finalSnap,
+      });
+    }
 
     rows.push({
       product_code: code,
       product_name: name || code,
       quantity: qty,
       storage_center: storageRaw,
-      stock_date: dateStr ?? today,
+      stock_date: dateStr ?? fileDefaultDate,
       warehouse_group: channelKr,
       event_type: "stock",
       dest_warehouse: channelKr,
       sales_channel: channelKr,
       unit_cost: cost,
       total_price: total > 0 ? total : 0,
-      snapshot_date: dateStr ?? today,
+      snapshot_date: finalSnap,
       category: cat || "기타",
       pack_size: pack > 0 ? pack : 1,
     });
   }
-  return rows;
+
+  const dateDiagnostics: StockSheetDateDiagnostics = {
+    stockDateColumnIndex: idxDate,
+    stockDateColumnHeader: stockDateHeaderLabel,
+    stockDateColumnFound: idxDate >= 0,
+    fileDefaultDate,
+    filenameExtractedDate: filenameDay,
+    yearFromFilenameHint: year,
+    samples,
+  };
+
+  console.log(
+    "[parseStockSheet:stock-date]",
+    JSON.stringify({
+      sheet: sheetName,
+      filename: filename ?? "",
+      stockDateColumnIndex: idxDate,
+      stockDateColumnHeader: stockDateHeaderLabel,
+      filenameExtractedDate: filenameDay ?? null,
+      fileDefaultDate,
+      samples: samples.slice(0, 3),
+    })
+  );
+
+  return { rows, dateDiagnostics };
 }
 
 const RAWDATA_HEADER_POOL = [
@@ -467,6 +639,8 @@ export interface ParseResult {
   outboundRawRowCount?: number;
   /** 재고 시트에서 SYNONYMS.stock_sales_channel 매칭 열을 찾았는지 (false면 전부 일반으로만 파싱됨) */
   stockSheetDiagnostics?: { salesChannelColumnFound: boolean; salesChannelColumnIndex: number };
+  /** 재고 기준일 열 인덱스·샘플 (입고일자 오매칭 방지 등) */
+  stockDateDiagnostics?: StockSheetDateDiagnostics;
 }
 
 export interface ParseError {
@@ -528,7 +702,7 @@ export function parseExcelFromBuffer(
 
   const inbound = parseInboundSheet(inboundData, filename);
   const outbound = parseOutboundSheet(outboundData, filename);
-  const stock = parseStockSheet(stockData, filename);
+  const { rows: stock, dateDiagnostics: stockDateDiagnostics } = parseStockSheet(stockData, filename);
   const stockSheetDiagnostics = inspectStockSheetHeaders(stockData);
   const outboundRawRowCount = Math.max(0, outboundData.length - DATA_START_ROW);
 
@@ -551,5 +725,6 @@ export function parseExcelFromBuffer(
     sheetNames,
     outboundRawRowCount,
     stockSheetDiagnostics,
+    stockDateDiagnostics,
   };
 }

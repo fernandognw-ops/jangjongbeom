@@ -3,7 +3,12 @@
  * excelParser(공용 파서) 사용 - 로컬 integrated_sync와 동일 규칙
  */
 
-import { parseExcelFromBuffer, type RawdataRow } from "@/lib/excelParser";
+import {
+  parseExcelFromBuffer,
+  defaultDateFromFilename,
+  type RawdataRow,
+  type StockSheetDateDiagnostics,
+} from "@/lib/excelParser";
 
 /** 입고에는 sales_channel 미사용 (출고만 사용) */
 export interface InboundRow {
@@ -47,6 +52,8 @@ export interface ProductionSheetParseResult {
   outboundRawRowCount?: number;
   /** 재고 시트 헤더에 「판매 채널」열이 잡혔는지 — false면 파서가 채널 열을 못 찾아 전부 일반 처리 */
   stockSalesChannelColumnFound?: boolean;
+  /** 재고 기준일 열·샘플 (검증/로그) */
+  stockDateDiagnostics?: StockSheetDateDiagnostics;
 }
 
 export interface ProductionSheetParseError {
@@ -93,14 +100,32 @@ export async function parseProductionSheetFromBuffer(
     ...(r.category && { category: r.category }),
   }));
 
+  const fileDay = defaultDateFromFilename(filename);
+  const fallbackDay = fileDay ?? new Date().toISOString().slice(0, 10);
   const stockSnapshot: StockSnapshotRow[] = result.stock.map((r) => ({
     product_code: r.product_code,
     quantity: r.quantity,
     unit_cost: r.unit_cost ?? 0,
     dest_warehouse: r.dest_warehouse,
     storage_center: r.storage_center,
-    snapshot_date: r.snapshot_date ?? r.stock_date ?? new Date().toISOString().slice(0, 10),
+    snapshot_date: (r.snapshot_date ?? r.stock_date ?? fallbackDay).slice(0, 10),
   }));
+
+  const diag = result.stockDateDiagnostics;
+  if (diag && stockSnapshot.length > 0) {
+    const first = stockSnapshot[0];
+    console.log(
+      "[productionSheetParser:snapshot-date]",
+      JSON.stringify({
+        filename: filename ?? "",
+        stockDateColumnIndex: diag.stockDateColumnIndex,
+        stockDateColumnHeader: diag.stockDateColumnHeader,
+        filenameExtractedDate: diag.filenameExtractedDate ?? null,
+        fileDefaultDate: diag.fileDefaultDate,
+        firstRowSnapshotDate: first?.snapshot_date,
+      })
+    );
+  }
 
   return {
     ok: true,
@@ -111,6 +136,7 @@ export async function parseProductionSheetFromBuffer(
     currentProductCodes: Array.from(currentProductCodes),
     outboundRawRowCount: result.outboundRawRowCount,
     stockSalesChannelColumnFound: result.stockSheetDiagnostics?.salesChannelColumnFound,
+    stockDateDiagnostics: result.stockDateDiagnostics,
   };
 }
 

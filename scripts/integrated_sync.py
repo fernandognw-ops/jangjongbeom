@@ -7,7 +7,7 @@
 [매핑 - 품목코드 기준]
   rawdata   → inventory_products      (Upsert)
   입고      → inventory_inbound       (Upsert, product_code+inbound_date)
-  재고      → inventory_stock_snapshot (product_code+dest_warehouse+snapshot_date, 당월만 replace/upsert)
+  재고      → inventory_stock_snapshot (파일에 나온 달력 월마다 그 달 구간 전부 DELETE 후 INSERT)
   출고      → inventory_outbound       (Upsert, product_code+outbound_date+sales_channel)
 
 [컬럼 매핑 - 정확 일치 우선]
@@ -41,21 +41,9 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Optional
 
-
-def get_current_month_range() -> tuple[str, str]:
-    """당월(현재 월) 첫날~마지막날. 당월 이전 데이터는 수정하지 않음."""
-    now = datetime.now()
-    y, m = now.year, now.month
-    first = f"{y}-{m:02d}-01"
-    if m == 12:
-        last = f"{y}-12-31"
-    else:
-        last_day = (datetime(y, m + 1, 1) - timedelta(days=1)).day
-        last = f"{y}-{m:02d}-{last_day:02d}"
-    return first, last
 
 # .env.local 로드
 _env_path = os.path.join(os.path.dirname(__file__), "..", ".env.local")
@@ -976,7 +964,7 @@ def delete_by_date_range(supabase, table: str, date_col: str, date_from: str, da
 
 
 def delete_by_dates(supabase, table: str, date_col: str, dates: list[str], dry_run: bool) -> bool:
-    """지정된 날짜 목록에 해당하는 행 삭제 (재고 스냅샷 당월 교체용)"""
+    """지정된 날짜 목록에 해당하는 행 삭제"""
     if not dates or dry_run:
         return True
     try:
@@ -985,6 +973,25 @@ def delete_by_dates(supabase, table: str, date_col: str, dates: list[str], dry_r
     except Exception as e:
         print(f"    [경고] {table} 날짜별 삭제 실패: {e}")
         return False
+
+
+def delete_stock_snapshot_calendar_months(supabase, month_keys: list[str], dry_run: bool) -> bool:
+    """재고 스냅샷: 각 YYYY-MM 달에 대해 [해당월 1일, 다음달 1일) 구간 행 전부 삭제 (웹 commit과 동일 운영 규칙)."""
+    if not month_keys or dry_run:
+        return True
+    for ym in sorted(set(month_keys)):
+        start = f"{ym}-01"
+        y, m = map(int, ym.split("-"))
+        if m == 12:
+            before_next = f"{y + 1}-01-01"
+        else:
+            before_next = f"{y}-{m + 1:02d}-01"
+        try:
+            supabase.table(TABLE_STOCK).delete().gte("snapshot_date", start).lt("snapshot_date", before_next).execute()
+        except Exception as e:
+            print(f"    [경고] {TABLE_STOCK} 월 구간 삭제 실패 ({ym}): {e}")
+            return False
+    return True
 
 
 def upsert_batch(supabase, table: str, rows: list[dict], on_conflict: list[str], dry_run: bool) -> int:
@@ -1236,12 +1243,14 @@ def main() -> None:
         for r in by_pd.values():
             r.pop("_best_qty", None)
         inbound_merged = list(by_pd.values())
-        month_start, month_end = get_current_month_range()
-        # 수불 교체: 당월만 삭제 후 upsert (당월 이전 데이터는 유지)
-        if not args.dry_run and inbound_merged:
-            if delete_by_date_range(supabase, TABLE_INBOUND, "inbound_date", month_start, month_end, args.dry_run):
-                print(f"    {TABLE_INBOUND}: 당월 {month_start}~{month_end} 기존 삭제 후")
-        inbound_merged = [r for r in inbound_merged if month_start <= (r.get("inbound_date") or "")[:10] <= month_end]
+        inbound_dates = sorted({(r.get("inbound_date") or "")[:10] for r in inbound_merged if r.get("inbound_date")})
+        # 파일에 포함된 입고일만 삭제 후 교체 (누적 append 금지)
+        if not args.dry_run and inbound_merged and inbound_dates:
+            if delete_by_dates(supabase, TABLE_INBOUND, "inbound_date", inbound_dates, args.dry_run):
+                print(
+                    f"    {TABLE_INBOUND}: 파일 날짜 {len(inbound_dates)}일 기존 삭제 후 교체 "
+                    f"({inbound_dates[0]} ~ {inbound_dates[-1]})"
+                )
         # unit_price/total_price가 0이면 inventory_products에서 보완
         if not args.dry_run and inbound_merged:
             codes = list({r["product_code"] for r in inbound_merged})
@@ -1269,10 +1278,9 @@ def main() -> None:
             _exit_missing_tables(e.table)
 
     # 재고: product_code + dest_warehouse(판매채널) + storage_center + snapshot_date
-    # 당월만 replace/upsert, 전월 이전은 변경하지 않음
+    # 파일 snapshot_date 집합만 DELETE 후 INSERT
     if stock_rows:
         try:
-            month_start, month_end = get_current_month_range()
             agg: dict[tuple[str, str, str, str], dict] = {}
             for r in stock_rows:
                 code = r["product_code"]
@@ -1298,21 +1306,15 @@ def main() -> None:
                 r["total_price"] = round(r.get("total_price") or 0, 2)
             stock_merged = list(agg.values())
 
-            # 당월만 처리 (전월 이전 snapshot은 변경하지 않음)
-            stock_current_month = [r for r in stock_merged if month_start <= (r.get("snapshot_date") or "")[:10] <= month_end]
-            stock_skipped = len(stock_merged) - len(stock_current_month)
-            if stock_skipped > 0:
-                print(f"    {TABLE_STOCK}: 전월 이전 {stock_skipped}건 제외 (변경 없음)")
-
             if args.check_product:
                 code = str(args.check_product).strip()
-                merged_for_code = [r for r in stock_current_month if str(r.get("product_code", "")).strip() == code]
+                merged_for_code = [r for r in stock_merged if str(r.get("product_code", "")).strip() == code]
                 total_merged = sum(r["quantity"] for r in merged_for_code)
                 print(f"    [진단] 품목 {code}: 집계 후 DB 저장 예정 {[(r['dest_warehouse'], r.get('storage_center'), r['snapshot_date'], r['quantity']) for r in merged_for_code]} → 합계 {total_merged}")
 
             # unit_cost/total_price가 0이면 inventory_products에서 보완 (엑셀에 원가 컬럼 없을 때)
-            if not args.dry_run and stock_current_month:
-                codes = list({r["product_code"] for r in stock_current_month})
+            if not args.dry_run and stock_merged:
+                codes = list({r["product_code"] for r in stock_merged})
                 cost_map: dict[str, float] = {}
                 for i in range(0, len(codes), BATCH_SIZE):
                     batch = codes[i : i + BATCH_SIZE]
@@ -1321,21 +1323,20 @@ def main() -> None:
                         uc = (row.get("unit_cost") or 0)
                         if uc > 0:
                             cost_map[str(row.get("product_code", ""))] = float(uc)
-                for r in stock_current_month:
+                for r in stock_merged:
                     if (r.get("unit_cost") or 0) <= 0 and r["product_code"] in cost_map:
                         r["unit_cost"] = cost_map[r["product_code"]]
                     if (r.get("total_price") or 0) <= 0 and (r.get("unit_cost") or 0) > 0:
                         r["total_price"] = round(r["quantity"] * r["unit_cost"], 2)
 
-            merged_sum = sum(float(r.get("total_price") or 0) for r in stock_current_month)
-            # 당월 snapshot_date만 삭제 후 insert (이미 삭제했으므로 insert로 충분, upsert 제약 불필요)
-            if not args.dry_run and stock_current_month:
-                dates_to_replace = list({(r.get("snapshot_date") or "")[:10] for r in stock_current_month})
-                dates_to_replace = [d for d in dates_to_replace if d and month_start <= d <= month_end]
-                if dates_to_replace and delete_by_dates(supabase, TABLE_STOCK, "snapshot_date", dates_to_replace, args.dry_run):
-                    print(f"    {TABLE_STOCK}: 당월 {dates_to_replace[0]}{'~' + dates_to_replace[-1] if len(dates_to_replace) > 1 else ''} 기존 삭제 후")
-            n = insert_batch(supabase, TABLE_STOCK, stock_current_month, args.dry_run)
-            print(f"    {TABLE_STOCK}: {n}건 insert (품목·센터·날짜별 {len(stock_current_month)}행, 합계 {merged_sum:,.0f}원)")
+            merged_sum = sum(float(r.get("total_price") or 0) for r in stock_merged)
+            # 업로드에 포함된 달력 월마다 해당 월 스냅샷 전부 삭제 후 insert (한 달에는 최종적으로 한 snapshot_date만 남도록)
+            if not args.dry_run and stock_merged:
+                month_keys = sorted({(r.get("snapshot_date") or "")[:7] for r in stock_merged if r.get("snapshot_date")})
+                if month_keys and delete_stock_snapshot_calendar_months(supabase, month_keys, args.dry_run):
+                    print(f"    {TABLE_STOCK}: 달력 월 {len(month_keys)}개 구간 기존 삭제 후 insert ({', '.join(month_keys)})")
+            n = insert_batch(supabase, TABLE_STOCK, stock_merged, args.dry_run)
+            print(f"    {TABLE_STOCK}: {n}건 insert (품목·센터·날짜별 {len(stock_merged)}행, 합계 {merged_sum:,.0f}원)")
         except TableNotFoundError as e:
             _exit_missing_tables(e.table)
 
@@ -1350,12 +1351,14 @@ def main() -> None:
                 agg[k]["quantity"] = 0
             agg[k]["quantity"] += r["quantity"]
         outbound_merged = list(agg.values())
-        month_start, month_end = get_current_month_range()
-        # 수불 교체: 당월만 삭제 후 upsert (당월 이전 데이터는 유지)
-        if not args.dry_run and outbound_merged:
-            if delete_by_date_range(supabase, TABLE_OUTBOUND, "outbound_date", month_start, month_end, args.dry_run):
-                print(f"    {TABLE_OUTBOUND}: 당월 {month_start}~{month_end} 기존 삭제 후")
-        outbound_merged = [r for r in outbound_merged if month_start <= (r.get("outbound_date") or "")[:10] <= month_end]
+        outbound_dates = sorted({(r.get("outbound_date") or "")[:10] for r in outbound_merged if r.get("outbound_date")})
+        # 파일에 포함된 출고일만 삭제 후 교체 (누적 append 금지)
+        if not args.dry_run and outbound_merged and outbound_dates:
+            if delete_by_dates(supabase, TABLE_OUTBOUND, "outbound_date", outbound_dates, args.dry_run):
+                print(
+                    f"    {TABLE_OUTBOUND}: 파일 날짜 {len(outbound_dates)}일 기존 삭제 후 교체 "
+                    f"({outbound_dates[0]} ~ {outbound_dates[-1]})"
+                )
         # unit_price/total_price가 0이면 inventory_products에서 보완
         if not args.dry_run and outbound_merged:
             codes = list({r["product_code"] for r in outbound_merged})

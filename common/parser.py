@@ -57,6 +57,36 @@ def _find_col(row: list, synonyms_key: str, exclude: list[str] | None = None) ->
     return -1
 
 
+def _find_stock_date_col(row: list) -> tuple[int, str]:
+    """
+    재고 시트 기준일 열. _find_col(..., 'stock_date')는 동의어 '일자'가
+    입고일자 열과 먼저 매칭될 수 있어 전용 탐색을 사용한다 (웹 parser.ts와 동일).
+    """
+    cells: list[tuple[int, str, str]] = []
+    for i, cell in enumerate(row):
+        raw = str(cell or "").strip()
+        cells.append((i, raw, _norm(raw)))
+    strong_terms = list(SYNONYMS["stock_date"])
+    for term in strong_terms:
+        tn = _norm(term)
+        if len(tn) < 2:
+            continue
+        for i, raw, n in cells:
+            if not n:
+                continue
+            if tn == _norm("기준일") and n != tn and ("입고" in n or "출고" in n):
+                continue
+            if tn in n or n == tn:
+                return i, raw
+    for i, raw, n in cells:
+        if n in ("일자", "date", "날짜"):
+            return i, raw
+    for i, raw, n in cells:
+        if "일자" in n and "입고" not in n and "출고" not in n and "출하" not in n:
+            return i, raw
+    return -1, ""
+
+
 def _find_qty_col(row: list, sheet_type: str) -> int:
     """수량 컬럼 (입수량 등 제외)"""
     names = SYNONYMS["quantity"]
@@ -116,6 +146,21 @@ def _year_from_filename(filename: str | None) -> int:
         if 2020 <= y <= 2030:
             return y
     return datetime.now().year
+
+
+def _default_date_from_filename(filename: str | None) -> str | None:
+    """파일명에서 YYYY-MM-DD 또는 YYYYMMDD 추출. 기준일 셀 공란 시 snapshot_date 폴백."""
+    if not filename:
+        return None
+    name = Path(filename).name
+    m1 = re.search(r"(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})", name)
+    if m1:
+        return f"{m1.group(1)}-{m1.group(2)}-{m1.group(3)}"
+    m2 = re.search(r"(\d{8})", name)
+    if m2:
+        s = m2.group(1)
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return None
 
 
 def _safe_int(val: Any) -> int:
@@ -377,7 +422,7 @@ def parse_stock_excel(
     idx_qty = _find_qty_col(header_row, "stock")
     idx_storage = _find_col(header_row, "storage_center")
     idx_sales_ch = _find_col(header_row, "stock_sales_channel")
-    idx_date = _find_col(header_row, "stock_date")
+    idx_date, _stock_date_header = _find_stock_date_col(header_row)
     idx_cost = _find_col(header_row, "unit_cost")
     idx_total = _find_col(header_row, "total_price")
     idx_cat = _find_col(header_row, "category")
@@ -402,6 +447,7 @@ def parse_stock_excel(
 
     year = _year_from_filename(filename)
     today = datetime.now().strftime("%Y-%m-%d")
+    file_default = _default_date_from_filename(filename) or today
     rows = []
     for i in range(DATA_START_ROW, len(df)):
         row = df.iloc[i]
@@ -415,8 +461,11 @@ def parse_stock_excel(
         sales_raw = str(row.iloc[idx_sales_ch] or "").strip() if idx_sales_ch >= 0 else ""
         sales_kr = normalize_sales_channel_kr(sales_raw)
         center = center_raw if center_raw else "미지정"
-        date_val = row.iloc[idx_date] if idx_date < len(row) else None
-        date_str = _parse_date(date_val, year, today)
+        if idx_date >= 0 and idx_date < len(row):
+            date_val = row.iloc[idx_date]
+        else:
+            date_val = None
+        date_str = _parse_date(date_val, year, file_default)
         cost = _safe_float(row.iloc[idx_cost]) if idx_cost >= 0 else 0.0
         total = _safe_float(row.iloc[idx_total]) if idx_total >= 0 else 0.0
         wh_group = sales_kr
@@ -430,7 +479,7 @@ def parse_stock_excel(
             "product_name": name,
             "quantity": qty,
             "storage_center": center,
-            "stock_date": date_str or today,
+            "stock_date": date_str or file_default,
             "warehouse_group": wh_group,
             "event_type": "stock",
             "dest_warehouse": sales_kr,
@@ -438,7 +487,7 @@ def parse_stock_excel(
             "sales_channel_raw": sales_raw,
             "unit_cost": cost,
             "total_price": total if total > 0 else 0,
-            "snapshot_date": date_str or today,
+            "snapshot_date": date_str or file_default,
             "category": cat or "기타",
             "pack_size": pack if pack > 0 else 1,
         })

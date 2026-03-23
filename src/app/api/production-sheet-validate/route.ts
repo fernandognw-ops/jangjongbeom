@@ -11,6 +11,8 @@ import { parseProductionSheetFromBuffer } from "@/lib/productionSheetParser";
 import { toDestWarehouse } from "@/lib/excelParser/classifier";
 import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
 import { createPreviewToken } from "@/lib/previewTokenStore";
+import { validateSnapshotDatesAgainstFilename } from "@/lib/snapshotUploadValidation";
+import { defaultDateFromFilename } from "@/lib/excelParser/parser";
 
 const VALID_DEST_WAREHOUSES = ["일반", "쿠팡"];
 
@@ -43,7 +45,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const { inbound, outbound, stockSnapshot, rawdata, currentProductCodes, stockSalesChannelColumnFound } = result;
+    const {
+      inbound,
+      outbound,
+      stockSnapshot,
+      rawdata,
+      currentProductCodes,
+      stockSalesChannelColumnFound,
+      stockDateDiagnostics,
+    } = result;
 
     if (inbound.length === 0 && outbound.length === 0 && stockSnapshot.length === 0) {
       return NextResponse.json(
@@ -88,6 +98,15 @@ export async function POST(request: Request) {
     const totalStockValue = stockSnapshot.reduce((sum, r) => sum + (r.quantity ?? 0) * (r.unit_cost ?? 0), 0);
     const snapshotDates = [...new Set(stockSnapshot.map((r) => r.snapshot_date ?? "").filter(Boolean))].sort();
 
+    const snapVal = validateSnapshotDatesAgainstFilename(file.name, stockSnapshot, {
+      stockDateColumnFound: stockDateDiagnostics?.stockDateColumnFound,
+    });
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const allSnapshotAreToday =
+      stockSnapshot.length > 0 &&
+      snapshotDates.length > 0 &&
+      snapshotDates.every((d) => d === todayStr);
+
     const outboundParsedCount = outbound.length;
 
     const validation = {
@@ -102,7 +121,43 @@ export async function POST(request: Request) {
       snapshotDates,
       destWarehouseValid,
       invalidDestWarehouses: uniqueInvalid,
+      snapshotDateValid: snapVal.snapshotDateValid,
+      filenameHasDatePattern: snapVal.filenameHasDatePattern,
+      filenameExpectedDate: snapVal.filenameExpectedDate,
+      filenameExpectedMonth: snapVal.filenameExpectedMonth,
+      snapshotDateMismatchReason: snapVal.snapshotDateMismatchReason,
+      /** 파일명에 날짜 힌트 없고 snapshot이 전부 오늘 — 과거 파일 오인 가능 */
+      snapshotLooksLikeServerTodayOnly: !snapVal.filenameHasDatePattern && allSnapshotAreToday && stockSnapshot.length > 0,
+      stockDateColumnFound: stockDateDiagnostics?.stockDateColumnFound ?? true,
+      stockDateColumnHeader: stockDateDiagnostics?.stockDateColumnHeader ?? "",
     };
+
+    console.log(
+      "[production-sheet-validate]",
+      JSON.stringify({
+        filename: file.name,
+        snapshotDates: validation.snapshotDates,
+        filenameExpectedMonth: validation.filenameExpectedMonth,
+        snapshotDateValid: validation.snapshotDateValid,
+        snapshotDateMismatchReason: validation.snapshotDateMismatchReason,
+        snapshotLooksLikeServerTodayOnly: validation.snapshotLooksLikeServerTodayOnly,
+        stockDateColumnFound: validation.stockDateColumnFound,
+        stockDateColumnHeader: validation.stockDateColumnHeader,
+        stockDateDiagnosticsSample: stockDateDiagnostics?.samples?.slice(0, 2),
+      })
+    );
+
+    if (stockSnapshot.length > 0 && !snapVal.snapshotDateValid) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: snapVal.snapshotDateMismatchReason ?? "재고 snapshot_date 검증 실패",
+          validation,
+          stockDateDiagnostics,
+        },
+        { status: 400 }
+      );
+    }
 
     const previewToken = createPreviewToken({
       filename: file.name,
@@ -118,6 +173,16 @@ export async function POST(request: Request) {
     if (stockSnapshot.length > 0 && stockSalesChannelColumnFound === false) {
       warnings.push(
         "재고 시트에서 「판매 채널」 헤더를 찾지 못했습니다. 파싱된 채널은 모두 「일반」으로만 채워집니다. 헤더를 '판매 채널' 또는 '판매채널' 등으로 맞추거나 docs/재고_판매채널_컬럼.md를 확인하세요."
+      );
+    }
+    if (stockSnapshot.length > 0 && !defaultDateFromFilename(file.name)) {
+      warnings.push(
+        "파일명에 YYYY-MM-DD·YYYYMMDD·YYYY-MM·○년○월 형식 날짜가 없습니다. 재고 시트 「기준일자」열에 과거 일자가 들어가 있는지 반드시 확인하세요. (비어 있으면 서버 오늘 날짜로 채워질 수 있습니다.)"
+      );
+    }
+    if (stockSnapshot.length > 0 && validation.snapshotLooksLikeServerTodayOnly) {
+      warnings.push(
+        `재고 snapshot_date가 모두 오늘(${todayStr})입니다. 과거 자료라면 시트 기준일 열·파일명 날짜를 점검하세요.`
       );
     }
 

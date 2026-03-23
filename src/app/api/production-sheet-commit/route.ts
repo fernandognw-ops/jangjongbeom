@@ -82,6 +82,21 @@ export async function POST(request: Request) {
     );
   }
 
+  const snapCheck = data.validation as {
+    stockCount?: number;
+    snapshotDateValid?: boolean;
+    snapshotDateMismatchReason?: string;
+  };
+  if ((snapCheck.stockCount ?? 0) > 0 && snapCheck.snapshotDateValid === false) {
+    return NextResponse.json(
+      {
+        error: "재고 snapshot_date 검증 실패. 파일명·재고 시트 기준일을 확인한 뒤 다시 검증하세요.",
+        detail: snapCheck.snapshotDateMismatchReason ?? "",
+      },
+      { status: 400 }
+    );
+  }
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) {

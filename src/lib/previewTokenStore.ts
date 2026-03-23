@@ -26,6 +26,14 @@ interface PreviewEntry {
       destWarehouseBySource?: { inbound: Record<string, number>; outbound: Record<string, number>; stock: Record<string, number> };
       snapshotDates: string[];
       destWarehouseValid: boolean;
+      snapshotDateValid?: boolean;
+      filenameHasDatePattern?: boolean;
+      filenameExpectedDate?: string;
+      filenameExpectedMonth?: string;
+      snapshotDateMismatchReason?: string;
+      snapshotLooksLikeServerTodayOnly?: boolean;
+      stockDateColumnFound?: boolean;
+      stockDateColumnHeader?: string;
     };
   };
   expiresAt: number;

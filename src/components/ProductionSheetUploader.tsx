@@ -18,6 +18,13 @@ interface ValidationResult {
   snapshotDates: string[];
   destWarehouseValid: boolean;
   invalidDestWarehouses: string[];
+  /** false면 DB 반영 불가 (재고 snapshot_date ↔ 파일명 월 불일치 등) */
+  snapshotDateValid?: boolean;
+  filenameHasDatePattern?: boolean;
+  filenameExpectedDate?: string;
+  filenameExpectedMonth?: string;
+  snapshotDateMismatchReason?: string;
+  snapshotLooksLikeServerTodayOnly?: boolean;
 }
 
 interface ParsedData {
@@ -34,12 +41,14 @@ export function ProductionSheetUploader() {
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [parsedData, setParsedData] = useState<ParsedData | null>(null);
   const [filename, setFilename] = useState<string>("");
+  const [validateWarnings, setValidateWarnings] = useState<string[]>([]);
 
   const reset = useCallback(() => {
     setFile(null);
     setValidation(null);
     setParsedData(null);
     setFilename("");
+    setValidateWarnings([]);
     setMessage("");
     setProgress("");
     setStatus("idle");
@@ -81,6 +90,7 @@ export function ProductionSheetUploader() {
         setValidation(json.validation);
         setParsedData({ previewToken: json.previewToken });
         setFilename(f.name);
+        setValidateWarnings(Array.isArray(json.warnings) ? json.warnings : []);
         setStatus("validated");
         setProgress("");
         setMessage("");
@@ -95,6 +105,7 @@ export function ProductionSheetUploader() {
 
   const handleApply = useCallback(async () => {
     if (!parsedData || !validation?.destWarehouseValid) return;
+    if ((validation.stockCount ?? 0) > 0 && validation.snapshotDateValid === false) return;
 
     setStatus("applying");
     setProgress("DB 반영 중…");
@@ -138,7 +149,7 @@ export function ProductionSheetUploader() {
       setProgress("");
       setMessage(e instanceof Error ? e.message : "반영 중 오류가 발생했습니다.");
     }
-  }, [parsedData, validation?.destWarehouseValid, filename, refresh, reset]);
+  }, [parsedData, validation, refresh, reset]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -174,7 +185,15 @@ export function ProductionSheetUploader() {
     [handleFile]
   );
 
-  const canApply = validation?.destWarehouseValid && parsedData?.previewToken && status === "validated";
+  const snapshotOk =
+    !validation ||
+    (validation.stockCount ?? 0) === 0 ||
+    validation.snapshotDateValid !== false;
+  const canApply =
+    validation?.destWarehouseValid &&
+    snapshotOk &&
+    parsedData?.previewToken &&
+    status === "validated";
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
@@ -267,9 +286,31 @@ export function ProductionSheetUploader() {
                 </dd>
               </>
             )}
-            <dt className="text-slate-500">snapshot_date</dt>
+            <dt className="text-slate-500">snapshot_date (파싱)</dt>
             <dd className="font-mono text-xs">{validation.snapshotDates.join(", ") || "-"}</dd>
+            {validation.filenameExpectedMonth != null && (
+              <>
+                <dt className="text-slate-500">기대 월 (파일명·파싱)</dt>
+                <dd className="font-mono text-xs">
+                  {validation.filenameExpectedMonth}
+                  {validation.filenameExpectedDate ? ` · 일자 ${validation.filenameExpectedDate}` : ""}
+                  {validation.filenameHasDatePattern === false ? " · 파일명에 날짜 패턴 없음" : ""}
+                </dd>
+              </>
+            )}
           </dl>
+          {validateWarnings.length > 0 && (
+            <ul className="mt-2 list-inside list-disc rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              {validateWarnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          )}
+          {(validation.stockCount ?? 0) > 0 && validation.snapshotDateValid === false && validation.snapshotDateMismatchReason && (
+            <p className="mt-2 text-xs font-medium text-red-600">
+              snapshot_date 검증 실패: {validation.snapshotDateMismatchReason} — DB 반영 불가
+            </p>
+          )}
           {!validation.destWarehouseValid && (
             <p className="mt-2 text-xs text-red-600">
               dest_warehouse 오류: {validation.invalidDestWarehouses.join(", ")} — 반영 버튼 비활성화

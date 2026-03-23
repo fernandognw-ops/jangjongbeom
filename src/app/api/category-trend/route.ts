@@ -4,6 +4,7 @@
  * - inventory_outbound quantity 합산 (판매량), 금액은 total_price 우선 (DB와 SUM 일치)
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
+ * - 월별 재고 자산: snapshot_date >= 차트 시작월의 모든 행을 읽고, 월별 **마지막 snapshot_date**만 카테고리별 total_price 합산 (limit 미사용)
  */
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
@@ -113,11 +114,18 @@ export async function GET() {
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth();
-    // 최근 14개월 기간으로 조회 (25년 3월~ 데이터 포함)
+    // 최근 14개월 기간 (예: 25-02 ~ 26-03): 입·출고·재고 스냅샷 동일 기준일 이상
     const fourteenMonthsAgo = new Date(year, month - 13, 1);
     const dateFrom = `${fourteenMonthsAgo.getFullYear()}-${String(fourteenMonthsAgo.getMonth() + 1).padStart(2, "0")}-01`;
 
-    const [productsRes, outbound, inbound, snapshotRes] = await Promise.all([
+    const fourteenMonthsSlots: string[] = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(year, month - i, 1);
+      fourteenMonthsSlots.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    }
+    const monthsPreset = fourteenMonthsSlots;
+
+    const [productsRes, outbound, inbound, stockSnapshotRows] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
       fetchAllRows<{
         product_code: string;
@@ -136,12 +144,26 @@ export async function GET() {
         "inbound_date",
         dateFrom
       ),
-      supabase.from("inventory_stock_snapshot").select("product_code,category,snapshot_date,quantity,unit_cost,total_price,dest_warehouse").limit(50000),
+      fetchAllRows<{
+        product_code: string;
+        category?: string;
+        snapshot_date?: string;
+        quantity?: number;
+        unit_cost?: number;
+        total_price?: number;
+        dest_warehouse?: string;
+      }>(
+        supabase,
+        "inventory_stock_snapshot",
+        "product_code,category,snapshot_date,quantity,unit_cost,total_price,dest_warehouse",
+        "snapshot_date",
+        dateFrom
+      ),
     ]);
 
     // DB 0건이면 네이버 API 호출 없이 즉시 empty 반환 (이전 데이터 표시 방지)
     const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
-    const snapData = (snapshotRes.data ?? []) as { product_code: string; category?: string; snapshot_date?: string }[];
+    const snapData = stockSnapshotRows as { product_code: string; category?: string; snapshot_date?: string }[];
     if (outbound.length === 0 && inbound.length === 0 && products.length === 0 && snapData.length === 0) {
       console.log("[category-trend] 데이터소스: inventory_* 0건 → empty (DB)");
       return NextResponse.json(emptyResponse, {
@@ -206,13 +228,7 @@ export async function GET() {
     const ordered = [...categoriesSet];
     const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
 
-    // 최근 14개월 슬롯 고정 (25년 3월~ 데이터 포함)
-    const fourteenMonthsSlots: string[] = [];
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(year, month - i, 1);
-      fourteenMonthsSlots.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
-    }
-    const months = fourteenMonthsSlots;
+    const months = monthsPreset;
 
     /** 월간 평균 검색 지수 (월별 출고량과 1:1 대응) */
     const naverByMonth: Record<string, Record<string, number>> = {};
@@ -304,8 +320,16 @@ export async function GET() {
       byMonthCategoryInboundValue[m][cat] = (byMonthCategoryInboundValue[m][cat] ?? 0) + qty * cost;
     }
 
-    // 월별 재고 자산: 당월말 기준. "해당 월의 마지막 snapshot"만 사용 (역산 금지, 스냅샷 기반)
-    const snapRows = (snapshotRes.data ?? []) as { product_code: string; category?: string; snapshot_date?: string; quantity?: number; unit_cost?: number; total_price?: number; dest_warehouse?: string }[];
+    // 월별 재고 자산: 해당 월의 **마지막 snapshot_date** 1일만 사용 → 카테고리별 total_price 합 (행 전량은 snapshot_date>=dateFrom 페이지네이션으로 로드)
+    const snapRows = stockSnapshotRows as {
+      product_code: string;
+      category?: string;
+      snapshot_date?: string;
+      quantity?: number;
+      unit_cost?: number;
+      total_price?: number;
+      dest_warehouse?: string;
+    }[];
     const maxDateByMonth = new Map<string, string>();
     for (const r of snapRows) {
       const d = (r.snapshot_date ?? "").slice(0, 10);
@@ -375,7 +399,18 @@ export async function GET() {
       }
     }
 
-    console.log("[category-trend] 데이터소스: inventory_* (outbound=" + outbound.length + ", inbound=" + inbound.length + ", products=" + products.length + ", snapshot=" + snapData.length + ")");
+    console.log(
+      "[category-trend] 데이터소스: outbound=" +
+        outbound.length +
+        ", inbound=" +
+        inbound.length +
+        ", products=" +
+        products.length +
+        ", snapshot_rows=" +
+        snapRows.length +
+        ", months_with_last_snapshot=" +
+        maxDateByMonth.size
+    );
 
     return NextResponse.json(
       {

@@ -1,7 +1,9 @@
 /**
  * 웹 승인 기반 DB 반영 로직 (서버 전용)
- * - 당월 stock_snapshot만 반영 (과거월 보호)
- * - inbound/outbound/stock_snapshot 적재 전 inventory_products 기준 enrichment
+ * - 재고: 업로드에 포함된 **달력 월(YYYY-MM)** 마다, 그 달의 기존 스냅샷 전부 DELETE 후 INSERT.
+ *   → 같은 달에 새 파일이 오면 해당 월은 **그 파일의 snapshot_date만** 남도록 이전 일자 스냅샷이 제거됨.
+ * - 입고/출고: 파일에 나온 inbound_date / outbound_date 집합만 DELETE 후 INSERT (누적 append 금지)
+ * - inbound/outbound/stock 적재 전 inventory_products 기준 enrichment
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -15,6 +17,32 @@ const TABLE_OUTBOUND = "inventory_outbound";
 const TABLE_CURRENT = "inventory_current_products";
 const TABLE_SNAPSHOT = "inventory_stock_snapshot";
 const BATCH = 300;
+
+/** YYYY-MM-DD 정규화 */
+function normDateYmd(d: string | undefined | null): string {
+  const s = String(d ?? "").trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
+}
+
+/** snapshot_date 문자열에서 서로 다른 YYYY-MM 목록 */
+function distinctCalendarMonthsFromSnapshotDates(dates: string[]): string[] {
+  const set = new Set<string>();
+  for (const raw of dates) {
+    const ymd = normDateYmd(raw) || String(raw).trim().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) continue;
+    set.add(ymd.slice(0, 7));
+  }
+  return [...set].sort();
+}
+
+/** 다음 달 1일 (exclusive 상한용): YYYY-MM → YYYY-MM-DD */
+function firstDayOfNextCalendarMonth(ym: string): string {
+  const [yStr, mStr] = ym.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (m === 12) return `${y + 1}-01-01`;
+  return `${y}-${String(m + 1).padStart(2, "0")}-01`;
+}
 
 interface ProductEnrichment {
   product_name: string;
@@ -147,7 +175,7 @@ export async function commitProductionSheet(
 
   let inboundInserted = 0;
   if (inbound.length > 0) {
-    const dates = [...new Set(inbound.map((r) => r.inbound_date))];
+    const dates = [...new Set(inbound.map((r) => normDateYmd(r.inbound_date)).filter(Boolean))];
     if (dates.length > 0) {
       await supabase.from(TABLE_INBOUND).delete().in("inbound_date", dates);
     }
@@ -162,7 +190,7 @@ export async function commitProductionSheet(
         category: p?.category ?? "기타",
         pack_size: p?.pack_size ?? 1,
         quantity: qty,
-        inbound_date: r.inbound_date,
+        inbound_date: normDateYmd(r.inbound_date) || r.inbound_date,
         dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
         unit_price: unitPrice,
         total_price: totalPrice,
@@ -179,7 +207,7 @@ export async function commitProductionSheet(
 
   let outboundInserted = 0;
   if (outbound.length > 0) {
-    const dates = [...new Set(outbound.map((r) => r.outbound_date))];
+    const dates = [...new Set(outbound.map((r) => normDateYmd(r.outbound_date)).filter(Boolean))];
     if (dates.length > 0) {
       await supabase.from(TABLE_OUTBOUND).delete().in("outbound_date", dates);
     }
@@ -194,7 +222,7 @@ export async function commitProductionSheet(
         category: p?.category ?? "기타",
         pack_size: p?.pack_size ?? 1,
         quantity: qty,
-        outbound_date: r.outbound_date,
+        outbound_date: normDateYmd(r.outbound_date) || r.outbound_date,
         sales_channel: ensureChannel(r.sales_channel),
         dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
         unit_price: unitPrice,
@@ -223,9 +251,6 @@ export async function commitProductionSheet(
   let stockSnapshotCount = 0;
   if (stockSnapshot.length > 0) {
     const today = new Date().toISOString().slice(0, 10);
-    const monthStart = today.slice(0, 7) + "-01";
-    const lastDay = new Date(new Date(today).getFullYear(), new Date(today).getMonth() + 1, 0).getDate();
-    const monthEnd = today.slice(0, 7) + "-" + String(lastDay).padStart(2, "0");
 
     const codes = Array.from(new Set(stockSnapshot.map((s) => s.product_code)));
     const existingSnap = await supabase
@@ -252,7 +277,7 @@ export async function commitProductionSheet(
       const p = productMap.get(s.product_code);
       const channel = normalizeSalesChannelKr(s.dest_warehouse ?? "");
       const storage = ensurePhysicalWarehouse(s.storage_center);
-      const snap = (s.snapshot_date ?? today).slice(0, 10);
+      const snap = normDateYmd(s.snapshot_date) || (s.snapshot_date ?? today).slice(0, 10);
       let cost = s.unit_cost ?? 0;
       if (cost <= 0) {
         cost =
@@ -278,28 +303,30 @@ export async function commitProductionSheet(
       };
     });
 
-    const currentMonthRows = snapshotRows.filter((r) => {
-      const d = r.snapshot_date;
-      return d && monthStart <= d && d <= monthEnd;
-    });
-
-    if (currentMonthRows.length > 0) {
-      const datesToReplace = [...new Set(currentMonthRows.map((r) => r.snapshot_date).filter(Boolean))];
-      if (datesToReplace.length > 0) {
-        await supabase.from(TABLE_SNAPSHOT).delete().in("snapshot_date", datesToReplace);
+    const monthsToReplace = distinctCalendarMonthsFromSnapshotDates(
+      snapshotRows.map((r) => r.snapshot_date).filter(Boolean) as string[]
+    );
+    for (const ym of monthsToReplace) {
+      const monthStart = `${ym}-01`;
+      const beforeNext = firstDayOfNextCalendarMonth(ym);
+      const { error: delErr } = await supabase
+        .from(TABLE_SNAPSHOT)
+        .delete()
+        .gte("snapshot_date", monthStart)
+        .lt("snapshot_date", beforeNext);
+      if (delErr) throw new Error(`재고 스냅샷 월 삭제 실패 (${ym}): ${delErr.message}`);
+    }
+    for (let i = 0; i < snapshotRows.length; i += BATCH) {
+      const batch = snapshotRows.slice(i, i + BATCH) as Array<
+        Record<string, unknown> & { dest_warehouse: string; storage_center: string }
+      >;
+      if (i === 0 && batch[0] && !("storage_center" in batch[0])) {
+        throw new Error("재고 스냅샷 insert: storage_center 누락 (코드 오류)");
       }
-      for (let i = 0; i < currentMonthRows.length; i += BATCH) {
-        const batch = currentMonthRows.slice(i, i + BATCH) as Array<
-          Record<string, unknown> & { dest_warehouse: string; storage_center: string }
-        >;
-        if (i === 0 && batch[0] && !("storage_center" in batch[0])) {
-          throw new Error("재고 스냅샷 insert: storage_center 누락 (코드 오류)");
-        }
-        const { error } = await supabase.from(TABLE_SNAPSHOT).insert(batch);
-        if (error) throw new Error(`재고 스냅샷 저장 실패: ${error.message}`);
-        stockSnapshotCount += batch.length;
-        onLog?.(TABLE_SNAPSHOT, batch.length);
-      }
+      const { error } = await supabase.from(TABLE_SNAPSHOT).insert(batch);
+      if (error) throw new Error(`재고 스냅샷 저장 실패: ${error.message}`);
+      stockSnapshotCount += batch.length;
+      onLog?.(TABLE_SNAPSHOT, batch.length);
     }
   }
 
