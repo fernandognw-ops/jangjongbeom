@@ -275,7 +275,7 @@ export interface StockRow {
   warehouse_group: string;
   event_type: "stock";
   dest_warehouse: string;
-  sales_channel?: string;
+  sales_channel?: string; //
   unit_cost: number;
   total_price: number;
   snapshot_date: string;
@@ -336,6 +336,7 @@ export function parseInboundSheet(
       pack_size: pack > 0 ? pack : 1,
       unit_price: unit,
       total_price: total,
+      sales_channel: channelKr,
     });
   }
   return rows;
