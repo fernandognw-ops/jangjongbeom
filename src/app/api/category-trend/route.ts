@@ -1,7 +1,7 @@
 /**
  * 카테고리별 월별 추세 API
  * GET /api/category-trend
- * - inventory_outbound quantity 합산 (판매량)
+ * - inventory_outbound quantity 합산 (판매량), 금액은 total_price 우선 (DB와 SUM 일치)
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
  */
@@ -65,6 +65,30 @@ function isCoupangChannel(ch: string | null | undefined): boolean {
   return s === "coupang" || s === "쿠팡" || s.includes("쿠팡");
 }
 
+type OutboundRowVal = {
+  quantity?: number;
+  total_price?: number;
+  unit_price?: number;
+};
+
+/**
+ * 출고 금액: DB 저장값 우선 (commit 시점과 SUM(total_price)와 일치).
+ * total_price > 0 → 사용, 아니면 unit_price×qty, 둘 다 없으면 마스터 unit_cost×qty (레거시)
+ */
+function outboundLineValue(
+  o: OutboundRowVal,
+  codeKey: string,
+  codeToCost: Map<string, number>
+): number {
+  const qty = Number(o.quantity ?? 0);
+  const tp = Number(o.total_price ?? 0);
+  if (Number.isFinite(tp) && tp > 0) return tp;
+  const up = Number(o.unit_price ?? 0);
+  if (Number.isFinite(up) && up > 0 && qty > 0) return qty * up;
+  const cost = codeToCost.get(codeKey) ?? 0;
+  return qty * cost;
+}
+
 /** 카테고리 정규화: 마스터 5개만. 캡슐세제 사은품 → 캡슐세제 */
 function normalizeCategoryName(cat: string): string {
   const s = String(cat ?? "").trim();
@@ -95,13 +119,16 @@ export async function GET() {
 
     const [productsRes, outbound, inbound, snapshotRes] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
-      fetchAllRows<{ product_code: string; quantity: number; outbound_date: string; sales_channel?: string; product_name?: string; category?: string }>(
-        supabase,
-        "inventory_outbound",
-        "product_code,quantity,outbound_date,sales_channel,product_name,category",
-        "outbound_date",
-        dateFrom
-      ),
+      fetchAllRows<{
+        product_code: string;
+        quantity: number;
+        outbound_date: string;
+        sales_channel?: string;
+        product_name?: string;
+        category?: string;
+        total_price?: number;
+        unit_price?: number;
+      }>(supabase, "inventory_outbound", "product_code,quantity,outbound_date,sales_channel,product_name,category,total_price,unit_price", "outbound_date", dateFrom),
       fetchAllRows<{ product_code: string; quantity: number; inbound_date: string; dest_warehouse?: string; category?: string }>(
         supabase,
         "inventory_inbound",
@@ -219,8 +246,7 @@ export async function GET() {
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-      const cost = codeToCost.get(codeKey) ?? 0;
-      const val = qty * cost;
+      const val = outboundLineValue(o, codeKey, codeToCost);
       monthlyTotals[m].outbound += qty;
       monthlyTotals[m].outboundValue += val;
       if (isCoupangChannel(o.sales_channel)) {
@@ -261,9 +287,9 @@ export async function GET() {
       if (cat === "기타") continue;
       cat = normalizeCategoryName(cat) || "기타";
       if (cat === "기타" || !finalCategories.includes(cat)) continue;
-      const qty = Number(o.quantity ?? 0);
-      const cost = codeToCost.get(normalizeCode(o.product_code) || "") ?? codeToCost.get(String(o.product_code).trim()) ?? 0;
-      byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + qty * cost;
+      const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
+      const val = outboundLineValue(o, codeKey, codeToCost);
+      byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + val;
     }
     for (const i of inbound) {
       const m = (i.inbound_date ?? "").slice(0, 7);
