@@ -82,19 +82,45 @@ function parseMoney(v: unknown): number {
  * 출고 라인 금액 — DB SUM(total_price)와 동일 우선순위.
  * total_price > 0 → 그대로, 아니면 unit_price×qty, 마지막만 마스터 unit_cost×qty
  */
+type ChosenAmountSource = "total_price" | "unit_price_x_qty" | "fallback_0";
+
 function chosenOutboundAmount(
   row: { quantity?: unknown; total_price?: unknown; unit_price?: unknown },
   codeKey: string,
   codeToCost: Map<string, number>
-): number {
+): { amount: number; source: ChosenAmountSource; suspectedUnitPrice: boolean } {
   const qty = Number(row.quantity ?? 0);
   const totalPrice = parseMoney(row.total_price);
   const unitPrice = parseMoney(row.unit_price);
   const masterUnitCost = Number(codeToCost.get(codeKey) ?? 0);
-  if (totalPrice > 0) return totalPrice;
-  if (unitPrice > 0 && qty > 0) return unitPrice * qty;
-  if (masterUnitCost > 0 && qty > 0) return masterUnitCost * qty;
-  return 0;
+
+  const normalizedQty = Number.isFinite(qty) ? qty : 0;
+  const looksLikeUnitPriceInTotalCol =
+    totalPrice > 0 &&
+    normalizedQty > 1 &&
+    // 행 총액이면 보통 qty 배수이며, 단가 컬럼과 동일/유사하면 "단가 오기입" 가능성 큼
+    ((unitPrice > 0 && Math.abs(totalPrice - unitPrice) < 0.0001) ||
+      // qty가 큰데 total_price가 지나치게 작으면 단가로 간주
+      totalPrice <= 1000);
+
+  if (totalPrice > 0 && !looksLikeUnitPriceInTotalCol) {
+    return { amount: totalPrice, source: "total_price", suspectedUnitPrice: false };
+  }
+  if (unitPrice > 0 && normalizedQty > 0) {
+    return {
+      amount: unitPrice * normalizedQty,
+      source: "unit_price_x_qty",
+      suspectedUnitPrice: looksLikeUnitPriceInTotalCol,
+    };
+  }
+  if (masterUnitCost > 0 && normalizedQty > 0) {
+    return {
+      amount: masterUnitCost * normalizedQty,
+      source: "unit_price_x_qty",
+      suspectedUnitPrice: looksLikeUnitPriceInTotalCol,
+    };
+  }
+  return { amount: 0, source: "fallback_0", suspectedUnitPrice: looksLikeUnitPriceInTotalCol };
 }
 
 /** 카테고리 정규화: 마스터 5개만. 캡슐세제 사은품 → 캡슐세제 */
@@ -284,7 +310,16 @@ export async function GET(request: Request) {
       total_price_raw: unknown;
       unit_price_raw: unknown;
       chosen_amount: number;
+      chosenOutboundAmountSource: ChosenAmountSource;
       channel_kr: string;
+    }> = [];
+    let suspectedUnitPriceRows = 0;
+    const suspectedUnitPriceSamples: Array<{
+      monthKey: string;
+      sales_channel: string;
+      quantity: number;
+      total_price_raw: unknown;
+      unit_price_raw: unknown;
     }> = [];
 
     for (const o of outbound) {
@@ -292,7 +327,8 @@ export async function GET(request: Request) {
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-      const val = chosenOutboundAmount(o, codeKey, codeToCost);
+      const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
+      const val = chosen.amount;
       const channelKr = normalizeSalesChannelKr(o.sales_channel ?? "");
       const isCoupang = channelKr === WAREHOUSE_COUPANG;
 
@@ -314,8 +350,21 @@ export async function GET(request: Request) {
           total_price_raw: o.total_price,
           unit_price_raw: o.unit_price,
           chosen_amount: val,
+          chosenOutboundAmountSource: chosen.source,
           channel_kr: channelKr,
         });
+      }
+      if (debug && chosen.suspectedUnitPrice) {
+        suspectedUnitPriceRows += 1;
+        if (suspectedUnitPriceSamples.length < 20) {
+          suspectedUnitPriceSamples.push({
+            monthKey: m,
+            sales_channel: String(o.sales_channel ?? ""),
+            quantity: qty,
+            total_price_raw: o.total_price,
+            unit_price_raw: o.unit_price,
+          });
+        }
       }
     }
 
@@ -356,7 +405,7 @@ export async function GET(request: Request) {
       cat = normalizeCategoryName(cat) || "기타";
       if (cat === "기타" || !finalCategories.includes(cat)) continue;
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-      const val = chosenOutboundAmount(o, codeKey, codeToCost);
+      const val = chosenOutboundAmount(o, codeKey, codeToCost).amount;
       byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + val;
     }
     for (const i of inbound) {
@@ -501,12 +550,15 @@ export async function GET(request: Request) {
     if (debug) {
       const monthOutboundRows = outbound.filter((o) => (o.outbound_date ?? "").slice(0, 7) === queriedMonth);
       const monthOutboundBySalesChannel: Record<string, { row_cnt: number; qty: number; amount: number }> = {};
+      let queriedMonthSumTotalPriceRaw = 0;
       for (const o of monthOutboundRows) {
         const ch = String(o.sales_channel ?? "NULL").trim() || "NULL";
         if (!monthOutboundBySalesChannel[ch]) monthOutboundBySalesChannel[ch] = { row_cnt: 0, qty: 0, amount: 0 };
         const qty = Number(o.quantity ?? 0);
         const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-        const amount = chosenOutboundAmount(o, codeKey, codeToCost);
+        const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
+        const amount = chosen.amount;
+        queriedMonthSumTotalPriceRaw += parseMoney(o.total_price);
         monthOutboundBySalesChannel[ch].row_cnt += 1;
         monthOutboundBySalesChannel[ch].qty += qty;
         monthOutboundBySalesChannel[ch].amount += amount;
@@ -524,8 +576,11 @@ export async function GET(request: Request) {
         sourceDbHost,
         queriedMonth,
         queriedMonthOutboundRows: monthOutboundRows.length,
+        queriedMonthSumTotalPriceRaw,
         queriedMonthBySalesChannel: monthOutboundBySalesChannel,
         queriedMonthMonthlyTotals: monthlyTotals[queriedMonth] ?? null,
+        suspectedUnitPriceRows,
+        suspectedUnitPriceSamples,
         samples: outboundDebugSamples,
         monthlySalesByChannel,
       };
