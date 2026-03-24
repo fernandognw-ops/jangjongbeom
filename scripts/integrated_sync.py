@@ -18,7 +18,8 @@
   재고:      품목코드, 품목명→제품명, 품목구분→category, 입수량, 수량,
              창고명→dest_warehouse, 재고일자→snapshot_date, 원가→unit_cost, 재고원가→total_price
   출고:      품목코드, 품목명→제품명, 품목 또는 품목구분→category, 입수량, 수량,
-             출고처→dest_warehouse, 출고일자→outbound_date, 원가→unit_price, 합계→total_price, 매출구분→sales_channel
+             출고처→보관/물류 표시만, 출고일자→outbound_date, 원가→unit_price, 합계→total_price,
+             「판매 채널」→sales_channel·dest_warehouse (쿠팡|일반) — 매출구분 열 미사용
 
 [운영 정책]
   ★ 실제 DB 반영은 웹 업로드만 사용. 로컬 integrated_sync.py는 운영 DB 반영에 사용하지 않음.

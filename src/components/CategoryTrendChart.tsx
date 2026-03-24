@@ -87,6 +87,16 @@ export interface CategoryTrendData {
   };
 }
 
+/** 판매 채널별 월별 매출 막대(Recharts `data`) 한 행 */
+type ChannelSalesBarRow = {
+  month: string;
+  쿠팡: number;
+  일반: number;
+  total: number;
+  coupangPct: number;
+  generalPct: number;
+};
+
 type YearFilter = "all" | "2025" | "2026";
 
 export function CategoryTrendChart() {
@@ -156,6 +166,56 @@ export function CategoryTrendChart() {
     if (yearFilter === "all") return data.months;
     return data.months.filter((m) => m.startsWith(yearFilter));
   }, [data?.months, yearFilter]);
+
+  /**
+   * 판매 채널별 월별 매출 막대용 배열.
+   * `rows.push({ month, 일반: mt.outboundValueGeneral||0, 쿠팡: mt.outboundValueCoupang||0, … })` 형태로 구성
+   * (API `data`는 불변이라 `data.push` 금지).
+   */
+  const channelSalesBarData = useMemo((): ChannelSalesBarRow[] => {
+    if (!data?.monthlyTotals) return [];
+    const monthsToUse =
+      yearFilter === "all"
+        ? (data.months ?? [])
+        : (data.months ?? []).filter((m) => m.startsWith(yearFilter));
+    const rows: ChannelSalesBarRow[] = [];
+    for (const month of monthsToUse) {
+      const mt = data.monthlyTotals[month];
+      if (!mt) continue;
+      const 일반 = mt.outboundValueGeneral || 0;
+      const 쿠팡 = mt.outboundValueCoupang || 0;
+      const total =
+        typeof mt.outboundValue === "number" && Number.isFinite(mt.outboundValue)
+          ? mt.outboundValue
+          : 일반 + 쿠팡;
+      rows.push({
+        month,
+        일반,
+        쿠팡,
+        total,
+        coupangPct: total > 0 ? Math.round((쿠팡 / total) * 100) : 0,
+        generalPct: total > 0 ? Math.round((일반 / total) * 100) : 0,
+      });
+    }
+    return rows;
+  }, [data?.monthlyTotals, data?.months, yearFilter]);
+
+  const channelSalesKpis = useMemo(() => {
+    const totalSales = channelSalesBarData.reduce((s, r) => s + r.total, 0);
+    const coupangTotal = channelSalesBarData.reduce((s, r) => s + r.쿠팡, 0);
+    const generalTotal = channelSalesBarData.reduce((s, r) => s + r.일반, 0);
+    const cnt = channelSalesBarData.length || 1;
+    return {
+      totalSales,
+      coupangTotal,
+      generalTotal,
+      coupangAvg: Math.round(coupangTotal / cnt),
+      generalAvg: Math.round(generalTotal / cnt),
+      coupangShare: totalSales > 0 ? Math.round((coupangTotal / totalSales) * 100) : 0,
+      generalShare: totalSales > 0 ? Math.round((generalTotal / totalSales) * 100) : 0,
+      monthCount: channelSalesBarData.length,
+    };
+  }, [channelSalesBarData]);
 
   /** AI 예측보고 당월 예측을 반영한 chartData (다른 데이터 건드리지 않음) */
   const effectiveChartData = useMemo(() => {
@@ -744,35 +804,16 @@ export function CategoryTrendChart() {
         );
       })()}
 
-      {/* 판매 채널별 월별 매출 금액 (쿠팡 / 일반) */}
-      {data.monthlyTotals && Object.keys(data.monthlyTotals).length > 0 && (() => {
-        const monthsToUse = yearFilter === "all"
-          ? (data.months ?? [])
-          : (data.months ?? []).filter((m) => m.startsWith(yearFilter));
-        const channelData = monthsToUse
-          .filter((m) => data.monthlyTotals![m])
-          .map((month) => {
-            const t = data.monthlyTotals![month];
-            const coupang = t.outboundValueCoupang ?? 0;
-            const general = t.outboundValueGeneral ?? 0;
-            const total = coupang + general;
-            return {
-              month,
-              쿠팡: coupang,
-              일반: general,
-              total,
-              coupangPct: total > 0 ? Math.round((coupang / total) * 100) : 0,
-              generalPct: total > 0 ? Math.round((general / total) * 100) : 0,
-            };
-          });
-        const totalSales = channelData.reduce((s, r) => s + r.total, 0);
-        const coupangTotal = channelData.reduce((s, r) => s + r.쿠팡, 0);
-        const generalTotal = channelData.reduce((s, r) => s + r.일반, 0);
-        const cnt = channelData.length || 1;
-        const coupangAvg = Math.round(coupangTotal / cnt);
-        const generalAvg = Math.round(generalTotal / cnt);
-        const coupangShare = totalSales > 0 ? Math.round((coupangTotal / totalSales) * 100) : 0;
-        const generalShare = totalSales > 0 ? Math.round((generalTotal / totalSales) * 100) : 0;
+      {/* 판매 채널별 월별 매출 금액 (쿠팡 / 일반) — `channelSalesBarData`는 useMemo에서 rows.push로 구성 */}
+      {channelSalesBarData.length > 0 && (() => {
+        const {
+          totalSales,
+          coupangAvg,
+          generalAvg,
+          coupangShare,
+          generalShare,
+          monthCount,
+        } = channelSalesKpis;
         const COUPANG_COLOR = "#f97316";
         const GENERAL_COLOR = "#3b82f6";
         return (
@@ -780,7 +821,9 @@ export function CategoryTrendChart() {
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold text-cyan-400">판매 채널별 월별 매출 금액</h3>
-                <p className="mt-0.5 text-[10px] text-zinc-500">쿠팡 vs 일반(외) 채널 · 분석용</p>
+                <p className="mt-0.5 text-[10px] text-zinc-500">
+                  쿠팡 vs 일반(외) · 막대 합계·툴팁 총액은 월별 출고 매출 합(<span className="text-zinc-400">outboundValue</span>)
+                </p>
               </div>
             </div>
             <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -800,12 +843,12 @@ export function CategoryTrendChart() {
               </div>
               <div className="rounded-lg border border-zinc-600 bg-zinc-900/80 px-3 py-2">
                 <div className="text-[10px] text-zinc-500">기간</div>
-                <div className="text-sm font-medium text-zinc-300">{channelData.length}개월</div>
+                <div className="text-sm font-medium text-zinc-300">{monthCount}개월</div>
               </div>
             </div>
             <div className="h-56 w-full min-w-0 md:h-72">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={channelData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <BarChart data={channelSalesBarData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                   <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} />
                   <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => `₩${(v / 10000).toFixed(0)}만`} />

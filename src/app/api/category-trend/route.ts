@@ -1,16 +1,23 @@
 /**
  * 카테고리별 월별 추세 API
  * GET /api/category-trend
- * - inventory_outbound quantity 합산 (판매량), 금액은 total_price 우선 (DB와 SUM 일치)
+ * - 출고 금액: inventory_outbound 행별 total_price > 0 우선 → else unit_price×qty → else 마스터 unit_cost×qty
+ *   (문자열/쉼표 포함 금액은 parseMoney로 파싱해 SUM(total_price)와 일치)
+ * - 출고 채널: sales_channel만 `normalizeSalesChannelKr` — dest_warehouse·매출구분·보관센터 금지
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
  * - 월별 재고 자산: snapshot_date >= 차트 시작월의 모든 행을 읽고, 월별 **마지막 snapshot_date**만 카테고리별 total_price 합산 (limit 미사용)
+ * - ?debug=1: 출고 금액 샘플 20건 + 월별 채널 금액 집계 메타
  */
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";
-import { normalizeDestWarehouse } from "@/lib/inventoryChannels";
+import {
+  normalizeDestWarehouse,
+  normalizeSalesChannelKr,
+  WAREHOUSE_COUPANG,
+} from "@/lib/inventoryChannels";
 import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 
 const emptyResponse = {
@@ -60,34 +67,33 @@ async function fetchAllRows<T>(
   return all;
 }
 
-/** sales_channel이 쿠팡(coupang)인지 판별. DB에 'coupang' 또는 '쿠팡' 저장 가능 */
-function isCoupangChannel(ch: string | null | undefined): boolean {
-  const s = String(ch ?? "").trim().toLowerCase();
-  return s === "coupang" || s === "쿠팡" || s.includes("쿠팡");
+/** DB·엑셀에서 온 숫자(쉼표 문자열 등) 파싱 — Number()만 쓰면 NaN → 원가 폴백으로 잘못 집계됨 */
+function parseMoney(v: unknown): number {
+  if (v == null || v === "") return 0;
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const s = String(v).replace(/,/g, "").replace(/\s/g, "").trim();
+  if (s === "") return 0;
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
 }
 
-type OutboundRowVal = {
-  quantity?: number;
-  total_price?: number;
-  unit_price?: number;
-};
-
 /**
- * 출고 금액: DB 저장값 우선 (commit 시점과 SUM(total_price)와 일치).
- * total_price > 0 → 사용, 아니면 unit_price×qty, 둘 다 없으면 마스터 unit_cost×qty (레거시)
+ * 출고 라인 금액 — DB SUM(total_price)와 동일 우선순위.
+ * total_price > 0 → 그대로, 아니면 unit_price×qty, 마지막만 마스터 unit_cost×qty
  */
-function outboundLineValue(
-  o: OutboundRowVal,
+function chosenOutboundAmount(
+  row: { quantity?: unknown; total_price?: unknown; unit_price?: unknown },
   codeKey: string,
   codeToCost: Map<string, number>
 ): number {
-  const qty = Number(o.quantity ?? 0);
-  const tp = Number(o.total_price ?? 0);
-  if (Number.isFinite(tp) && tp > 0) return tp;
-  const up = Number(o.unit_price ?? 0);
-  if (Number.isFinite(up) && up > 0 && qty > 0) return qty * up;
-  const cost = codeToCost.get(codeKey) ?? 0;
-  return qty * cost;
+  const qty = Number(row.quantity ?? 0);
+  const totalPrice = parseMoney(row.total_price);
+  const unitPrice = parseMoney(row.unit_price);
+  const masterUnitCost = Number(codeToCost.get(codeKey) ?? 0);
+  if (totalPrice > 0) return totalPrice;
+  if (unitPrice > 0 && qty > 0) return unitPrice * qty;
+  if (masterUnitCost > 0 && qty > 0) return masterUnitCost * qty;
+  return 0;
 }
 
 /** 카테고리 정규화: 마스터 5개만. 캡슐세제 사은품 → 캡슐세제 */
@@ -100,8 +106,11 @@ function normalizeCategoryName(cat: string): string {
 /** 마스터 코드 5개만. 대시보드에 이 외 카테고리 표시 금지 */
 const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"];
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const debug = searchParams.get("debug") === "1";
+
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (!url || !key) {
@@ -257,21 +266,54 @@ export async function GET() {
 
     const monthlyTotals: Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundByChannel: Record<string, number> }> = {};
     for (const m of months) monthlyTotals[m] = { outbound: 0, inbound: 0, outboundValue: 0, inboundValue: 0, outboundCoupang: 0, outboundGeneral: 0, outboundValueCoupang: 0, outboundValueGeneral: 0, inboundByChannel: {} };
+
+    const outboundDebugSamples: Array<{
+      monthKey: string;
+      sales_channel: string;
+      quantity: number;
+      total_price_raw: unknown;
+      unit_price_raw: unknown;
+      chosen_amount: number;
+      channel_kr: string;
+    }> = [];
+
     for (const o of outbound) {
       const m = (o.outbound_date ?? "").slice(0, 7);
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-      const val = outboundLineValue(o, codeKey, codeToCost);
+      const val = chosenOutboundAmount(o, codeKey, codeToCost);
+      const channelKr = normalizeSalesChannelKr(o.sales_channel ?? "");
+      const isCoupang = channelKr === WAREHOUSE_COUPANG;
+
       monthlyTotals[m].outbound += qty;
       monthlyTotals[m].outboundValue += val;
-      if (isCoupangChannel(o.sales_channel)) {
+      if (isCoupang) {
         monthlyTotals[m].outboundCoupang += qty;
         monthlyTotals[m].outboundValueCoupang += val;
       } else {
         monthlyTotals[m].outboundGeneral += qty;
         monthlyTotals[m].outboundValueGeneral += val;
       }
+
+      if (debug && outboundDebugSamples.length < 20) {
+        outboundDebugSamples.push({
+          monthKey: m,
+          sales_channel: String(o.sales_channel ?? ""),
+          quantity: qty,
+          total_price_raw: o.total_price,
+          unit_price_raw: o.unit_price,
+          chosen_amount: val,
+          channel_kr: channelKr,
+        });
+      }
+    }
+
+    if (debug && outboundDebugSamples.length > 0) {
+      console.log(
+        "[category-trend:debug] outbound amount samples (20)",
+        JSON.stringify(outboundDebugSamples, null, 0)
+      );
     }
     for (const i of inbound) {
       const m = (i.inbound_date ?? "").slice(0, 7);
@@ -304,7 +346,7 @@ export async function GET() {
       cat = normalizeCategoryName(cat) || "기타";
       if (cat === "기타" || !finalCategories.includes(cat)) continue;
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-      const val = outboundLineValue(o, codeKey, codeToCost);
+      const val = chosenOutboundAmount(o, codeKey, codeToCost);
       byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + val;
     }
     for (const i of inbound) {
@@ -412,27 +454,51 @@ export async function GET() {
         maxDateByMonth.size
     );
 
-    return NextResponse.json(
-      {
-        months,
-        categories: finalCategories,
-        chartData,
-        naverSearchTrend,
-        momRates,
-        monthlyTotals,
-        monthlyValueByCategory,
-        momIndicators: {
+    const monthlySalesByChannel: Record<string, { 일반: number; 쿠팡: number }> = {};
+    for (const mk of months) {
+      const t = monthlyTotals[mk];
+      monthlySalesByChannel[mk] = {
+        일반: t?.outboundValueGeneral ?? 0,
+        쿠팡: t?.outboundValueCoupang ?? 0,
+      };
+    }
+
+    const payload: Record<string, unknown> = {
+      months,
+      categories: finalCategories,
+      chartData,
+      naverSearchTrend,
+      momRates,
+      monthlyTotals,
+      monthlyValueByCategory,
+      momIndicators: {
         outbound: prevOut > 0 ? clampMomRate(Math.round(((thisOut - prevOut) / prevOut) * 1000) / 10) : null,
         inbound: prevIn > 0 ? clampMomRate(Math.round(((thisIn - prevIn) / prevIn) * 1000) / 10) : null,
         thisMonthOutbound: thisOut,
         thisMonthInbound: thisIn,
-        thisMonthOutboundValue: Math.round(monthlyTotals[thisMonthKey]?.outboundValue ?? 0),
-        thisMonthInboundValue: Math.round(monthlyTotals[thisMonthKey]?.inboundValue ?? 0),
+        /** 출고 금액: chosenOutboundAmount 합 (total_price 우선) — DB SUM(total_price)와 동일 기준 */
+        thisMonthOutboundValue: monthlyTotals[thisMonthKey]?.outboundValue ?? 0,
+        thisMonthInboundValue: monthlyTotals[thisMonthKey]?.inboundValue ?? 0,
         thisMonthOutboundCoupang: monthlyTotals[thisMonthKey]?.outboundCoupang ?? 0,
         thisMonthOutboundGeneral: monthlyTotals[thisMonthKey]?.outboundGeneral ?? 0,
         thisMonthInboundByChannel: monthlyTotals[thisMonthKey]?.inboundByChannel ?? {},
+        /** 채널별 출고 금액(동일 월·동일 규칙) — 그래프 막대 비율 검증용 */
+        thisMonthOutboundValueCoupang: monthlyTotals[thisMonthKey]?.outboundValueCoupang ?? 0,
+        thisMonthOutboundValueGeneral: monthlyTotals[thisMonthKey]?.outboundValueGeneral ?? 0,
       },
-    },
+    };
+
+    if (debug) {
+      payload.outboundValueDebug = {
+        rule:
+          "amount: total_price>0 ? total_price : (unit_price>0 && qty>0 ? unit_price*qty : master unit_cost*qty); channel: normalizeSalesChannelKr(sales_channel)",
+        samples: outboundDebugSamples,
+        monthlySalesByChannel,
+      };
+    }
+
+    return NextResponse.json(
+      payload,
     {
       headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" },
     }

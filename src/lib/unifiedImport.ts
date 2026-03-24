@@ -215,7 +215,7 @@ export async function parseUnifiedFile(
     }
   }
 
-  // 4. 출고 시트 (출고일자, 품목구분, 수량(개), 출고처, 제품명, 매출구분)
+  // 4. 출고 시트 — 채널은 「판매 채널」 우선 (생산수불과 동일)
   const outSheet = findSheet(wb, ["출고", "이번달출고"]);
   if (outSheet) {
     const { headers, rows } = getSheetData(outSheet);
@@ -225,7 +225,7 @@ export async function parseUnifiedFile(
     const idxPerson = findCol(headers, ["출고처", "입고처"]);
     const idxProduct = findCol(headers, ["제품명"]);
     const idxCode = findCol(headers, ["품목코드", "제품코드", "코드"]);
-    const idxSalesChannel = findCol(headers, ["매출구분", "판매처"]);
+    const idxSalesChannel = findCol(headers, ["판매 채널", "판매채널", "판매 채널명", "매출구분", "판매처"]);
 
     if (idxDate >= 0 && idxGroup >= 0 && idxQty >= 0) {
       for (const row of rows) {

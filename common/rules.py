@@ -27,12 +27,23 @@ SYNONYMS = {
     "total_price": ["재고 금액", "재고금액", "합계금액", "합계원가", "합계"],  # 총액
     "sales_channel": ["매출구분", "판매처"],
     "stock_sales_channel": ["판매 채널", "판매채널", "판매 채널명"],
+    "outbound_sales_channel": ["판매 채널", "판매채널", "판매 채널명"],
     "category": ["품목구분", "품목", "카테고리"],
     "pack_size": ["입수량", "입수"],
     "unit_price": ["원가", "단가"],
     "total_price_inbound": ["합계원가", "합계"],
     "total_price_outbound": ["합계", "합계원가"],
 }
+
+# 출고 시트 출고일 열 — 웹 findOutboundDateColumnIndex 와 동일
+OUTBOUND_DATE_HEADER_TERMS = (
+    "출고일자",
+    "출고 일자",
+    "출고일",
+    "출고기준일",
+    "기준일자",
+    "기준 일자",
+)
 
 # 수량 컬럼 검색 시 제외할 키워드 (입수량 등 혼동 방지)
 QTY_EXCLUDE = ["입수량", "금액", "원가", "일자", "날짜", "재고원가"]

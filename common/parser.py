@@ -16,11 +16,11 @@ from .rules import (
     REQUIRED_SHEETS,
     SYNONYMS,
     QTY_EXCLUDE,
+    OUTBOUND_DATE_HEADER_TERMS,
 )
 from .classifier import (
     normalize_value,
     classify_warehouse_group,
-    to_sales_channel,
     normalize_sales_channel_kr,
 )
 
@@ -83,6 +83,32 @@ def _find_stock_date_col(row: list) -> tuple[int, str]:
             return i, raw
     for i, raw, n in cells:
         if "일자" in n and "입고" not in n and "출고" not in n and "출하" not in n:
+            return i, raw
+    return -1, ""
+
+
+def _find_outbound_date_col(row: list) -> tuple[int, str]:
+    """출고 시트 출고일 열 — 웹 findOutboundDateColumnIndex 와 동일."""
+    cells: list[tuple[int, str, str]] = []
+    for i, cell in enumerate(row):
+        raw = str(cell or "").strip()
+        cells.append((i, raw, _norm(raw)))
+    for term in OUTBOUND_DATE_HEADER_TERMS:
+        tn = _norm(term)
+        if len(tn) < 2:
+            continue
+        for i, raw, n in cells:
+            if not n:
+                continue
+            if tn == _norm("기준일") and n != tn and "입고" in n:
+                continue
+            if tn in n or n == tn:
+                return i, raw
+    for i, raw, n in cells:
+        if n in ("일자", "date", "날짜"):
+            return i, raw
+    for i, raw, n in cells:
+        if "일자" in n and "입고" not in n:
             return i, raw
     return -1, ""
 
@@ -324,8 +350,8 @@ def parse_outbound_excel(
     idx_name = _find_col(header_row, "product_name")
     idx_qty = _find_qty_col(header_row, "outbound")
     idx_center = _find_col(header_row, "outbound_center")
-    idx_date = _find_col(header_row, "outbound_date")
-    idx_sc = _find_col(header_row, "sales_channel")
+    idx_date, _outbound_date_header = _find_outbound_date_col(header_row)
+    idx_sc = _find_col(header_row, "outbound_sales_channel")
     idx_cat = _find_col(header_row, "category")
     idx_pack = _find_col(header_row, "pack_size")
     idx_unit = _find_col(header_row, "unit_price")
@@ -345,7 +371,7 @@ def parse_outbound_excel(
     }
     _debug_log(debug, "column mapping:", col_map)
 
-    if idx_code < 0 or idx_qty < 0 or idx_date < 0:
+    if idx_code < 0 or idx_qty < 0 or idx_date < 0 or idx_sc < 0:
         return []
 
     year = _year_from_filename(filename)
@@ -362,15 +388,16 @@ def parse_outbound_excel(
         name = str(row.iloc[idx_name] or "").strip() if idx_name >= 0 else ""
         name = name or code
         center_raw = str(row.iloc[idx_center] or "").strip() if idx_center >= 0 else ""
-        wh_group = classify_warehouse_group(center_raw)
-        sc_raw = str(row.iloc[idx_sc] or "").strip() if idx_sc >= 0 else ""
-        sales_channel = to_sales_channel(sc_raw or center_raw)
+        sc_raw = str(row.iloc[idx_sc] or "").strip()
+        sales_kr = normalize_sales_channel_kr(sc_raw)
+        sales_channel = "coupang" if sales_kr == "쿠팡" else "general"
+        wh_group = sales_kr
         cat = str(row.iloc[idx_cat] or "").strip() if idx_cat >= 0 else ""
         pack = _safe_int(row.iloc[idx_pack]) if idx_pack >= 0 else 1
         unit = _safe_float(row.iloc[idx_unit]) if idx_unit >= 0 else 0.0
         total = _safe_float(row.iloc[idx_total]) if idx_total >= 0 else 0.0
 
-        _debug_log(debug, f"  row {i}: parsed quantity={qty}, center={center_raw}, warehouse_group={wh_group}, date={date_str}, event_type=outbound")
+        _debug_log(debug, f"  row {i}: parsed quantity={qty}, center={center_raw}, sales_kr={sales_kr}, date={date_str}, event_type=outbound")
 
         rows.append({
             "product_code": code,
@@ -381,7 +408,7 @@ def parse_outbound_excel(
             "warehouse_group": wh_group,
             "sales_channel": sales_channel,
             "event_type": "outbound",
-            "dest_warehouse": center_raw or None,
+            "dest_warehouse": sales_kr,
             "category": cat or "기타",
             "pack_size": pack if pack > 0 else 1,
             "unit_price": unit,

@@ -8,6 +8,7 @@ import {
   defaultDateFromFilename,
   type RawdataRow,
   type StockSheetDateDiagnostics,
+  type OutboundSheetDateDiagnostics,
 } from "@/lib/excelParser";
 
 /** 입고에는 sales_channel 미사용 (출고만 사용) */
@@ -24,8 +25,12 @@ export interface OutboundRow {
   quantity: number;
   outbound_date: string;
   sales_channel: "coupang" | "general";
+  outbound_center?: string;
   dest_warehouse?: string;
   category?: string;
+  unit_price?: number;
+  /** 엑셀 출고 합계(검증 합산용). DB 적재 시에는 제품 unit_cost로 재계산될 수 있음 */
+  total_price?: number;
 }
 
 export interface StockSnapshotRow {
@@ -48,12 +53,14 @@ export interface ProductionSheetParseResult {
   rawdata: RawdataRow[];
   currentProductCodes: string[];
   yearInferred?: number;
-  /** 출고 시트 원본 데이터 행 수 (필터 전) */
+  /** 출고 시트 원본 데이터 행 수 (DATA_START_ROW 이후, 필터 전) */
   outboundRawRowCount?: number;
   /** 재고 시트 헤더에 「판매 채널」열이 잡혔는지 — false면 파서가 채널 열을 못 찾아 전부 일반 처리 */
   stockSalesChannelColumnFound?: boolean;
   /** 재고 기준일 열·샘플 (검증/로그) */
   stockDateDiagnostics?: StockSheetDateDiagnostics;
+  /** 출고 시트 출고일 열·샘플 */
+  outboundDateDiagnostics?: OutboundSheetDateDiagnostics;
 }
 
 export interface ProductionSheetParseError {
@@ -96,8 +103,11 @@ export async function parseProductionSheetFromBuffer(
     quantity: r.quantity,
     outbound_date: r.outbound_date,
     sales_channel: r.sales_channel as "coupang" | "general",
+    ...(r.outbound_center && { outbound_center: r.outbound_center }),
     ...(r.dest_warehouse && { dest_warehouse: r.dest_warehouse }),
     ...(r.category && { category: r.category }),
+    ...(typeof r.unit_price === "number" && r.unit_price > 0 ? { unit_price: r.unit_price } : {}),
+    ...(typeof r.total_price === "number" && r.total_price > 0 ? { total_price: r.total_price } : {}),
   }));
 
   const fileDay = defaultDateFromFilename(filename);
@@ -127,6 +137,19 @@ export async function parseProductionSheetFromBuffer(
     );
   }
 
+  const odiag = result.outboundDateDiagnostics;
+  if (odiag && outbound.length > 0) {
+    console.log(
+      "[productionSheetParser:outbound-date]",
+      JSON.stringify({
+        filename: filename ?? "",
+        outboundDateColumnHeader: odiag.outboundDateColumnHeader,
+        outboundDateColumnIndex: odiag.outboundDateColumnIndex,
+        samples: odiag.samples?.slice(0, 5),
+      })
+    );
+  }
+
   return {
     ok: true,
     inbound,
@@ -134,9 +157,10 @@ export async function parseProductionSheetFromBuffer(
     stockSnapshot,
     rawdata: result.rawdata ?? [],
     currentProductCodes: Array.from(currentProductCodes),
-    outboundRawRowCount: result.outboundRawRowCount,
+    outboundRawRowCount: result.outboundRawRowCount ?? 0,
     stockSalesChannelColumnFound: result.stockSheetDiagnostics?.salesChannelColumnFound,
     stockDateDiagnostics: result.stockDateDiagnostics,
+    outboundDateDiagnostics: result.outboundDateDiagnostics,
   };
 }
 

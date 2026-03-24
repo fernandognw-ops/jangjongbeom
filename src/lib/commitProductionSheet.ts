@@ -57,10 +57,16 @@ function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
   return "general";
 }
 
+/** 입고·레거시 창고명 → 쿠팡|일반 (출고 행에는 사용하지 않음) */
 function ensureDestWarehouse(wh: string | undefined | null): string {
   const s = String(wh ?? "").trim();
   if (!s) return "일반";
   return toDestWarehouse(s);
+}
+
+/** 출고: dest_warehouse는 출고센터(물류) 의미로만 저장 */
+function outboundDestForDb(r: OutboundRow): string {
+  return ensurePhysicalWarehouse(r.outbound_center ?? r.dest_warehouse);
 }
 
 function ensurePhysicalWarehouse(wh: string | undefined | null): string {
@@ -213,9 +219,9 @@ export async function commitProductionSheet(
     }
     const rows = outbound.map((r) => {
       const p = productMap.get(r.product_code);
-      const unitPrice = p?.unit_cost ?? 0;
+      const unitPrice = (r.unit_price ?? 0) > 0 ? (r.unit_price ?? 0) : (p?.unit_cost ?? 0);
       const qty = r.quantity ?? 0;
-      const totalPrice = qty * unitPrice;
+      const totalPrice = (r.total_price ?? 0) > 0 ? (r.total_price ?? 0) : qty * unitPrice;
       return {
         product_code: r.product_code,
         product_name: p?.product_name ?? r.product_code,
@@ -224,7 +230,7 @@ export async function commitProductionSheet(
         quantity: qty,
         outbound_date: normDateYmd(r.outbound_date) || r.outbound_date,
         sales_channel: ensureChannel(r.sales_channel),
-        dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
+        dest_warehouse: outboundDestForDb(r),
         unit_price: unitPrice,
         total_price: totalPrice,
       };

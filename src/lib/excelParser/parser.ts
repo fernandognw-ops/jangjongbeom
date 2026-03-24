@@ -9,9 +9,10 @@ import {
   DATA_START_ROW,
   SYNONYMS,
   QTY_EXCLUDE,
+  OUTBOUND_DATE_HEADER_TERMS,
 } from "./rules";
-import { normalizeValue, toDestWarehouse, toSalesChannel } from "./classifier";
-import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
+import { normalizeValue, toDestWarehouse } from "./classifier";
+import { normalizeSalesChannelKr, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 
 type Row = unknown[];
 
@@ -96,6 +97,40 @@ export function findStockDateColumnIndex(headerRow: Row): { index: number; heade
   for (const { i, n, raw } of cells) {
     if (!n.includes("일자")) continue;
     if (n.includes("입고") || n.includes("출고") || n.includes("출하")) continue;
+    return { index: i, headerLabel: raw };
+  }
+  return { index: -1, headerLabel: "" };
+}
+
+/**
+ * 출고 시트 출고일 열 — `findCol(..., "outbound_date")`의 "일자"가 입고/다른 열과 먼저 맞는 문제 완화.
+ */
+export function findOutboundDateColumnIndex(headerRow: Row): { index: number; headerLabel: string } {
+  const cells = headerRow.map((c, i) => ({
+    i,
+    raw: String(c ?? "").trim(),
+    n: norm(String(c ?? "")),
+  }));
+  const strongTerms = [...OUTBOUND_DATE_HEADER_TERMS] as string[];
+  for (const term of strongTerms) {
+    const tn = norm(term);
+    if (tn.length < 2) continue;
+    for (const { i, n, raw } of cells) {
+      if (!n) continue;
+      if (tn === norm("기준일") && n !== tn && n.includes("입고")) continue;
+      if (n.includes(tn) || n === tn) {
+        return { index: i, headerLabel: raw };
+      }
+    }
+  }
+  for (const { i, n, raw } of cells) {
+    if (n === "일자" || n === "date" || n === "날짜") {
+      return { index: i, headerLabel: raw };
+    }
+  }
+  for (const { i, n, raw } of cells) {
+    if (!n.includes("일자")) continue;
+    if (n.includes("입고")) continue;
     return { index: i, headerLabel: raw };
   }
   return { index: -1, headerLabel: "" };
@@ -191,6 +226,14 @@ export function defaultDateFromFilename(filename: string | undefined): string | 
     const mo = parseInt(kor[2], 10);
     if (mo >= 1 && mo <= 12) return `${y}-${String(mo).padStart(2, "0")}-01`;
   }
+  /** YY-MM (예: 25-04) — 연도 4자리 패턴보다 뒤에서 시도 */
+  const yyDashMm = name.match(/(?:^|[^\d])(\d{2})-(\d{2})(?:[^\d]|$)/);
+  if (yyDashMm) {
+    let y = parseInt(yyDashMm[1], 10);
+    if (y < 100) y += y < 50 ? 2000 : 1900;
+    const mo = parseInt(yyDashMm[2], 10);
+    if (mo >= 1 && mo <= 12) return `${y}-${String(mo).padStart(2, "0")}-01`;
+  }
   return undefined;
 }
 
@@ -211,6 +254,13 @@ export function monthYearFromFilename(filename: string | undefined): string | un
   }
   const ym = name.match(/(\d{4})[-_.](\d{2})(?![-_.]?\d{2})/);
   if (ym) return `${ym[1]}-${ym[2]}`;
+  const yyDashMm = name.match(/(?:^|[^\d])(\d{2})-(\d{2})(?:[^\d]|$)/);
+  if (yyDashMm) {
+    let y = parseInt(yyDashMm[1], 10);
+    if (y < 100) y += y < 50 ? 2000 : 1900;
+    const mo = parseInt(yyDashMm[2], 10);
+    if (mo >= 1 && mo <= 12) return `${y}-${String(mo).padStart(2, "0")}`;
+  }
   return undefined;
 }
 
@@ -341,29 +391,121 @@ export function parseInboundSheet(
   return rows;
 }
 
+/** 출고 시트 출고일 열·샘플 (검증/로그용) */
+export interface OutboundSheetDateDiagnostics {
+  outboundDateColumnIndex: number;
+  outboundDateColumnHeader: string;
+  outboundDateColumnFound: boolean;
+  /** 「판매 채널」 열 인덱스 (-1 = 미발견) */
+  outboundSalesChannelColumnIndex: number;
+  outboundSalesChannelColumnHeader: string;
+  outboundSalesChannelColumnFound: boolean;
+  /** 헤더 원문/정규화 전체 목록 (컬럼 인식 문제 진단용) */
+  outboundHeaderRowRaw: string[];
+  outboundHeaderRowNormalized: string[];
+  /** 판매 채널 컬럼 원문 distinct (trim 전/후) */
+  outboundSalesChannelDistinctRaw: string[];
+  outboundSalesChannelDistinctTrimmed: string[];
+  /** 판매 채널 매핑 디버그 샘플 */
+  outboundSalesChannelSamples: Array<{
+    rowIndex: number;
+    rawBeforeTrim: string;
+    rawAfterTrim: string;
+    mappedChannelKr: string;
+    mappedSalesChannel: "coupang" | "general";
+  }>;
+  samples: Array<{ rowIndex: number; rawCell: unknown; parsedDate: string }>;
+}
+
 export function parseOutboundSheet(
   data: unknown[][],
   filename?: string,
   sheetName = "출고"
-): OutboundRow[] {
-  if (data.length <= HEADER_ROW) return [];
+): { rows: OutboundRow[]; dateDiagnostics: OutboundSheetDateDiagnostics } {
+  const emptyDiag = (): OutboundSheetDateDiagnostics => ({
+    outboundDateColumnIndex: -1,
+    outboundDateColumnHeader: "",
+    outboundDateColumnFound: false,
+    outboundSalesChannelColumnIndex: -1,
+    outboundSalesChannelColumnHeader: "",
+    outboundSalesChannelColumnFound: false,
+    outboundHeaderRowRaw: [],
+    outboundHeaderRowNormalized: [],
+    outboundSalesChannelDistinctRaw: [],
+    outboundSalesChannelDistinctTrimmed: [],
+    outboundSalesChannelSamples: [],
+    samples: [],
+  });
+
+  if (data.length <= HEADER_ROW) {
+    return { rows: [], dateDiagnostics: emptyDiag() };
+  }
   const headerRow = data[HEADER_ROW] ?? [];
   const idxCode = findCol(headerRow, "product_code");
   const idxName = findCol(headerRow, "product_name");
   const idxQty = findQtyCol(headerRow);
   const idxCenter = findCol(headerRow, "outbound_center");
-  const idxDate = findCol(headerRow, "outbound_date");
-  const idxSc = findCol(headerRow, "sales_channel");
+  const { index: idxDate, headerLabel: outboundDateHeader } = findOutboundDateColumnIndex(headerRow);
+  const idxSc = findCol(headerRow, "outbound_sales_channel");
+  const outboundSalesChannelHeader =
+    idxSc >= 0 ? String(headerRow[idxSc] ?? "").trim() : "";
+  const outboundHeaderRowRaw = headerRow.map((h) => String(h ?? ""));
+  const outboundHeaderRowNormalized = outboundHeaderRowRaw.map((h) => norm(h));
   const idxCat = findCol(headerRow, "category");
   const idxPack = findCol(headerRow, "pack_size");
   const idxUnit = findCol(headerRow, "unit_price");
   const idxTotal = findCol(headerRow, "total_price_outbound");
 
-  if (idxCode < 0 || idxQty < 0 || idxDate < 0) return [];
+  if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
+    return {
+      rows: [],
+      dateDiagnostics: {
+        outboundDateColumnIndex: idxDate,
+        outboundDateColumnHeader: outboundDateHeader,
+        outboundDateColumnFound: idxDate >= 0,
+        outboundSalesChannelColumnIndex: idxSc,
+        outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
+        outboundSalesChannelColumnFound: idxSc >= 0,
+        outboundHeaderRowRaw,
+        outboundHeaderRowNormalized,
+        outboundSalesChannelDistinctRaw: [],
+        outboundSalesChannelDistinctTrimmed: [],
+        outboundSalesChannelSamples: [],
+        samples: [],
+      },
+    };
+  }
+
+  /** 「판매 채널」 열 필수 — 매출구분·출고처로 대체 불가 */
+  if (idxSc < 0) {
+    return {
+      rows: [],
+      dateDiagnostics: {
+        outboundDateColumnIndex: idxDate,
+        outboundDateColumnHeader: outboundDateHeader,
+        outboundDateColumnFound: true,
+        outboundSalesChannelColumnIndex: -1,
+        outboundSalesChannelColumnHeader: "",
+        outboundSalesChannelColumnFound: false,
+        outboundHeaderRowRaw,
+        outboundHeaderRowNormalized,
+        outboundSalesChannelDistinctRaw: [],
+        outboundSalesChannelDistinctTrimmed: [],
+        outboundSalesChannelSamples: [],
+        samples: [],
+      },
+    };
+  }
 
   const year = yearFromFilename(filename);
   const today = new Date().toISOString().slice(0, 10);
   const rows: OutboundRow[] = [];
+  const samples: OutboundSheetDateDiagnostics["samples"] = [];
+  const maxSamples = 5;
+  const rawSet = new Set<string>();
+  const trimmedSet = new Set<string>();
+  const outboundSalesChannelSamples: OutboundSheetDateDiagnostics["outboundSalesChannelSamples"] = [];
+  const maxChannelSamples = 20;
 
   for (let i = DATA_START_ROW; i < data.length; i++) {
     const row = (data[i] ?? []) as Row;
@@ -373,11 +515,31 @@ export function parseOutboundSheet(
     const dateStr = parseDate(dateVal, year, today);
     if (!validProductCode(code) || qty <= 0 || !dateStr) continue;
 
+    if (samples.length < maxSamples) {
+      samples.push({
+        rowIndex: i,
+        rawCell: dateVal,
+        parsedDate: dateStr,
+      });
+    }
+
     const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
-    const scRaw = idxSc >= 0 ? String(row[idxSc] ?? "").trim() : "";
-    const destWh = toDestWarehouse(scRaw || centerRaw);
-    const salesChannel = toSalesChannel(scRaw || centerRaw);
+    const scRawBeforeTrim = String(row[idxSc] ?? "");
+    const scRaw = scRawBeforeTrim.trim();
+    if (rawSet.size < 200) rawSet.add(scRawBeforeTrim);
+    if (trimmedSet.size < 200) trimmedSet.add(scRaw);
+    const channelKr = normalizeSalesChannelKr(scRaw);
+    const salesChannel: "coupang" | "general" = channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
+    if (outboundSalesChannelSamples.length < maxChannelSamples) {
+      outboundSalesChannelSamples.push({
+        rowIndex: i,
+        rawBeforeTrim: scRawBeforeTrim,
+        rawAfterTrim: scRaw,
+        mappedChannelKr: channelKr,
+        mappedSalesChannel: salesChannel,
+      });
+    }
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
     const unit = idxUnit >= 0 ? safeFloat(row[idxUnit]) : 0;
@@ -389,17 +551,60 @@ export function parseOutboundSheet(
       quantity: qty,
       outbound_center: centerRaw,
       outbound_date: dateStr,
-      warehouse_group: destWh,
+      warehouse_group: channelKr,
       sales_channel: salesChannel,
       event_type: "outbound",
-      dest_warehouse: destWh,
+      // 출고는 의미 분리: sales_channel=판매채널, dest_warehouse=출고센터
+      dest_warehouse: centerRaw || "미지정",
       category: cat || "기타",
       pack_size: pack > 0 ? pack : 1,
       unit_price: unit,
       total_price: total,
     });
   }
-  return rows;
+
+  const dateDiagnostics: OutboundSheetDateDiagnostics = {
+    outboundDateColumnIndex: idxDate,
+    outboundDateColumnHeader: outboundDateHeader,
+    outboundDateColumnFound: idxDate >= 0,
+    outboundSalesChannelColumnIndex: idxSc,
+    outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
+    outboundSalesChannelColumnFound: true,
+    outboundHeaderRowRaw,
+    outboundHeaderRowNormalized,
+    outboundSalesChannelDistinctRaw: [...rawSet].sort(),
+    outboundSalesChannelDistinctTrimmed: [...trimmedSet].sort(),
+    outboundSalesChannelSamples,
+    samples,
+  };
+
+  console.log(
+    "[parseOutboundSheet:outbound-date]",
+    JSON.stringify({
+      sheet: sheetName,
+      filename: filename ?? "",
+      outboundDateColumnIndex: idxDate,
+      outboundDateColumnHeader: outboundDateHeader,
+      outboundSalesChannelColumnIndex: idxSc,
+      outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
+      detectedOutboundSalesChannelHeader: outboundSalesChannelHeader || null,
+      outboundHeaderRowRaw,
+      outboundHeaderRowNormalized,
+      outboundSalesChannelDistinctRaw: dateDiagnostics.outboundSalesChannelDistinctRaw,
+      outboundSalesChannelDistinctTrimmed: dateDiagnostics.outboundSalesChannelDistinctTrimmed,
+      outboundSalesChannelSamples: dateDiagnostics.outboundSalesChannelSamples.slice(0, 20),
+      outboundSalesChannelRowValueSamples: dateDiagnostics.outboundSalesChannelSamples
+        .slice(0, 20)
+        .map((s) => ({
+          rowIndex: s.rowIndex,
+          excelSalesChannelRawCell: s.rawBeforeTrim,
+          parserReadValue: s.rawAfterTrim,
+        })),
+      samples: samples.slice(0, 5),
+    })
+  );
+
+  return { rows, dateDiagnostics };
 }
 
 /** 재고 시트 기준일 열 인식·샘플 (검증/로그용) */
@@ -630,6 +835,8 @@ export interface ParseResult {
   stockSheetDiagnostics?: { salesChannelColumnFound: boolean; salesChannelColumnIndex: number };
   /** 재고 기준일 열 인덱스·샘플 (입고일자 오매칭 방지 등) */
   stockDateDiagnostics?: StockSheetDateDiagnostics;
+  /** 출고 시트 출고일 열·샘플 */
+  outboundDateDiagnostics?: OutboundSheetDateDiagnostics;
 }
 
 export interface ParseError {
@@ -690,7 +897,7 @@ export function parseExcelFromBuffer(
   const stockData = getSheetData("재고");
 
   const inbound = parseInboundSheet(inboundData, filename);
-  const outbound = parseOutboundSheet(outboundData, filename);
+  const { rows: outbound, dateDiagnostics: outboundDateDiagnostics } = parseOutboundSheet(outboundData, filename);
   const { rows: stock, dateDiagnostics: stockDateDiagnostics } = parseStockSheet(stockData, filename);
   const stockSheetDiagnostics = inspectStockSheetHeaders(stockData);
   const outboundRawRowCount = Math.max(0, outboundData.length - DATA_START_ROW);
@@ -715,5 +922,6 @@ export function parseExcelFromBuffer(
     outboundRawRowCount,
     stockSheetDiagnostics,
     stockDateDiagnostics,
+    outboundDateDiagnostics,
   };
 }

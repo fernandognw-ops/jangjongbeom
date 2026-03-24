@@ -17,9 +17,21 @@ export type NormalizedWarehouse = typeof WAREHOUSE_GENERAL | typeof WAREHOUSE_CO
  * 엑셀·DB `sales_channel` 문자열 → "쿠팡" | "일반" (보관센터 기반 추론 없음)
  */
 export function normalizeSalesChannelKr(raw: string | null | undefined): NormalizedWarehouse {
-  const s = String(raw ?? "").trim().replace(/\s/g, "").toLowerCase();
+  const base = String(raw ?? "").trim().toLowerCase();
+  // 공백/구분자/특수문자 제거 후 키워드 포함 매칭
+  const s = base.replace(/[\s\-_()[\]{}.,/\\:;'"`~!@#$%^&*+=?|<>]+/g, "");
   if (!s) return WAREHOUSE_GENERAL;
-  if (s === "쿠팡" || s.includes("coupang")) return WAREHOUSE_COUPANG;
+  if (
+    s.includes("쿠팡") ||
+    s.includes("coupang") ||
+    s.includes("rocket") ||
+    s.includes("로켓") ||
+    s.includes("cp") ||
+    s.includes("cpl") ||
+    s.includes("fulfillment")
+  ) {
+    return WAREHOUSE_COUPANG;
+  }
   return WAREHOUSE_GENERAL;
 }
 

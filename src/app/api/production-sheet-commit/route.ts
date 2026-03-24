@@ -86,7 +86,20 @@ export async function POST(request: Request) {
     stockCount?: number;
     snapshotDateValid?: boolean;
     snapshotDateMismatchReason?: string;
+    uploadPeriodValid?: boolean;
+    outboundDateMismatchReason?: string;
   };
+  if (snapCheck.uploadPeriodValid === false) {
+    return NextResponse.json(
+      {
+        error: "업로드 기간(재고·출고 일자) 검증 실패. 파일을 다시 검증하세요.",
+        detail:
+          [snapCheck.snapshotDateMismatchReason, snapCheck.outboundDateMismatchReason].filter(Boolean).join(" ") ||
+          "",
+      },
+      { status: 400 }
+    );
+  }
   if ((snapCheck.stockCount ?? 0) > 0 && snapCheck.snapshotDateValid === false) {
     return NextResponse.json(
       {

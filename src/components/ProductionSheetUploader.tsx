@@ -25,6 +25,24 @@ interface ValidationResult {
   filenameExpectedMonth?: string;
   snapshotDateMismatchReason?: string;
   snapshotLooksLikeServerTodayOnly?: boolean;
+  stockDateColumnFound?: boolean;
+  stockDateColumnHeader?: string;
+  outboundDates?: string[];
+  outboundTotalQty?: number;
+  outboundTotalAmountExcel?: number;
+  outboundDatePeriodValid?: boolean;
+  outboundOutsideMonthCount?: number;
+  outboundOutsideMonthRatio?: number;
+  outboundDateMismatchReason?: string;
+  outboundDateColumnFound?: boolean;
+  outboundDateColumnHeader?: string;
+  outboundRawRowCount?: number;
+  uploadPeriodValid?: boolean;
+  outboundChannelBreakdown?: Record<string, number>;
+  outboundSalesChannelColumnFound?: boolean;
+  outboundSalesChannelColumnHeader?: string;
+  outboundSalesChannelClassifiedRaw?: { coupang: string[]; general: string[] };
+  outboundSalesChannelGeneralWithCoupangHint?: string[];
 }
 
 interface ParsedData {
@@ -76,6 +94,7 @@ export function ProductionSheetUploader() {
         if (!res.ok) {
           setStatus("error");
           setMessage(json.error ?? `검증 실패 (${res.status})`);
+          if (json.validation) setValidation(json.validation);
           setProgress("");
           return;
         }
@@ -189,8 +208,10 @@ export function ProductionSheetUploader() {
     !validation ||
     (validation.stockCount ?? 0) === 0 ||
     validation.snapshotDateValid !== false;
+  const periodOk = validation?.uploadPeriodValid !== false;
   const canApply =
     validation?.destWarehouseValid &&
+    periodOk &&
     snapshotOk &&
     parsedData?.previewToken &&
     status === "validated";
@@ -248,11 +269,13 @@ export function ProductionSheetUploader() {
         </label>
       </div>
 
-      {/* 검증 결과 */}
-      {validation && status === "validated" && (
+      {/* 검증 결과 (성공·실패 모두 상세 표시) */}
+      {validation && (status === "validated" || status === "error") && (
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-600">업로드 전 검증</h3>
-          <p className="mt-0.5 text-[10px] text-slate-500">이상 없을 때만 DB 반영 버튼 활성화</p>
+          <p className="mt-0.5 text-[10px] text-slate-500">
+            {status === "error" ? "검증 실패 상세 (아래 값 확인)" : "이상 없을 때만 DB 반영 버튼 활성화"}
+          </p>
           <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm md:grid-cols-3">
             <dt className="text-slate-500">rawdata 건수</dt>
             <dd className="font-mono">{validation.rawdataCount}건</dd>
@@ -278,10 +301,9 @@ export function ProductionSheetUploader() {
             </dd>
             {validation.destWarehouseBySource && (
               <>
-                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs">채널 분포 상세</dt>
+                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs">센터 분포 상세 (채널 아님)</dt>
                 <dd className="col-span-2 md:col-span-3 text-xs text-slate-600">
                   입고: 일반 {(validation.destWarehouseBySource.inbound?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.inbound?.["쿠팡"] ?? 0)} · 
-                  출고: 일반 {(validation.destWarehouseBySource.outbound?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.outbound?.["쿠팡"] ?? 0)} · 
                   재고: 일반 {(validation.destWarehouseBySource.stock?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.stock?.["쿠팡"] ?? 0)}
                 </dd>
               </>
@@ -298,6 +320,29 @@ export function ProductionSheetUploader() {
                 </dd>
               </>
             )}
+            <dt className="text-slate-500">출고일 열(헤더)</dt>
+            <dd className="font-mono text-xs">{validation.outboundDateColumnHeader || "-"}</dd>
+            <dt className="text-slate-500">판매 채널 열(헤더)</dt>
+            <dd className="font-mono text-xs">{validation.outboundSalesChannelColumnHeader || "-"}</dd>
+            <dt className="text-slate-500">판매 채널 열 인식</dt>
+            <dd className="font-mono text-xs">
+              {validation.outboundSalesChannelColumnFound === false ? "실패 (DB 반영 불가)" : "성공"}
+            </dd>
+            <dt className="text-slate-500">출고 날짜(파싱)</dt>
+            <dd className="font-mono text-xs">{(validation.outboundDates ?? []).join(", ") || "-"}</dd>
+            <dt className="text-slate-500">출고 채널별 수량 (판매 채널 기준)</dt>
+            <dd className="font-mono text-xs">
+              일반 {validation.outboundChannelBreakdown?.["일반"] ?? 0} · 쿠팡{" "}
+              {validation.outboundChannelBreakdown?.["쿠팡"] ?? 0}
+            </dd>
+            {!!validation.outboundSalesChannelGeneralWithCoupangHint?.length && (
+              <>
+                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs">일반으로 분류됐지만 쿠팡 힌트가 있는 원문</dt>
+                <dd className="col-span-2 md:col-span-3 font-mono text-[11px] text-amber-700">
+                  {validation.outboundSalesChannelGeneralWithCoupangHint.join(" | ")}
+                </dd>
+              </>
+            )}
           </dl>
           {validateWarnings.length > 0 && (
             <ul className="mt-2 list-inside list-disc rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -305,6 +350,12 @@ export function ProductionSheetUploader() {
                 <li key={i}>{w}</li>
               ))}
             </ul>
+          )}
+          {validation.uploadPeriodValid === false && (
+            <p className="mt-2 text-xs font-medium text-red-600">
+              기간 검증 실패(uploadPeriodValid) — DB 반영 불가
+              {validation.outboundDateMismatchReason ? ` · ${validation.outboundDateMismatchReason}` : ""}
+            </p>
           )}
           {(validation.stockCount ?? 0) > 0 && validation.snapshotDateValid === false && validation.snapshotDateMismatchReason && (
             <p className="mt-2 text-xs font-medium text-red-600">

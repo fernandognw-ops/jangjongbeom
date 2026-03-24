@@ -34,6 +34,34 @@ interface PreviewEntry {
       snapshotLooksLikeServerTodayOnly?: boolean;
       stockDateColumnFound?: boolean;
       stockDateColumnHeader?: string;
+      outboundDates?: string[];
+      outboundTotalQty?: number;
+      outboundTotalAmountExcel?: number;
+      outboundDatePeriodValid?: boolean;
+      outboundOutsideMonthCount?: number;
+      outboundOutsideMonthRatio?: number;
+      outboundDateMismatchReason?: string;
+      outboundDateColumnFound?: boolean;
+      outboundDateColumnHeader?: string;
+      outboundRawRowCount?: number;
+      uploadPeriodValid?: boolean;
+      outboundChannelBreakdown?: Record<string, number>;
+      outboundSalesChannelColumnFound?: boolean;
+      outboundSalesChannelColumnHeader?: string;
+      outboundSalesChannelDistinctRaw?: string[];
+      outboundSalesChannelDistinctTrimmed?: string[];
+      outboundSalesChannelSamples?: Array<{
+        rowIndex: number;
+        rawBeforeTrim: string;
+        rawAfterTrim: string;
+        mappedChannelKr: string;
+        mappedSalesChannel: "coupang" | "general";
+      }>;
+      outboundSalesChannelClassifiedRaw?: {
+        coupang: string[];
+        general: string[];
+      };
+      outboundSalesChannelGeneralWithCoupangHint?: string[];
     };
   };
   expiresAt: number;
