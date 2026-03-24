@@ -56,7 +56,7 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
     if (!file || !(file instanceof File)) {
-      return NextResponse.json({ ok: false, error: "파일이 없습니다." }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "파일이 없습니다.", serverInfo }, { status: 400 });
     }
 
     const buf = await file.arrayBuffer();

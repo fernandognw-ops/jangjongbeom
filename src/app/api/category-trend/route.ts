@@ -41,6 +41,7 @@ const emptyResponse = {
 };
 
 const PAGE_SIZE = 2000;
+const CATEGORY_TREND_SERVER_MARKER = "category-trend-v2-serverinfo-2026-03-24";
 
 async function fetchAllRows<T>(
   supabase: SupabaseClient,
@@ -110,12 +111,21 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const debug = searchParams.get("debug") === "1";
+    const queriedMonth = searchParams.get("month") || "2025-03";
+
+    const serverInfo = {
+      marker: CATEGORY_TREND_SERVER_MARKER,
+      commit: process.env.VERCEL_GIT_COMMIT_SHA || process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA || "",
+      branch: process.env.VERCEL_GIT_COMMIT_REF || process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF || "",
+      env: process.env.VERCEL_ENV || process.env.NODE_ENV || "",
+      ts: new Date().toISOString(),
+    };
 
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (!url || !key) {
       console.log("[category-trend] 데이터소스: env 미설정 → empty");
-      return NextResponse.json(emptyResponse, { status: 200 });
+      return NextResponse.json({ ...emptyResponse, serverInfo }, { status: 200 });
     }
 
     const supabase = createClient(url, key);
@@ -175,7 +185,7 @@ export async function GET(request: Request) {
     const snapData = stockSnapshotRows as { product_code: string; category?: string; snapshot_date?: string }[];
     if (outbound.length === 0 && inbound.length === 0 && products.length === 0 && snapData.length === 0) {
       console.log("[category-trend] 데이터소스: inventory_* 0건 → empty (DB)");
-      return NextResponse.json(emptyResponse, {
+      return NextResponse.json({ ...emptyResponse, serverInfo }, {
         headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" },
       });
     }
@@ -489,13 +499,38 @@ export async function GET(request: Request) {
     };
 
     if (debug) {
+      const monthOutboundRows = outbound.filter((o) => (o.outbound_date ?? "").slice(0, 7) === queriedMonth);
+      const monthOutboundBySalesChannel: Record<string, { row_cnt: number; qty: number; amount: number }> = {};
+      for (const o of monthOutboundRows) {
+        const ch = String(o.sales_channel ?? "NULL").trim() || "NULL";
+        if (!monthOutboundBySalesChannel[ch]) monthOutboundBySalesChannel[ch] = { row_cnt: 0, qty: 0, amount: 0 };
+        const qty = Number(o.quantity ?? 0);
+        const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
+        const amount = chosenOutboundAmount(o, codeKey, codeToCost);
+        monthOutboundBySalesChannel[ch].row_cnt += 1;
+        monthOutboundBySalesChannel[ch].qty += qty;
+        monthOutboundBySalesChannel[ch].amount += amount;
+      }
+      const sourceDbHost = (() => {
+        try {
+          return new URL(url).host;
+        } catch {
+          return "";
+        }
+      })();
       payload.outboundValueDebug = {
         rule:
           "amount: total_price>0 ? total_price : (unit_price>0 && qty>0 ? unit_price*qty : master unit_cost*qty); channel: normalizeSalesChannelKr(sales_channel)",
+        sourceDbHost,
+        queriedMonth,
+        queriedMonthOutboundRows: monthOutboundRows.length,
+        queriedMonthBySalesChannel: monthOutboundBySalesChannel,
+        queriedMonthMonthlyTotals: monthlyTotals[queriedMonth] ?? null,
         samples: outboundDebugSamples,
         monthlySalesByChannel,
       };
     }
+    payload.serverInfo = serverInfo;
 
     return NextResponse.json(
       payload,
@@ -506,7 +541,17 @@ export async function GET(request: Request) {
   } catch (e) {
     console.error("[category-trend] error:", e);
     return NextResponse.json(
-      { ...emptyResponse, error: e instanceof Error ? e.message : "Unknown error" },
+      {
+        ...emptyResponse,
+        serverInfo: {
+          marker: CATEGORY_TREND_SERVER_MARKER,
+          commit: process.env.VERCEL_GIT_COMMIT_SHA || process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA || "",
+          branch: process.env.VERCEL_GIT_COMMIT_REF || process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_REF || "",
+          env: process.env.VERCEL_ENV || process.env.NODE_ENV || "",
+          ts: new Date().toISOString(),
+        },
+        error: e instanceof Error ? e.message : "Unknown error",
+      },
       { status: 200 }
     );
   }
