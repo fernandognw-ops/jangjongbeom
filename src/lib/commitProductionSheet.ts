@@ -221,7 +221,13 @@ export async function commitProductionSheet(
       const p = productMap.get(r.product_code);
       const unitPrice = (r.unit_price ?? 0) > 0 ? (r.unit_price ?? 0) : (p?.unit_cost ?? 0);
       const qty = r.quantity ?? 0;
-      const totalPrice = (r.total_price ?? 0) > 0 ? (r.total_price ?? 0) : qty * unitPrice;
+      const outboundTotalAmount =
+        (r.outbound_total_amount ?? 0) > 0
+          ? (r.outbound_total_amount ?? 0)
+          : (r.total_price ?? 0) > 0
+            ? (r.total_price ?? 0)
+            : 0;
+      const totalPrice = outboundTotalAmount > 0 ? outboundTotalAmount : qty * unitPrice;
       return {
         product_code: r.product_code,
         product_name: p?.product_name ?? r.product_code,
@@ -233,6 +239,7 @@ export async function commitProductionSheet(
         dest_warehouse: outboundDestForDb(r),
         unit_price: unitPrice,
         total_price: totalPrice,
+        outbound_total_amount: outboundTotalAmount,
       };
     });
     for (let i = 0; i < rows.length; i += BATCH) {

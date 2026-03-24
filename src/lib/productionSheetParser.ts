@@ -31,6 +31,8 @@ export interface OutboundRow {
   unit_price?: number;
   /** 엑셀 출고 합계(검증 합산용). DB 적재 시에는 제품 unit_cost로 재계산될 수 있음 */
   total_price?: number;
+  /** 엑셀 원본 합계 금액(정답 금액) */
+  outbound_total_amount?: number;
 }
 
 export interface StockSnapshotRow {
@@ -108,6 +110,7 @@ export async function parseProductionSheetFromBuffer(
     ...(r.category && { category: r.category }),
     ...(typeof r.unit_price === "number" && r.unit_price > 0 ? { unit_price: r.unit_price } : {}),
     ...(typeof r.total_price === "number" && r.total_price > 0 ? { total_price: r.total_price } : {}),
+    ...(typeof r.total_price === "number" && r.total_price > 0 ? { outbound_total_amount: r.total_price } : {}),
   }));
 
   const fileDay = defaultDateFromFilename(filename);

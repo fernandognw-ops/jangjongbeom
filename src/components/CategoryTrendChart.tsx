@@ -217,6 +217,37 @@ export function CategoryTrendChart() {
     };
   }, [channelSalesBarData]);
 
+  useEffect(() => {
+    if (!data?.monthlyTotals) return;
+    const monthKeys = Object.keys(data.monthlyTotals).sort();
+    const nonZeroMonths = monthKeys.filter((m) => {
+      const mt = data.monthlyTotals?.[m];
+      return (
+        Number(mt?.outboundValue ?? 0) > 0 ||
+        Number(mt?.outboundValueCoupang ?? 0) > 0 ||
+        Number(mt?.outboundValueGeneral ?? 0) > 0
+      );
+    });
+    const hasNaN =
+      !Number.isFinite(channelSalesKpis.totalSales) ||
+      !Number.isFinite(channelSalesKpis.coupangTotal) ||
+      !Number.isFinite(channelSalesKpis.generalTotal);
+    console.log("[CategoryTrendChart:channel-sales-debug]", {
+      yearFilter,
+      monthCountRaw: monthKeys.length,
+      monthCountFiltered: channelSalesBarData.length,
+      nonZeroMonths: nonZeroMonths.slice(-10),
+      sampleMonthlyTotals: nonZeroMonths.slice(-3).map((m) => ({
+        month: m,
+        outboundValue: data.monthlyTotals?.[m]?.outboundValue ?? 0,
+        outboundValueCoupang: data.monthlyTotals?.[m]?.outboundValueCoupang ?? 0,
+        outboundValueGeneral: data.monthlyTotals?.[m]?.outboundValueGeneral ?? 0,
+      })),
+      kpis: channelSalesKpis,
+      hasNaN,
+    });
+  }, [data?.monthlyTotals, yearFilter, channelSalesBarData, channelSalesKpis]);
+
   /** AI 예측보고 당월 예측을 반영한 chartData (다른 데이터 건드리지 않음) */
   const effectiveChartData = useMemo(() => {
     if (!data?.chartData?.length) return data?.chartData ?? [];
@@ -878,8 +909,8 @@ export function CategoryTrendChart() {
                   <Legend formatter={(value) => (
                     <span className="text-sm" style={{ color: value === "쿠팡" ? COUPANG_COLOR : GENERAL_COLOR }}>{value}</span>
                   )} />
-                  <Bar dataKey="쿠팡" fill={COUPANG_COLOR} radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="일반" fill={GENERAL_COLOR} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="쿠팡" fill={COUPANG_COLOR} radius={[4, 4, 0, 0]} minPointSize={2} />
+                  <Bar dataKey="일반" fill={GENERAL_COLOR} radius={[4, 4, 0, 0]} minPointSize={2} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

@@ -136,6 +136,41 @@ export function findOutboundDateColumnIndex(headerRow: Row): { index: number; he
   return { index: -1, headerLabel: "" };
 }
 
+function isInvalidTotalHeader(header: string): boolean {
+  const n = norm(header || "");
+  return n.includes(norm("단가")) || n.includes(norm("원가"));
+}
+
+/**
+ * 출고 합계 금액 열 전용 탐색.
+ * - 단가/원가 헤더는 무조건 제외
+ * - 우선순위: 합계* > 총금액/출고금액/판매금액 > 기타 후보
+ */
+function findOutboundTotalAmountColumnIndex(headerRow: Row): { index: number; headerLabel: string } {
+  const candidates = SYNONYMS.total_price_outbound ?? [];
+  const prio1 = [norm("합계")];
+  const prio2 = [norm("총금액"), norm("출고금액"), norm("판매금액"), norm("공급가액"), norm("결제금액")];
+  const scored: Array<{ i: number; raw: string; score: number }> = [];
+  for (let i = 0; i < headerRow.length; i++) {
+    const raw = String(headerRow[i] ?? "").trim();
+    const n = norm(raw);
+    if (!n) continue;
+    if (isInvalidTotalHeader(raw)) continue;
+    const matched = candidates.some((c) => {
+      const cn = norm(c);
+      return cn.includes(n) || n.includes(cn);
+    });
+    if (!matched) continue;
+    let score = 1;
+    if (prio2.some((k) => n.includes(k))) score = 2;
+    if (prio1.some((k) => n.includes(k))) score = 3;
+    scored.push({ i, raw, score });
+  }
+  if (scored.length === 0) return { index: -1, headerLabel: "" };
+  scored.sort((a, b) => b.score - a.score || a.i - b.i);
+  return { index: scored[0].i, headerLabel: scored[0].raw };
+}
+
 function parseDate(
   val: unknown,
   year: number,
@@ -400,6 +435,10 @@ export interface OutboundSheetDateDiagnostics {
   outboundSalesChannelColumnIndex: number;
   outboundSalesChannelColumnHeader: string;
   outboundSalesChannelColumnFound: boolean;
+  /** 「합계 금액」(출고 총액) 열 인덱스 */
+  outboundTotalAmountColumnIndex: number;
+  outboundTotalAmountColumnHeader: string;
+  outboundTotalAmountColumnFound: boolean;
   /** 헤더 원문/정규화 전체 목록 (컬럼 인식 문제 진단용) */
   outboundHeaderRowRaw: string[];
   outboundHeaderRowNormalized: string[];
@@ -413,6 +452,12 @@ export interface OutboundSheetDateDiagnostics {
     rawAfterTrim: string;
     mappedChannelKr: string;
     mappedSalesChannel: "coupang" | "general";
+  }>;
+  outboundTotalAmountSamples: Array<{
+    rowIndex: number;
+    rawCell: unknown;
+    parsedAmount: number;
+    invalidBySanity: boolean;
   }>;
   samples: Array<{ rowIndex: number; rawCell: unknown; parsedDate: string }>;
 }
@@ -429,11 +474,15 @@ export function parseOutboundSheet(
     outboundSalesChannelColumnIndex: -1,
     outboundSalesChannelColumnHeader: "",
     outboundSalesChannelColumnFound: false,
+    outboundTotalAmountColumnIndex: -1,
+    outboundTotalAmountColumnHeader: "",
+    outboundTotalAmountColumnFound: false,
     outboundHeaderRowRaw: [],
     outboundHeaderRowNormalized: [],
     outboundSalesChannelDistinctRaw: [],
     outboundSalesChannelDistinctTrimmed: [],
     outboundSalesChannelSamples: [],
+    outboundTotalAmountSamples: [],
     samples: [],
   });
 
@@ -454,7 +503,7 @@ export function parseOutboundSheet(
   const idxCat = findCol(headerRow, "category");
   const idxPack = findCol(headerRow, "pack_size");
   const idxUnit = findCol(headerRow, "unit_price");
-  const idxTotal = findCol(headerRow, "total_price_outbound");
+  const { index: idxTotal, headerLabel: outboundTotalAmountHeader } = findOutboundTotalAmountColumnIndex(headerRow);
 
   if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
     return {
@@ -466,11 +515,15 @@ export function parseOutboundSheet(
         outboundSalesChannelColumnIndex: idxSc,
         outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
         outboundSalesChannelColumnFound: idxSc >= 0,
+        outboundTotalAmountColumnIndex: idxTotal,
+        outboundTotalAmountColumnHeader: outboundTotalAmountHeader,
+        outboundTotalAmountColumnFound: idxTotal >= 0,
         outboundHeaderRowRaw,
         outboundHeaderRowNormalized,
         outboundSalesChannelDistinctRaw: [],
         outboundSalesChannelDistinctTrimmed: [],
         outboundSalesChannelSamples: [],
+        outboundTotalAmountSamples: [],
         samples: [],
       },
     };
@@ -487,11 +540,15 @@ export function parseOutboundSheet(
         outboundSalesChannelColumnIndex: -1,
         outboundSalesChannelColumnHeader: "",
         outboundSalesChannelColumnFound: false,
+        outboundTotalAmountColumnIndex: idxTotal,
+        outboundTotalAmountColumnHeader: outboundTotalAmountHeader,
+        outboundTotalAmountColumnFound: idxTotal >= 0,
         outboundHeaderRowRaw,
         outboundHeaderRowNormalized,
         outboundSalesChannelDistinctRaw: [],
         outboundSalesChannelDistinctTrimmed: [],
         outboundSalesChannelSamples: [],
+        outboundTotalAmountSamples: [],
         samples: [],
       },
     };
@@ -505,6 +562,7 @@ export function parseOutboundSheet(
   const rawSet = new Set<string>();
   const trimmedSet = new Set<string>();
   const outboundSalesChannelSamples: OutboundSheetDateDiagnostics["outboundSalesChannelSamples"] = [];
+  const outboundTotalAmountSamples: OutboundSheetDateDiagnostics["outboundTotalAmountSamples"] = [];
   const maxChannelSamples = 20;
 
   for (let i = DATA_START_ROW; i < data.length; i++) {
@@ -543,7 +601,17 @@ export function parseOutboundSheet(
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
     const unit = idxUnit >= 0 ? safeFloat(row[idxUnit]) : 0;
-    const total = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
+    const totalRaw = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
+    const invalidBySanity = unit > 0 && totalRaw > 0 && totalRaw < unit * 1.2;
+    const total = invalidBySanity ? 0 : totalRaw;
+    if (outboundTotalAmountSamples.length < maxChannelSamples) {
+      outboundTotalAmountSamples.push({
+        rowIndex: i,
+        rawCell: idxTotal >= 0 ? row[idxTotal] : null,
+        parsedAmount: total,
+        invalidBySanity,
+      });
+    }
 
     rows.push({
       product_code: code,
@@ -570,11 +638,15 @@ export function parseOutboundSheet(
     outboundSalesChannelColumnIndex: idxSc,
     outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
     outboundSalesChannelColumnFound: true,
+    outboundTotalAmountColumnIndex: idxTotal,
+    outboundTotalAmountColumnHeader: outboundTotalAmountHeader,
+    outboundTotalAmountColumnFound: idxTotal >= 0,
     outboundHeaderRowRaw,
     outboundHeaderRowNormalized,
     outboundSalesChannelDistinctRaw: [...rawSet].sort(),
     outboundSalesChannelDistinctTrimmed: [...trimmedSet].sort(),
     outboundSalesChannelSamples,
+    outboundTotalAmountSamples,
     samples,
   };
 
@@ -587,7 +659,10 @@ export function parseOutboundSheet(
       outboundDateColumnHeader: outboundDateHeader,
       outboundSalesChannelColumnIndex: idxSc,
       outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
+      outboundTotalAmountColumnIndex: idxTotal,
+      outboundTotalAmountColumnHeader: outboundTotalAmountHeader,
       detectedOutboundSalesChannelHeader: outboundSalesChannelHeader || null,
+      detectedOutboundTotalAmountHeader: outboundTotalAmountHeader || null,
       outboundHeaderRowRaw,
       outboundHeaderRowNormalized,
       outboundSalesChannelDistinctRaw: dateDiagnostics.outboundSalesChannelDistinctRaw,
@@ -600,6 +675,7 @@ export function parseOutboundSheet(
           excelSalesChannelRawCell: s.rawBeforeTrim,
           parserReadValue: s.rawAfterTrim,
         })),
+      outboundTotalAmountSamples: dateDiagnostics.outboundTotalAmountSamples.slice(0, 20),
       samples: samples.slice(0, 5),
     })
   );

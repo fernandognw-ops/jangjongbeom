@@ -40,7 +40,41 @@ function isGeneralInbound(dest: string | null | undefined): boolean {
   return s === "일반" || s.includes("제이에스") || s.includes("컬리");
 }
 
-export async function GET() {
+type MonthDebugRow = {
+  rawMonthKey: string;
+  groupedMonthKey: string;
+  sourceDateMin: string;
+  sourceDateMax: string;
+  affectedRowCount: number;
+};
+
+function buildMonthDebugRows<T>(rows: T[], dateGetter: (row: T) => string): MonthDebugRow[] {
+  const map = new Map<string, { min: string; max: string; cnt: number }>();
+  for (const row of rows) {
+    const raw = String(dateGetter(row) ?? "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) continue;
+    const monthKey = raw.slice(0, 7);
+    const prev = map.get(monthKey);
+    if (!prev) {
+      map.set(monthKey, { min: raw, max: raw, cnt: 1 });
+      continue;
+    }
+    prev.cnt += 1;
+    if (raw < prev.min) prev.min = raw;
+    if (raw > prev.max) prev.max = raw;
+  }
+  return [...map.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, v]) => ({
+      rawMonthKey: key,
+      groupedMonthKey: key,
+      sourceDateMin: v.min,
+      sourceDateMax: v.max,
+      affectedRowCount: v.cnt,
+    }));
+}
+
+export async function GET(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) {
@@ -52,6 +86,7 @@ export async function GET() {
 
   const supabase = createClient(url, key);
   const startMs = Date.now();
+  const debug = new URL(request.url).searchParams.get("debug") === "1";
 
   try {
     let outboundAgg: { product_code: string; total_outbound: number; day_count: number }[] = [];
@@ -60,7 +95,7 @@ export async function GET() {
     const now = new Date();
     const thisMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 
-    const [productsRes, snapshotRes, currentRes, outboundAggRes, todayCountRes, inboundRes] =
+    const [productsRes, snapshotRes, currentRes, outboundAggRes, todayCountRes, inboundRes, outboundForMonthDebugRes] =
       await Promise.all([
         supabase.from(TABLE_PRODUCTS).select("*").order("product_code"),
         supabase
@@ -69,7 +104,18 @@ export async function GET() {
         supabase.from(TABLE_CURRENT).select("product_code"),
         supabase.rpc("get_outbound_product_agg", { p_days: 90 }),
         supabase.rpc("get_today_inout_count"),
-        supabase.from("inventory_inbound").select("quantity,dest_warehouse").gte("inbound_date", thisMonthStart).limit(50000),
+        supabase
+          .from("inventory_inbound")
+          .select("quantity,dest_warehouse,inbound_date")
+          .gte("inbound_date", thisMonthStart)
+          .limit(50000),
+        debug
+          ? supabase
+              .from("inventory_outbound")
+              .select("outbound_date")
+              .gte("outbound_date", thisMonthStart)
+              .limit(50000)
+          : Promise.resolve({ data: [], error: null } as unknown as { data: Array<{ outbound_date?: string }>; error: null }),
       ]);
 
     if (productsRes.error) {
@@ -222,7 +268,7 @@ export async function GET() {
     const finalProducts =
       filteredProducts.length > 0 ? filteredProducts : products;
 
-    return NextResponse.json({
+    const payload: Record<string, unknown> = {
       products: finalProducts,
       stockSnapshot,
       stockByProduct,
@@ -238,7 +284,20 @@ export async function GET() {
       recommendedOrderByProduct,
       totalValue,
       _meta: { source: "aggregated", hasSnapshot, timingMs: Date.now() - startMs },
-    });
+    };
+
+    if (debug) {
+      const inboundRows = (inboundRes.data ?? []) as Array<{ inbound_date?: string }>;
+      const outboundRows = (outboundForMonthDebugRes.data ?? []) as Array<{ outbound_date?: string }>;
+      const snapshotRowsForMonth = (snapshotRes.data ?? []) as Array<{ snapshot_date?: string }>;
+      payload.monthKeyDebug = {
+        inbound: buildMonthDebugRows(inboundRows, (r) => String(r.inbound_date ?? "")),
+        outbound: buildMonthDebugRows(outboundRows, (r) => String(r.outbound_date ?? "")),
+        snapshot: buildMonthDebugRows(snapshotRowsForMonth, (r) => String(r.snapshot_date ?? "")),
+      };
+    }
+
+    return NextResponse.json(payload);
   } catch (e) {
     console.error("[inventory/summary] error:", e);
     return NextResponse.json(

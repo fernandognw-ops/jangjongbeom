@@ -44,7 +44,7 @@ export const SYNONYMS: Record<string, string[]> = {
   pack_size: ["입수량", "입수"],
   unit_price: ["원가", "단가"],
   total_price_inbound: ["합계원가", "합계"],
-  total_price_outbound: ["합계", "합계원가"],
+  total_price_outbound: ["합계금액", "합계 금액", "총금액", "출고금액", "판매금액", "공급가액", "결제금액", "합계"],
 } as const;
 
 /** 출고 시트 출고일 열 — findOutboundDateColumnIndex 전용 (입고일자 오매칭 방지) */

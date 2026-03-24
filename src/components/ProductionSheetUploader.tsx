@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import Link from "next/link";
 import { useInventory } from "@/context/InventoryContext";
 
 const ACCEPT = ".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel";
@@ -12,7 +13,7 @@ interface ValidationResult {
   outboundParsedCount?: number;
   outboundTrace?: { rawRows?: number; parsedRows: number; filteredOut?: number };
   stockCount: number;
-  totalStockValue: number;
+  totalStockValue?: number;
   destWarehouseDistribution: Record<string, number>;
   destWarehouseBySource?: { inbound: Record<string, number>; outbound: Record<string, number>; stock: Record<string, number> };
   snapshotDates: string[];
@@ -43,28 +44,47 @@ interface ValidationResult {
   outboundSalesChannelColumnHeader?: string;
   outboundSalesChannelClassifiedRaw?: { coupang: string[]; general: string[] };
   outboundSalesChannelGeneralWithCoupangHint?: string[];
-}
-
-interface ParsedData {
-  previewToken: string;
+  outboundSumTotalAmountParsed?: number;
+  outboundSumUnitPriceXQty?: number;
+  outboundTotalAmountColumnFound?: boolean;
+  outboundTotalAmountColumnHeader?: string;
+  autoValidation?: {
+    targetMonthKey?: string | null;
+    monthRowCounts?: { inbound: Record<string, number>; outbound: Record<string, number>; snapshot: Record<string, number> };
+    sums?: { sumOutboundTotalAmountField: number; sumTotalPrice: number; sumUnitPriceXQty: number };
+    chosenSum?: number;
+    channelAmountsKrw?: { 일반: number; 쿠팡: number };
+    sourceSelection?: {
+      rowCounts?: Record<string, number>;
+      sumAmountBySource?: Record<string, number>;
+      outboundTotalAmountVsTotalPriceRatio?: number | null;
+    };
+    outboundTotalEqualsUnitPriceRowCount?: number;
+    outboundTotalEqualsUnitPriceSamples?: Array<{
+      product_code: string;
+      quantity: number;
+      unit_price: number;
+      total_price: number;
+    }>;
+    anomalyRowCount?: number;
+    blockReasons?: string[];
+  };
 }
 
 export function ProductionSheetUploader() {
   const { refresh } = useInventory();
   const [file, setFile] = useState<File | null>(null);
-  const [status, setStatus] = useState<"idle" | "parsing" | "validated" | "applying" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "uploading" | "validating" | "applying" | "success" | "error">("idle");
   const [message, setMessage] = useState<string>("");
   const [progress, setProgress] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
   const [validation, setValidation] = useState<ValidationResult | null>(null);
-  const [parsedData, setParsedData] = useState<ParsedData | null>(null);
   const [filename, setFilename] = useState<string>("");
   const [validateWarnings, setValidateWarnings] = useState<string[]>([]);
 
   const reset = useCallback(() => {
     setFile(null);
     setValidation(null);
-    setParsedData(null);
     setFilename("");
     setValidateWarnings([]);
     setMessage("");
@@ -78,12 +98,14 @@ export function ProductionSheetUploader() {
       if (!f) return;
 
       setFile(f);
-      setStatus("parsing");
-      setProgress("서버에서 파싱 중…");
+      setStatus("uploading");
+      setProgress("파일 업로드 중…");
 
       try {
         const formData = new FormData();
         formData.append("file", f);
+        setStatus("validating");
+        setProgress("검증 중…");
 
         const res = await fetch("/api/production-sheet-validate", {
           method: "POST",
@@ -95,80 +117,46 @@ export function ProductionSheetUploader() {
           setStatus("error");
           setMessage(json.error ?? `검증 실패 (${res.status})`);
           if (json.validation) setValidation(json.validation);
+          setFilename(f.name);
+          setValidateWarnings(Array.isArray(json.warnings) ? json.warnings : []);
           setProgress("");
           return;
         }
 
-        if (!json.ok || !json.validation || !json.previewToken) {
+        if (!json.ok || !json.validation) {
           setStatus("error");
-          setMessage("검증 결과 형식 오류");
+          setMessage(json.error ?? "검증 결과 형식 오류");
           setProgress("");
           return;
         }
 
         setValidation(json.validation);
-        setParsedData({ previewToken: json.previewToken });
         setFilename(f.name);
         setValidateWarnings(Array.isArray(json.warnings) ? json.warnings : []);
-        setStatus("validated");
+        setStatus("success");
+        const ac = json.autoCommit;
+        if (ac?.executed && ac?.result) {
+          setMessage(
+            `자동 반영 완료. 입고 ${ac.result.inboundInserted}건, 출고 ${ac.result.outboundInserted}건, 재고 ${ac.result.stockSnapshotCount}건`
+          );
+        } else {
+          setMessage("검증은 완료되었지만 자동 반영 결과를 확인하지 못했습니다.");
+        }
         setProgress("");
-        setMessage("");
+        try {
+          await new Promise((r) => setTimeout(r, 1200));
+          await refresh();
+        } catch (e) {
+          console.warn("[업로드] 새로고침 실패:", e);
+        }
       } catch (e) {
         setStatus("error");
         setProgress("");
         setMessage(e instanceof Error ? e.message : "파싱 중 오류가 발생했습니다.");
       }
     },
-    [reset]
+    [refresh, reset]
   );
-
-  const handleApply = useCallback(async () => {
-    if (!parsedData || !validation?.destWarehouseValid) return;
-    if ((validation.stockCount ?? 0) > 0 && validation.snapshotDateValid === false) return;
-
-    setStatus("applying");
-    setProgress("DB 반영 중…");
-
-    try {
-      const res = await fetch("/api/production-sheet-commit", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-source": "web",
-        },
-        body: JSON.stringify({ previewToken: parsedData.previewToken }),
-      });
-      const json = await res.json();
-
-      if (!res.ok) {
-        setStatus("error");
-        setMessage(json.error ?? `반영 실패 (${res.status})`);
-        setProgress("");
-        return;
-      }
-
-      setStatus("success");
-      const parts: string[] = [];
-      if ((json.inbound?.inserted ?? 0) > 0) parts.push(`입고 ${json.inbound.inserted}건`);
-      if ((json.outbound?.inserted ?? 0) > 0) parts.push(`출고 ${json.outbound.inserted}건`);
-      if ((json.stockSnapshot ?? 0) > 0) parts.push(`재고 ${json.stockSnapshot}건`);
-      setMessage(`DB 갱신 완료. ${parts.join(", ")}`);
-      setProgress("");
-
-      try {
-        await new Promise((r) => setTimeout(r, 1500));
-        await refresh();
-      } catch (e) {
-        console.warn("[업로드] 새로고침 실패:", e);
-      }
-
-      reset();
-    } catch (e) {
-      setStatus("error");
-      setProgress("");
-      setMessage(e instanceof Error ? e.message : "반영 중 오류가 발생했습니다.");
-    }
-  }, [parsedData, validation, refresh, reset]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -204,28 +192,21 @@ export function ProductionSheetUploader() {
     [handleFile]
   );
 
-  const snapshotOk =
-    !validation ||
-    (validation.stockCount ?? 0) === 0 ||
-    validation.snapshotDateValid !== false;
-  const periodOk = validation?.uploadPeriodValid !== false;
-  const canApply =
-    validation?.destWarehouseValid &&
-    periodOk &&
-    snapshotOk &&
-    parsedData?.previewToken &&
-    status === "validated";
-
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
       <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-600 md:text-base">
-        생산수불현황 업로드 (웹 UI 승인 기반)
+        생산수불현황 업로드 (자동 검증·자동 반영)
       </h2>
       <p className="mt-1 text-xs text-slate-500 md:text-sm">
-        1단계: 파일 업로드 → 서버 검증 → 2단계: DB 반영 클릭
+        파일 업로드 1회로 검증 통과 시 자동 DB 반영
       </p>
       <p className="mt-0.5 text-xs text-slate-500 md:text-sm">
         웹 UI 승인 경로만 DB 반영 (로컬 스크립트·직접 API 호출 차단)
+      </p>
+      <p className="mt-1 text-xs text-slate-500">
+        <Link href="/admin/upload-logs" className="text-indigo-600 hover:underline">
+          업로드 검증 이력 (관리자)
+        </Link>
       </p>
 
       <div
@@ -249,12 +230,19 @@ export function ProductionSheetUploader() {
           htmlFor="production-sheet-input"
           className="pointer-events-none flex w-full flex-col items-center justify-center px-4 py-6"
         >
-          {status === "parsing" || status === "applying" ? (
+          {status === "uploading" || status === "validating" || status === "applying" ? (
             <div className="flex flex-col items-center gap-1">
-              <span className="text-sm text-indigo-600">{progress || (status === "parsing" ? "파싱 중…" : "DB 반영 중…")}</span>
+              <span className="text-sm text-indigo-600">
+                {progress ||
+                  (status === "uploading"
+                    ? "업로드 중…"
+                    : status === "validating"
+                      ? "검증 중…"
+                      : "DB 반영 중…")}
+              </span>
             </div>
-          ) : status === "validated" ? (
-            <span className="text-sm font-medium text-emerald-600">{filename} — 검증 완료, DB 반영 버튼 클릭</span>
+          ) : status === "success" ? (
+            <span className="text-sm font-medium text-emerald-600">{filename} — 자동 반영 완료</span>
           ) : file ? (
             <span className="text-sm font-medium text-indigo-600">{file.name}</span>
           ) : (
@@ -270,11 +258,13 @@ export function ProductionSheetUploader() {
       </div>
 
       {/* 검증 결과 (성공·실패 모두 상세 표시) */}
-      {validation && (status === "validated" || status === "error") && (
+      {validation && (status === "success" || status === "error") && (
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-600">업로드 전 검증</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-600">자동 검증 결과</h3>
           <p className="mt-0.5 text-[10px] text-slate-500">
-            {status === "error" ? "검증 실패 상세 (아래 값 확인)" : "이상 없을 때만 DB 반영 버튼 활성화"}
+            {status === "error"
+              ? "반영 차단 — 아래 차단 사유·금액·행 수를 확인하세요."
+              : "검증 통과 후 DB에 반영되었습니다."}
           </p>
           <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm md:grid-cols-3">
             <dt className="text-slate-500">rawdata 건수</dt>
@@ -294,7 +284,7 @@ export function ProductionSheetUploader() {
             <dt className="text-slate-500">재고 건수</dt>
             <dd className="font-mono">{validation.stockCount}건</dd>
             <dt className="text-slate-500">재고 총 금액</dt>
-            <dd className="font-mono">{validation.totalStockValue.toLocaleString()}원</dd>
+            <dd className="font-mono">{(validation.totalStockValue ?? 0).toLocaleString()}원</dd>
             <dt className="text-slate-500">입고+출고+재고 합산 행 기준 채널 분포</dt>
             <dd className="font-mono">
               일반 {validation.destWarehouseDistribution["일반"] ?? 0} / 쿠팡 {validation.destWarehouseDistribution["쿠팡"] ?? 0}
@@ -335,6 +325,68 @@ export function ProductionSheetUploader() {
               일반 {validation.outboundChannelBreakdown?.["일반"] ?? 0} · 쿠팡{" "}
               {validation.outboundChannelBreakdown?.["쿠팡"] ?? 0}
             </dd>
+            {validation.outboundSumTotalAmountParsed != null && (
+              <>
+                <dt className="text-slate-500">SUM(total_price) 출고</dt>
+                <dd className="font-mono text-xs">{(validation.outboundSumTotalAmountParsed ?? 0).toLocaleString()}원</dd>
+                <dt className="text-slate-500">SUM(unit_price×qty)</dt>
+                <dd className="font-mono text-xs">{(validation.outboundSumUnitPriceXQty ?? 0).toLocaleString()}원</dd>
+              </>
+            )}
+            {validation.autoValidation?.sums && (
+              <>
+                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs font-medium text-slate-600">
+                  자동 검증 합계 (동일 금액 선택 규칙)
+                </dt>
+                <dt className="text-slate-500">합계(outbound_total/total)</dt>
+                <dd className="font-mono text-xs">
+                  {validation.autoValidation.sums.sumOutboundTotalAmountField.toLocaleString()}원
+                </dd>
+                <dt className="text-slate-500">SUM(total_price)</dt>
+                <dd className="font-mono text-xs">{validation.autoValidation.sums.sumTotalPrice.toLocaleString()}원</dd>
+                <dt className="text-slate-500">SUM(unit×qty)</dt>
+                <dd className="font-mono text-xs">{validation.autoValidation.sums.sumUnitPriceXQty.toLocaleString()}원</dd>
+                <dt className="text-slate-500">채널별 금액(추정)</dt>
+                <dd className="font-mono text-xs col-span-1 md:col-span-2">
+                  일반 {(validation.autoValidation.channelAmountsKrw?.["일반"] ?? 0).toLocaleString()}원 · 쿠팡{" "}
+                  {(validation.autoValidation.channelAmountsKrw?.["쿠팡"] ?? 0).toLocaleString()}원
+                </dd>
+                <dt className="text-slate-500">월별 행 수 (입고/출고/재고)</dt>
+                <dd className="col-span-1 md:col-span-2 font-mono text-[11px] text-slate-700">
+                  입고 {JSON.stringify(validation.autoValidation.monthRowCounts?.inbound ?? {})} · 출고{" "}
+                  {JSON.stringify(validation.autoValidation.monthRowCounts?.outbound ?? {})} · 스냅{" "}
+                  {JSON.stringify(validation.autoValidation.monthRowCounts?.snapshot ?? {})}
+                </dd>
+                <dt className="text-slate-500">source 분포 (행 수)</dt>
+                <dd className="col-span-1 md:col-span-2 font-mono text-[11px]">
+                  {JSON.stringify(validation.autoValidation.sourceSelection?.rowCounts ?? {})}
+                  {validation.autoValidation.sourceSelection?.outboundTotalAmountVsTotalPriceRatio != null && (
+                    <span className="ml-2 text-slate-500">
+                      (outbound_total_amount 비중{" "}
+                      {Math.round(
+                        (validation.autoValidation.sourceSelection.outboundTotalAmountVsTotalPriceRatio ?? 0) * 100
+                      )}
+                      %)
+                    </span>
+                  )}
+                </dd>
+              </>
+            )}
+            {validation.outboundTotalAmountColumnFound === false && (
+              <p className="col-span-2 md:col-span-3 text-xs font-medium text-red-600">
+                합계금액 열 미탐지 — 반영 차단 대상입니다.
+              </p>
+            )}
+            {!!validation.autoValidation?.blockReasons?.length && (
+              <div className="col-span-2 md:col-span-3 mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                <p className="text-xs font-semibold text-red-800">차단 사유</p>
+                <ul className="mt-1 list-inside list-disc text-xs text-red-900">
+                  {validation.autoValidation.blockReasons.map((b, i) => (
+                    <li key={i}>{b}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             {!!validation.outboundSalesChannelGeneralWithCoupangHint?.length && (
               <>
                 <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs">일반으로 분류됐지만 쿠팡 힌트가 있는 원문</dt>
@@ -370,22 +422,10 @@ export function ProductionSheetUploader() {
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={handleApply}
-              disabled={!canApply}
-              className={`rounded-lg px-4 py-2 text-sm font-medium ${
-                canApply
-                  ? "bg-indigo-500 text-white hover:bg-indigo-600"
-                  : "cursor-not-allowed bg-slate-300 text-slate-500"
-              }`}
-            >
-              DB 반영
-            </button>
-            <button
-              type="button"
               onClick={reset}
               className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
-              취소
+              초기화
             </button>
           </div>
         </div>

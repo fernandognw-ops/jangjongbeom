@@ -1,7 +1,7 @@
 /**
  * 카테고리별 월별 추세 API
  * GET /api/category-trend
- * - 출고 금액: inventory_outbound 행별 total_price > 0 우선 → else unit_price×qty → else 마스터 unit_cost×qty
+ * - 출고 금액: inventory_outbound 행별 outbound_total_amount > 0 우선 → else total_price > 0 → else unit_price×qty → else 마스터 unit_cost×qty
  *   (문자열/쉼표 포함 금액은 parseMoney로 파싱해 SUM(total_price)와 일치)
  * - 출고 채널: sales_channel만 `normalizeSalesChannelKr` — dest_warehouse·매출구분·보관센터 금지
  * - inventory_inbound quantity 합산 (입고량)
@@ -12,13 +12,20 @@
 export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createHash } from "node:crypto";
 import { normalizeCode } from "@/lib/inventoryApi";
 import {
   normalizeDestWarehouse,
   normalizeSalesChannelKr,
   WAREHOUSE_COUPANG,
 } from "@/lib/inventoryChannels";
+import { fetchOutboundRowsUnified, monthRange } from "@/lib/outboundQuery";
 import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
+import {
+  parseMoney,
+  chosenOutboundAmount,
+  type ChosenAmountSource,
+} from "@/lib/outboundAmountSelection";
 
 const emptyResponse = {
   months: [] as string[],
@@ -43,86 +50,235 @@ const emptyResponse = {
 const PAGE_SIZE = 2000;
 const CATEGORY_TREND_SERVER_MARKER = "category-trend-v2-serverinfo-2026-03-24";
 
+type FetchPageDebug = {
+  table: string;
+  pageIndex: number;
+  rangeStart: number;
+  rangeEnd: number;
+  fetchedRowCount: number;
+  cumulativeRowCount: number;
+  hasNextPage: boolean;
+  breakReason:
+    | "continue"
+    | "normal_end_short_page"
+    | "max_pages_guard"
+    | "error";
+  error: string | null;
+};
+
+function jwtPayload(token: string): Record<string, unknown> | null {
+  try {
+    const p = token.split(".")[1];
+    if (!p) return null;
+    const norm = p.replace(/-/g, "+").replace(/_/g, "/");
+    const json = Buffer.from(norm, "base64").toString("utf8");
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function fp(s: string): string {
+  return createHash("sha256").update(s).digest("hex").slice(0, 12);
+}
+
 async function fetchAllRows<T>(
   supabase: SupabaseClient,
   table: string,
   select: string,
   gteCol: string,
   gteVal: string,
-  tieBreakerCol?: string
+  tieBreakerCol?: string | string[],
+  onPageDebug?: (d: FetchPageDebug) => void
 ): Promise<T[]> {
   const all: T[] = [];
   let offset = 0;
+  let pageIndex = 0;
+  const maxPages = 500;
   while (true) {
+    if (pageIndex >= maxPages) {
+      onPageDebug?.({
+        table,
+        pageIndex,
+        rangeStart: offset,
+        rangeEnd: offset + PAGE_SIZE - 1,
+        fetchedRowCount: 0,
+        cumulativeRowCount: all.length,
+        hasNextPage: false,
+        breakReason: "max_pages_guard",
+        error: null,
+      });
+      throw new Error(`[fetchAllRows] max pages reached table=${table} pageIndex=${pageIndex}`);
+    }
+    const rangeStart = offset;
+    const rangeEnd = offset + PAGE_SIZE - 1;
     let q = supabase
       .from(table)
       .select(select)
       .gte(gteCol, gteVal)
       .order(gteCol, { ascending: true });
-    if (tieBreakerCol) q = q.order(tieBreakerCol, { ascending: true });
-    const { data, error } = await q.range(offset, offset + PAGE_SIZE - 1);
-    if (error) break;
+    if (Array.isArray(tieBreakerCol)) {
+      for (const col of tieBreakerCol) q = q.order(col, { ascending: true });
+    } else if (tieBreakerCol) {
+      q = q.order(tieBreakerCol, { ascending: true });
+    }
+    const { data, error } = await q.range(rangeStart, rangeEnd);
+    if (error) {
+      onPageDebug?.({
+        table,
+        pageIndex,
+        rangeStart,
+        rangeEnd,
+        fetchedRowCount: 0,
+        cumulativeRowCount: all.length,
+        hasNextPage: false,
+        breakReason: "error",
+        error: error.message,
+      });
+      throw new Error(
+        `[fetchAllRows] query failed table=${table} page=${pageIndex} range=${rangeStart}-${rangeEnd} error=${error.message}`
+      );
+    }
     const rows = (data ?? []) as T[];
     all.push(...rows);
-    if (rows.length < PAGE_SIZE) break;
+    const hasNextPage = rows.length === PAGE_SIZE;
+    onPageDebug?.({
+      table,
+      pageIndex,
+      rangeStart,
+      rangeEnd,
+      fetchedRowCount: rows.length,
+      cumulativeRowCount: all.length,
+      hasNextPage,
+      breakReason: hasNextPage ? "continue" : "normal_end_short_page",
+      error: null,
+    });
+    if (!hasNextPage) break;
     offset += PAGE_SIZE;
+    pageIndex += 1;
   }
   return all;
 }
 
-/** DB·엑셀에서 온 숫자(쉼표 문자열 등) 파싱 — Number()만 쓰면 NaN → 원가 폴백으로 잘못 집계됨 */
-function parseMoney(v: unknown): number {
-  if (v == null || v === "") return 0;
-  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
-  const s = String(v).replace(/,/g, "").replace(/\s/g, "").trim();
-  if (s === "") return 0;
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : 0;
+async function fetchOutboundRows(
+  supabase: SupabaseClient,
+  dateFrom: string,
+  dateTo: string | undefined,
+  onPageDebug?: (d: FetchPageDebug) => void
+): Promise<
+  Array<{
+    id?: number;
+    product_code: string;
+    quantity: number;
+    outbound_date: string;
+    sales_channel?: string;
+    product_name?: string;
+    category?: string;
+    total_price?: number;
+    unit_price?: number;
+    outbound_total_amount?: number;
+  }>
+> {
+  const base = await fetchOutboundRowsUnified<{
+    id?: number;
+    product_code: string;
+    quantity: number;
+    outbound_date: string;
+    sales_channel?: string;
+    product_name?: string;
+    category?: string;
+  }>(
+    supabase,
+    {
+      selectedColumns:
+        "id,product_code,quantity,outbound_date,sales_channel,product_name,category",
+      startDate: dateFrom,
+      endDate: dateTo,
+      onPageDebug,
+    }
+  );
+  const baseRows = base.rows;
+  if (baseRows.length === 0) return [];
+  const ids = baseRows
+    .map((r) => (typeof r.id === "number" ? r.id : null))
+    .filter((v): v is number => v != null);
+  const map = new Map<number, { total_price?: number; unit_price?: number; outbound_total_amount?: number }>();
+  for (let i = 0; i < ids.length; i += 500) {
+    const batch = ids.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from("inventory_outbound")
+      .select("id,total_price,unit_price,outbound_total_amount")
+      .in("id", batch);
+    if (error) {
+      throw new Error(`[fetchOutboundRows:enrich] ${error.message}`);
+    }
+    for (const row of data ?? []) {
+      const id = Number((row as { id?: number }).id ?? 0);
+      if (!id) continue;
+      map.set(id, {
+        total_price: Number((row as { total_price?: number }).total_price ?? 0),
+        unit_price: Number((row as { unit_price?: number }).unit_price ?? 0),
+        outbound_total_amount: Number((row as { outbound_total_amount?: number }).outbound_total_amount ?? 0),
+      });
+    }
+  }
+  return baseRows.map((r) => {
+    const id = typeof r.id === "number" ? r.id : 0;
+    const ex = map.get(id);
+    return {
+      ...r,
+      total_price: ex?.total_price ?? 0,
+      unit_price: ex?.unit_price ?? 0,
+      outbound_total_amount: ex?.outbound_total_amount ?? 0,
+    };
+  });
 }
 
-/**
- * 출고 라인 금액 — DB SUM(total_price)와 동일 우선순위.
- * total_price > 0 → 그대로, 아니면 unit_price×qty, 마지막만 마스터 unit_cost×qty
- */
-type ChosenAmountSource = "total_price" | "unit_price_x_qty" | "fallback_0";
+type MonthDebugRow = {
+  rawMonthKey: string;
+  groupedMonthKey: string;
+  sourceDateMin: string;
+  sourceDateMax: string;
+  affectedRowCount: number;
+};
 
-function chosenOutboundAmount(
-  row: { quantity?: unknown; total_price?: unknown; unit_price?: unknown },
-  codeKey: string,
-  codeToCost: Map<string, number>
-): { amount: number; source: ChosenAmountSource; suspectedUnitPrice: boolean } {
-  const qty = Number(row.quantity ?? 0);
-  const totalPrice = parseMoney(row.total_price);
-  const unitPrice = parseMoney(row.unit_price);
-  const masterUnitCost = Number(codeToCost.get(codeKey) ?? 0);
+function dateToYmdRawFirst(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  const ymd = raw.slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd : "";
+}
 
-  const normalizedQty = Number.isFinite(qty) ? qty : 0;
-  const looksLikeUnitPriceInTotalCol =
-    totalPrice > 0 &&
-    normalizedQty > 1 &&
-    // 행 총액이면 보통 qty 배수이며, 단가 컬럼과 동일/유사하면 "단가 오기입" 가능성 큼
-    ((unitPrice > 0 && Math.abs(totalPrice - unitPrice) < 0.0001) ||
-      // qty가 큰데 total_price가 지나치게 작으면 단가로 간주
-      totalPrice <= 1000);
+function monthKeyFromYmd(ymd: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd.slice(0, 7) : "";
+}
 
-  if (totalPrice > 0 && !looksLikeUnitPriceInTotalCol) {
-    return { amount: totalPrice, source: "total_price", suspectedUnitPrice: false };
+function buildMonthDebugRows<T>(
+  rows: T[],
+  dateGetter: (row: T) => string
+): MonthDebugRow[] {
+  const map = new Map<string, { min: string; max: string; cnt: number }>();
+  for (const row of rows) {
+    const raw = dateToYmdRawFirst(dateGetter(row));
+    if (!raw) continue;
+    const monthKey = monthKeyFromYmd(raw);
+    const prev = map.get(monthKey);
+    if (!prev) {
+      map.set(monthKey, { min: raw, max: raw, cnt: 1 });
+      continue;
+    }
+    prev.cnt += 1;
+    if (raw < prev.min) prev.min = raw;
+    if (raw > prev.max) prev.max = raw;
   }
-  if (unitPrice > 0 && normalizedQty > 0) {
-    return {
-      amount: unitPrice * normalizedQty,
-      source: "unit_price_x_qty",
-      suspectedUnitPrice: looksLikeUnitPriceInTotalCol,
-    };
-  }
-  if (masterUnitCost > 0 && normalizedQty > 0) {
-    return {
-      amount: masterUnitCost * normalizedQty,
-      source: "unit_price_x_qty",
-      suspectedUnitPrice: looksLikeUnitPriceInTotalCol,
-    };
-  }
-  return { amount: 0, source: "fallback_0", suspectedUnitPrice: looksLikeUnitPriceInTotalCol };
+  return [...map.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, v]) => ({
+      rawMonthKey: key,
+      groupedMonthKey: key,
+      sourceDateMin: v.min,
+      sourceDateMax: v.max,
+      affectedRowCount: v.cnt,
+    }));
 }
 
 /** 카테고리 정규화: 마스터 5개만. 캡슐세제 사은품 → 캡슐세제 */
@@ -139,7 +295,9 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const debug = searchParams.get("debug") === "1";
-    const queriedMonth = searchParams.get("month") || "2025-03";
+    const requestedMonth = searchParams.get("month");
+    const queriedMonth = requestedMonth || "2025-03";
+    const requestedMonthWindow = requestedMonth ? monthRange(requestedMonth) : null;
 
     const serverInfo = {
       marker: CATEGORY_TREND_SERVER_MARKER,
@@ -157,6 +315,16 @@ export async function GET(request: Request) {
     }
 
     const supabase = createClient(url, key);
+    const jwt = jwtPayload(key);
+    const jwtRole = String(jwt?.role ?? "");
+    const authContext = {
+      anonKeyFingerprint: fp(key),
+      supabaseUrlFingerprint: fp(url),
+      jwtRole: jwtRole || "unknown",
+      serviceRoleKeyUsed: jwtRole === "service_role",
+      authRole: jwtRole || "anon",
+      rlsBypassLikely: jwtRole === "service_role",
+    };
 
     const now = new Date();
     const year = now.getFullYear();
@@ -172,33 +340,25 @@ export async function GET(request: Request) {
     }
     const monthsPreset = fourteenMonthsSlots;
 
+    const fetchPageDebug: { outbound: FetchPageDebug[]; inbound: FetchPageDebug[]; snapshot: FetchPageDebug[] } = {
+      outbound: [],
+      inbound: [],
+      snapshot: [],
+    };
+    const outboundStart = requestedMonthWindow?.start ?? dateFrom;
+    const outboundEnd = requestedMonthWindow?.end;
+
     const [productsRes, outbound, inbound, stockSnapshotRows] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
-      fetchAllRows<{
-        id?: number;
-        product_code: string;
-        quantity: number;
-        outbound_date: string;
-        sales_channel?: string;
-        product_name?: string;
-        category?: string;
-        total_price?: number;
-        unit_price?: number;
-      }>(
-        supabase,
-        "inventory_outbound",
-        "id,product_code,quantity,outbound_date,sales_channel,product_name,category,total_price,unit_price",
-        "outbound_date",
-        dateFrom,
-        "id"
-      ),
+      fetchOutboundRows(supabase, outboundStart, outboundEnd, (d) => fetchPageDebug.outbound.push(d)),
       fetchAllRows<{ id?: number; product_code: string; quantity: number; inbound_date: string; dest_warehouse?: string; category?: string }>(
         supabase,
         "inventory_inbound",
         "id,product_code,quantity,inbound_date,dest_warehouse,category",
         "inbound_date",
         dateFrom,
-        "id"
+        "id",
+        (d) => fetchPageDebug.inbound.push(d)
       ),
       fetchAllRows<{
         product_code: string;
@@ -208,12 +368,15 @@ export async function GET(request: Request) {
         unit_cost?: number;
         total_price?: number;
         dest_warehouse?: string;
+        storage_center?: string;
       }>(
         supabase,
         "inventory_stock_snapshot",
-        "product_code,category,snapshot_date,quantity,unit_cost,total_price,dest_warehouse",
+        "product_code,category,snapshot_date,quantity,unit_cost,total_price,dest_warehouse,storage_center",
         "snapshot_date",
-        dateFrom
+        dateFrom,
+        ["product_code", "dest_warehouse", "storage_center"],
+        (d) => fetchPageDebug.snapshot.push(d)
       ),
     ]);
 
@@ -229,7 +392,7 @@ export async function GET(request: Request) {
 
     const naverMonthly = await fetchNaverSearchTrendMonthly();
 
-    /** product_code → category(품목구분): inventory_stock_snapshot 우선 */
+    /** product_code → category(품목구분): inventory_stock_snapshot 우선 (비-기타 우선 보존) */
     const codeToCategory = new Map<string, string>();
     const byCodeDate = new Map<string, { category: string; date: string }>();
     for (const row of snapData) {
@@ -238,11 +401,22 @@ export async function GET(request: Request) {
       const date = (row.snapshot_date ?? "").slice(0, 10);
       if (!code) continue;
       const existing = byCodeDate.get(code);
-      const useCat = cat || (existing?.category ?? "");
-      if (!existing || date >= existing.date) byCodeDate.set(code, { category: useCat, date });
+      const catNorm = normalizeCategoryName(cat || "");
+      if (!existing) {
+        byCodeDate.set(code, { category: catNorm, date });
+        continue;
+      }
+      const existingNorm = normalizeCategoryName(existing.category || "");
+      const hasExistingNonOther = !!existingNorm && existingNorm !== "기타";
+      const hasNewNonOther = !!catNorm && catNorm !== "기타";
+      if (hasNewNonOther && (!hasExistingNonOther || date >= existing.date)) {
+        byCodeDate.set(code, { category: catNorm, date });
+      } else if (!hasExistingNonOther && date >= existing.date) {
+        byCodeDate.set(code, { category: catNorm || existingNorm, date });
+      }
     }
     for (const [code, v] of byCodeDate.entries()) {
-      if (v.category) codeToCategory.set(code, v.category);
+      if (v.category && v.category !== "기타") codeToCategory.set(code, v.category);
     }
 
     const codeToCost = new Map<string, number>();
@@ -252,8 +426,10 @@ export async function GET(request: Request) {
       const fromProduct = String(p.category ?? p.group_name ?? "").trim();
       const catFromSnapshot = codeToCategory.get(k) ?? codeToCategory.get(String(p.product_code).trim());
       const group = (fromProduct && fromProduct !== "기타") ? fromProduct : (catFromSnapshot || "기타");
-      if (!codeToCategory.has(k)) codeToCategory.set(k, group);
-      if (!codeToCategory.has(String(p.product_code).trim())) codeToCategory.set(String(p.product_code).trim(), group);
+      if (group && group !== "기타" && !codeToCategory.has(k)) codeToCategory.set(k, group);
+      if (group && group !== "기타" && !codeToCategory.has(String(p.product_code).trim())) {
+        codeToCategory.set(String(p.product_code).trim(), group);
+      }
       if (group !== "기타") categoriesSet.add(normalizeCategoryName(group));
       const c = Number(p.unit_cost ?? 0);
       if (c > 0 && c <= 500_000) {
@@ -265,7 +441,7 @@ export async function GET(request: Request) {
 
     // 그래프·전월대비: 아웃바운드(실제 출고)만 사용. 마스터 5개 카테고리만 표시
     for (const o of outbound) {
-      const m = (o.outbound_date ?? "").slice(0, 7);
+      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
       if (!m) continue;
       if (!byMonthCategory[m]) byMonthCategory[m] = {};
       const rowCat = (o.category ?? "").trim();
@@ -279,6 +455,17 @@ export async function GET(request: Request) {
       if (cat === "기타") continue;
       categoriesSet.add(cat);
       byMonthCategory[m][cat] = (byMonthCategory[m][cat] ?? 0) + Number(o.quantity ?? 0);
+      const code = normalizeCode(o.product_code) || String(o.product_code ?? "").trim();
+      if (code && cat && cat !== "기타" && !codeToCategory.has(code)) codeToCategory.set(code, cat);
+    }
+    for (const i of inbound) {
+      const rowCat = (i.category ?? "").trim();
+      const cat = normalizeCategoryName(rowCat || "");
+      if (!cat || cat === "기타") continue;
+      const code = normalizeCode(i.product_code) || String(i.product_code ?? "").trim();
+      if (!code) continue;
+      if (!codeToCategory.has(code)) codeToCategory.set(code, cat);
+      categoriesSet.add(cat);
     }
 
     const ordered = [...categoriesSet];
@@ -319,6 +506,7 @@ export async function GET(request: Request) {
       sales_channel: string;
       quantity: number;
       total_price_raw: unknown;
+      outbound_total_amount_raw: unknown;
       unit_price_raw: unknown;
       chosen_amount: number;
       chosenOutboundAmountSource: ChosenAmountSource;
@@ -334,7 +522,7 @@ export async function GET(request: Request) {
     }> = [];
 
     for (const o of outbound) {
-      const m = (o.outbound_date ?? "").slice(0, 7);
+      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
@@ -359,6 +547,7 @@ export async function GET(request: Request) {
           sales_channel: String(o.sales_channel ?? ""),
           quantity: qty,
           total_price_raw: o.total_price,
+          outbound_total_amount_raw: o.outbound_total_amount,
           unit_price_raw: o.unit_price,
           chosen_amount: val,
           chosenOutboundAmountSource: chosen.source,
@@ -386,7 +575,7 @@ export async function GET(request: Request) {
       );
     }
     for (const i of inbound) {
-      const m = (i.inbound_date ?? "").slice(0, 7);
+      const m = monthKeyFromYmd(dateToYmdRawFirst(i.inbound_date));
       if (!monthlyTotals[m]) continue;
       const qty = Number(i.quantity ?? 0);
       const codeKey = normalizeCode(i.product_code) || String(i.product_code).trim();
@@ -408,7 +597,7 @@ export async function GET(request: Request) {
       }
     }
     for (const o of outbound) {
-      const m = (o.outbound_date ?? "").slice(0, 7);
+      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
       if (!byMonthCategoryOutboundValue[m]) continue;
       const rowCat = (o.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(o.product_code) || "") || codeToCategory.get(String(o.product_code).trim()) || "";
@@ -420,7 +609,7 @@ export async function GET(request: Request) {
       byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + val;
     }
     for (const i of inbound) {
-      const m = (i.inbound_date ?? "").slice(0, 7);
+      const m = monthKeyFromYmd(dateToYmdRawFirst(i.inbound_date));
       if (!byMonthCategoryInboundValue[m]) continue;
       const rowCat = (i.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(i.product_code) || "") || codeToCategory.get(String(i.product_code).trim()) || "";
@@ -452,9 +641,11 @@ export async function GET(request: Request) {
     }
 
     const monthlyValueByCategory: Record<string, Record<string, number>> = {};
+    const monthlyStockTotal: Record<string, number> = {};
     for (const m of months) {
       monthlyValueByCategory[m] = {};
       for (const c of finalCategories) monthlyValueByCategory[m][c] = 0;
+      monthlyStockTotal[m] = 0;
       const monthMaxDate = maxDateByMonth.get(m);
       if (!monthMaxDate) continue;
       for (const row of snapRows) {
@@ -468,13 +659,15 @@ export async function GET(request: Request) {
         if (cat === "기타" || !finalCategories.includes(cat)) continue;
         const qty = Number(row.quantity ?? 0);
         const cost = Number(row.unit_cost ?? 0);
-        const totalPrice = Number(row.total_price ?? 0);
+        const totalPrice = parseMoney(row.total_price);
         const val = totalPrice > 0 ? totalPrice : qty * (cost > 0 ? cost : (codeToCost.get(code) ?? codeToCost.get(String(row.product_code ?? "").trim()) ?? 0));
         monthlyValueByCategory[m][cat] = (monthlyValueByCategory[m][cat] ?? 0) + val;
+        monthlyStockTotal[m] = (monthlyStockTotal[m] ?? 0) + val;
       }
       for (const c of finalCategories) {
         monthlyValueByCategory[m][c] = Math.round(monthlyValueByCategory[m][c] ?? 0);
       }
+      monthlyStockTotal[m] = Math.round(monthlyStockTotal[m] ?? 0);
     }
 
     /** 증감률 표시 상한: ±50% (비정상 수치 방지) */
@@ -525,12 +718,69 @@ export async function GET(request: Request) {
     );
 
     const monthlySalesByChannel: Record<string, { 일반: number; 쿠팡: number }> = {};
+    const monthlyOutboundDebug: Array<{
+      month: string;
+      outboundRowCount: number;
+      sumOutboundTotalAmount: number;
+      sumUnitPriceXQty: number;
+      chosenSourceCounts: Record<ChosenAmountSource, number>;
+      chosenSourceAmountSums: Record<ChosenAmountSource, number>;
+      finalOutboundValue: number;
+    }> = [];
+    const outboundRowsByMonthCount: Record<string, number> = {};
+    const outboundMonthsSet = new Set<string>();
+    for (const o of outbound) {
+      const mk = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
+      if (!mk) continue;
+      outboundMonthsSet.add(mk);
+      outboundRowsByMonthCount[mk] = (outboundRowsByMonthCount[mk] ?? 0) + 1;
+    }
     for (const mk of months) {
       const t = monthlyTotals[mk];
       monthlySalesByChannel[mk] = {
         일반: t?.outboundValueGeneral ?? 0,
         쿠팡: t?.outboundValueCoupang ?? 0,
       };
+      const monthRows = outbound.filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === mk);
+      const chosenSourceCounts: Record<ChosenAmountSource, number> = {
+        outbound_total_amount: 0,
+        total_price: 0,
+        unit_price_x_qty: 0,
+        master_unit_cost_x_qty: 0,
+        fallback_0: 0,
+      };
+      const chosenSourceAmountSums: Record<ChosenAmountSource, number> = {
+        outbound_total_amount: 0,
+        total_price: 0,
+        unit_price_x_qty: 0,
+        master_unit_cost_x_qty: 0,
+        fallback_0: 0,
+      };
+      let sumOutboundTotalAmount = 0;
+      let sumUnitPriceXQty = 0;
+      for (const row of monthRows) {
+        const qty = Number(row.quantity ?? 0);
+        const codeKey = normalizeCode(row.product_code) || String(row.product_code ?? "").trim();
+        const chosen = chosenOutboundAmount(row, codeKey, codeToCost);
+        chosenSourceCounts[chosen.source] += 1;
+        chosenSourceAmountSums[chosen.source] += chosen.amount;
+        sumOutboundTotalAmount += parseMoney(row.outbound_total_amount);
+        sumUnitPriceXQty += parseMoney(row.unit_price) * qty;
+      }
+      monthlyOutboundDebug.push({
+        month: mk,
+        outboundRowCount: outboundRowsByMonthCount[mk] ?? 0,
+        sumOutboundTotalAmount: Math.round(sumOutboundTotalAmount),
+        sumUnitPriceXQty: Math.round(sumUnitPriceXQty),
+        chosenSourceCounts,
+        chosenSourceAmountSums: Object.fromEntries(
+          Object.entries(chosenSourceAmountSums).map(([k, v]) => [k, Math.round(v)])
+        ) as Record<ChosenAmountSource, number>,
+        finalOutboundValue: Math.round(t?.outboundValue ?? 0),
+      });
+    }
+    if (debug) {
+      console.log("[category-trend:monthly-outbound-debug]", JSON.stringify(monthlyOutboundDebug));
     }
 
     const payload: Record<string, unknown> = {
@@ -541,6 +791,19 @@ export async function GET(request: Request) {
       momRates,
       monthlyTotals,
       monthlyValueByCategory,
+      monthsReturned: months,
+      outboundMonthsFound: [...outboundMonthsSet].sort(),
+      monthlyOutboundDebug,
+      monthlySeriesBeforeFilter: months.map((m) => ({
+        month: m,
+        outboundValue: monthlyTotals[m]?.outboundValue ?? 0,
+        outboundQty: monthlyTotals[m]?.outbound ?? 0,
+      })),
+      monthlySeriesAfterFilter: months.map((m) => ({
+        month: m,
+        outboundValue: monthlyTotals[m]?.outboundValue ?? 0,
+        outboundQty: monthlyTotals[m]?.outbound ?? 0,
+      })),
       momIndicators: {
         outbound: prevOut > 0 ? clampMomRate(Math.round(((thisOut - prevOut) / prevOut) * 1000) / 10) : null,
         inbound: prevIn > 0 ? clampMomRate(Math.round(((thisIn - prevIn) / prevIn) * 1000) / 10) : null,
@@ -559,12 +822,99 @@ export async function GET(request: Request) {
     };
 
     if (debug) {
-      const monthOutboundRows = outbound.filter((o) => (o.outbound_date ?? "").slice(0, 7) === queriedMonth);
+      const monthKeyDebug = {
+        outbound: buildMonthDebugRows(outbound, (r) => String(r.outbound_date ?? "")),
+        inbound: buildMonthDebugRows(inbound, (r) => String(r.inbound_date ?? "")),
+        snapshot: buildMonthDebugRows(snapRows, (r) => String(r.snapshot_date ?? "")),
+      };
+      const monthOutboundRows = outbound.filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === queriedMonth);
+      const monthStockRows = snapRows.filter((s) => (s.snapshot_date ?? "").slice(0, 7) === queriedMonth);
       const monthOutboundBySalesChannel: Record<string, { row_cnt: number; qty: number; amount: number }> = {};
       const monthSalesChannelDistinctRaw = new Set<string>();
       const monthSalesChannelNormalizedCounts: Record<string, number> = {};
+      const chosenAmountDistributionBySource: Record<
+        ChosenAmountSource,
+        { row_cnt: number; amount_sum: number }
+      > = {
+        outbound_total_amount: { row_cnt: 0, amount_sum: 0 },
+        total_price: { row_cnt: 0, amount_sum: 0 },
+        unit_price_x_qty: { row_cnt: 0, amount_sum: 0 },
+        master_unit_cost_x_qty: { row_cnt: 0, amount_sum: 0 },
+        fallback_0: { row_cnt: 0, amount_sum: 0 },
+      };
       const monthSalesChannelNullishRows: Array<{ product_code: string; outbound_date: string; sales_channel_raw: string }> = [];
       let queriedMonthSumTotalPriceRaw = 0;
+      let queriedMonthSumOutboundTotalAmount = 0;
+      let queriedMonthSumUnitPriceXQty = 0;
+      let queriedMonthSumMasterUnitCostXQty = 0;
+      let sumChosenAmountDirect = 0;
+      const queriedMonthStockSnapshotDatesSet = new Set<string>();
+      const queriedMonthStockAssetByCategory: Record<string, number> = {};
+      let queriedMonthStockTotalAsset = 0;
+      const outboundDateRawSamples: Array<string> = [];
+      const outboundDateParsedSamples: Array<string> = [];
+      const outboundMonthKeySamples: Array<string> = [];
+      const outboundRowCountByMonthKey: Record<string, number> = {};
+      const outboundMonth202503Samples: Array<{ id: number | null; outbound_date_raw: string }> = [];
+      const outboundMonth202603Samples: Array<{ id: number | null; outbound_date_raw: string }> = [];
+      const rawAmountSamples: Array<{
+        id: number | null;
+        outbound_date: string;
+        outbound_total_amount: number;
+        total_price: number;
+        unit_price: number;
+        qty: number;
+        sales_channel: string;
+      }> = [];
+      const selectedSourceSamples: Array<{
+        id: number | null;
+        outbound_date: string;
+        selectedSource: ChosenAmountSource;
+        selectedAmount: number;
+        outbound_total_amount: number;
+        total_price: number;
+        unit_price: number;
+        qty: number;
+      }> = [];
+      const fetchedOutboundIds = outbound
+        .map((o) => (typeof o.id === "number" ? o.id : null))
+        .filter((v): v is number => v != null)
+        .sort((a, b) => a - b);
+      const fetchedOutboundIdsForQueriedMonth = outbound
+        .filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === queriedMonth)
+        .map((o) => (typeof o.id === "number" ? o.id : null))
+        .filter((v): v is number => v != null)
+        .sort((a, b) => a - b);
+      let firstRowRawOutboundDate = "";
+      let lastRowRawOutboundDate = "";
+      for (const s of monthStockRows) {
+        const d = String(s.snapshot_date ?? "").slice(0, 10);
+        if (d) queriedMonthStockSnapshotDatesSet.add(d);
+        const code = normalizeCode(s.product_code) || String(s.product_code ?? "").trim();
+        let cat = String(s.category ?? "").trim();
+        if (!cat || cat === "기타") {
+          cat =
+            codeToCategory.get(code) ??
+            codeToCategory.get(String(s.product_code ?? "").trim()) ??
+            "";
+        }
+        cat = normalizeCategoryName(cat || "");
+        const qty = Number(s.quantity ?? 0);
+        const cost = Number(s.unit_cost ?? 0);
+        const totalPrice = parseMoney(s.total_price);
+        const val =
+          totalPrice > 0
+            ? totalPrice
+            : qty * (cost > 0 ? cost : (codeToCost.get(code) ?? codeToCost.get(String(s.product_code ?? "").trim()) ?? 0));
+        queriedMonthStockTotalAsset += val;
+        if (cat && cat !== "기타" && finalCategories.includes(cat)) {
+          queriedMonthStockAssetByCategory[cat] = (queriedMonthStockAssetByCategory[cat] ?? 0) + val;
+        }
+      }
+      for (const c of Object.keys(queriedMonthStockAssetByCategory)) {
+        queriedMonthStockAssetByCategory[c] = Math.round(queriedMonthStockAssetByCategory[c]);
+      }
+      queriedMonthStockTotalAsset = Math.round(queriedMonthStockTotalAsset);
       for (const o of monthOutboundRows) {
         const rawSc = String(o.sales_channel ?? "");
         const ch = rawSc.trim() || "NULL";
@@ -574,8 +924,13 @@ export async function GET(request: Request) {
         const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
         const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
         const amount = chosen.amount;
+        sumChosenAmountDirect += amount;
+        const qtyXUnit = parseMoney(o.unit_price) * qty;
+        const qtyXMaster = (codeToCost.get(codeKey) ?? 0) * qty;
         const normalizedKr = normalizeSalesChannelKr(rawSc);
         monthSalesChannelNormalizedCounts[normalizedKr] = (monthSalesChannelNormalizedCounts[normalizedKr] ?? 0) + 1;
+        chosenAmountDistributionBySource[chosen.source].row_cnt += 1;
+        chosenAmountDistributionBySource[chosen.source].amount_sum += amount;
         if (!rawSc.trim()) {
           if (monthSalesChannelNullishRows.length < 20) {
             monthSalesChannelNullishRows.push({
@@ -586,9 +941,53 @@ export async function GET(request: Request) {
           }
         }
         queriedMonthSumTotalPriceRaw += parseMoney(o.total_price);
+        queriedMonthSumOutboundTotalAmount += parseMoney(o.outbound_total_amount);
+        queriedMonthSumUnitPriceXQty += qtyXUnit;
+        queriedMonthSumMasterUnitCostXQty += qtyXMaster;
+        if (rawAmountSamples.length < 50) {
+          rawAmountSamples.push({
+            id: typeof o.id === "number" ? o.id : null,
+            outbound_date: String(o.outbound_date ?? "").slice(0, 10),
+            outbound_total_amount: parseMoney(o.outbound_total_amount),
+            total_price: parseMoney(o.total_price),
+            unit_price: parseMoney(o.unit_price),
+            qty,
+            sales_channel: String(o.sales_channel ?? ""),
+          });
+        }
+        if (selectedSourceSamples.length < 50) {
+          selectedSourceSamples.push({
+            id: typeof o.id === "number" ? o.id : null,
+            outbound_date: String(o.outbound_date ?? "").slice(0, 10),
+            selectedSource: chosen.source,
+            selectedAmount: amount,
+            outbound_total_amount: parseMoney(o.outbound_total_amount),
+            total_price: parseMoney(o.total_price),
+            unit_price: parseMoney(o.unit_price),
+            qty,
+          });
+        }
         monthOutboundBySalesChannel[ch].row_cnt += 1;
         monthOutboundBySalesChannel[ch].qty += qty;
         monthOutboundBySalesChannel[ch].amount += amount;
+      }
+      for (let idx = 0; idx < outbound.length; idx++) {
+        const o = outbound[idx]!;
+        const rawDate = String(o.outbound_date ?? "");
+        const parsedYmd = dateToYmdRawFirst(rawDate);
+        const mk = monthKeyFromYmd(parsedYmd);
+        if (idx === 0) firstRowRawOutboundDate = rawDate;
+        if (idx === outbound.length - 1) lastRowRawOutboundDate = rawDate;
+        if (outboundDateRawSamples.length < 40) outboundDateRawSamples.push(rawDate);
+        if (outboundDateParsedSamples.length < 40) outboundDateParsedSamples.push(parsedYmd);
+        if (outboundMonthKeySamples.length < 40) outboundMonthKeySamples.push(mk);
+        if (mk) outboundRowCountByMonthKey[mk] = (outboundRowCountByMonthKey[mk] ?? 0) + 1;
+        if (mk === "2025-03" && outboundMonth202503Samples.length < 20) {
+          outboundMonth202503Samples.push({ id: typeof o.id === "number" ? o.id : null, outbound_date_raw: rawDate });
+        }
+        if (mk === "2026-03" && outboundMonth202603Samples.length < 20) {
+          outboundMonth202603Samples.push({ id: typeof o.id === "number" ? o.id : null, outbound_date_raw: rawDate });
+        }
       }
       const sourceDbHost = (() => {
         try {
@@ -601,9 +1000,69 @@ export async function GET(request: Request) {
         rule:
           "amount: total_price>0 ? total_price : (unit_price>0 && qty>0 ? unit_price*qty : master unit_cost*qty); channel: normalizeSalesChannelKr(sales_channel)",
         sourceDbHost,
+        sourceDebug: {
+          databaseHost: sourceDbHost,
+          schemaName: "public",
+          sourceName: "inventory_outbound",
+          sourceType: "table",
+          clientType: "supabase-js",
+          queryFilter: {
+            outbound_date_gte: outboundStart,
+            ...(outboundEnd ? { outbound_date_lt: outboundEnd } : {}),
+            queriedMonth,
+          },
+          orderCondition: "order by outbound_date asc, id asc",
+          selectedColumns:
+            "id,product_code,quantity,outbound_date,sales_channel,product_name,category,total_price,unit_price,outbound_total_amount",
+          environmentFingerprint: {
+            nodeEnv: process.env.NODE_ENV || "",
+            vercelEnv: process.env.VERCEL_ENV || "",
+            vercelRegion: process.env.VERCEL_REGION || "",
+            projectHost: sourceDbHost,
+            runtime: process.env.NEXT_RUNTIME || "nodejs",
+          },
+          authContext,
+        },
         queriedMonth,
         queriedMonthOutboundRows: monthOutboundRows.length,
+        rawOutboundRowsCount: monthOutboundRows.length,
+        rawOutboundIdMin:
+          monthOutboundRows
+            .map((r) => (typeof r.id === "number" ? r.id : null))
+            .filter((v): v is number => v != null)
+            .sort((a, b) => a - b)[0] ?? null,
+        rawOutboundIdMax: (() => {
+          const ids = monthOutboundRows
+            .map((r) => (typeof r.id === "number" ? r.id : null))
+            .filter((v): v is number => v != null)
+            .sort((a, b) => a - b);
+          return ids.length > 0 ? ids[ids.length - 1] : null;
+        })(),
+        rawOutboundIdsSample: monthOutboundRows
+          .map((r) => (typeof r.id === "number" ? r.id : null))
+          .filter((v): v is number => v != null)
+          .sort((a, b) => a - b)
+          .slice(0, 50),
+        rawOutboundDateMin: monthOutboundRows
+          .map((r) => String(r.outbound_date ?? "").slice(0, 10))
+          .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+          .sort()[0] ?? null,
+        rawOutboundDateMax: (() => {
+          const dates = monthOutboundRows
+            .map((r) => String(r.outbound_date ?? "").slice(0, 10))
+            .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+            .sort();
+          return dates.length > 0 ? dates[dates.length - 1] : null;
+        })(),
         queriedMonthSumTotalPriceRaw,
+        queriedMonthSumOutboundTotalAmount,
+        queriedMonthSumUnitPriceXQty,
+        queriedMonthSumMasterUnitCostXQty,
+        sumOutboundTotalAmountDirect: queriedMonthSumOutboundTotalAmount,
+        sumTotalPriceDirect: queriedMonthSumTotalPriceRaw,
+        sumUnitPriceQtyDirect: queriedMonthSumUnitPriceXQty,
+        sumChosenAmountDirect,
+        chosenAmountDistributionBySource,
         queriedMonthSalesChannelFieldUsed: "inventory_outbound.sales_channel",
         queriedMonthSalesChannelDistinctRaw: [...monthSalesChannelDistinctRaw].sort(),
         queriedMonthSalesChannelNormalizedCounts: monthSalesChannelNormalizedCounts,
@@ -611,10 +1070,52 @@ export async function GET(request: Request) {
         queriedMonthSalesChannelNullishRows: monthSalesChannelNullishRows,
         queriedMonthBySalesChannel: monthOutboundBySalesChannel,
         queriedMonthMonthlyTotals: monthlyTotals[queriedMonth] ?? null,
+        requestedMonth: requestedMonth ?? null,
+        requestedRangeStart: outboundStart,
+        requestedRangeEnd: outboundEnd ?? null,
+        totalFetchedOutboundRows: outbound.length,
+        outboundFetchMode: requestedMonth ? "single-month-window" : "rolling-14m-window",
+        codePathSignature: "fetchOutboundRowsUnified -> monthKeyFromYmd(dateToYmdRawFirst(outbound_date))",
+        queriedMonthStockRows: monthStockRows.length,
+        queriedMonthStockSnapshotDates: [...queriedMonthStockSnapshotDatesSet].sort(),
+        queriedMonthStockAssetByCategory,
+        queriedMonthStockTotalAsset,
+        monthlyStockValueByCategory: {
+          [queriedMonth]: monthlyValueByCategory[queriedMonth] ?? {},
+        },
+        monthlyStockTotal: {
+          [queriedMonth]: monthlyStockTotal[queriedMonth] ?? 0,
+        },
         suspectedUnitPriceRows,
         suspectedUnitPriceSamples,
         samples: outboundDebugSamples,
         monthlySalesByChannel,
+        monthKeyDebug,
+        fetchPageDebug,
+        outboundDateRawSamples,
+        outboundDateParsedSamples,
+        outboundMonthKeySamples,
+        outboundRowCountByMonthKey,
+        firstRowRawOutboundDate,
+        lastRowRawOutboundDate,
+        outboundMonth202503Samples,
+        outboundMonth202603Samples,
+        rawAmountSamples,
+        selectedSourceSamples,
+        fetchedOutboundIdMin: fetchedOutboundIds.length > 0 ? fetchedOutboundIds[0] : null,
+        fetchedOutboundIdMax:
+          fetchedOutboundIds.length > 0 ? fetchedOutboundIds[fetchedOutboundIds.length - 1] : null,
+        fetchedOutboundIdsSample: fetchedOutboundIds.slice(0, 20),
+        fetchedOutboundIdMinForQueriedMonth:
+          fetchedOutboundIdsForQueriedMonth.length > 0 ? fetchedOutboundIdsForQueriedMonth[0] : null,
+        fetchedOutboundIdMaxForQueriedMonth:
+          fetchedOutboundIdsForQueriedMonth.length > 0
+            ? fetchedOutboundIdsForQueriedMonth[fetchedOutboundIdsForQueriedMonth.length - 1]
+            : null,
+        fetchedOutboundIdsSampleForQueriedMonth: fetchedOutboundIdsForQueriedMonth.slice(0, 20),
+        grandTotalOutboundValue: Math.round(
+          Object.values(monthlyTotals).reduce((s, v) => s + Number(v.outboundValue ?? 0), 0)
+        ),
       };
     }
     payload.serverInfo = serverInfo;
