@@ -48,17 +48,19 @@ async function fetchAllRows<T>(
   table: string,
   select: string,
   gteCol: string,
-  gteVal: string
+  gteVal: string,
+  tieBreakerCol?: string
 ): Promise<T[]> {
   const all: T[] = [];
   let offset = 0;
   while (true) {
-    const { data, error } = await supabase
+    let q = supabase
       .from(table)
       .select(select)
       .gte(gteCol, gteVal)
-      .order(gteCol, { ascending: true })
-      .range(offset, offset + PAGE_SIZE - 1);
+      .order(gteCol, { ascending: true });
+    if (tieBreakerCol) q = q.order(tieBreakerCol, { ascending: true });
+    const { data, error } = await q.range(offset, offset + PAGE_SIZE - 1);
     if (error) break;
     const rows = (data ?? []) as T[];
     all.push(...rows);
@@ -173,6 +175,7 @@ export async function GET(request: Request) {
     const [productsRes, outbound, inbound, stockSnapshotRows] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
       fetchAllRows<{
+        id?: number;
         product_code: string;
         quantity: number;
         outbound_date: string;
@@ -181,13 +184,21 @@ export async function GET(request: Request) {
         category?: string;
         total_price?: number;
         unit_price?: number;
-      }>(supabase, "inventory_outbound", "product_code,quantity,outbound_date,sales_channel,product_name,category,total_price,unit_price", "outbound_date", dateFrom),
-      fetchAllRows<{ product_code: string; quantity: number; inbound_date: string; dest_warehouse?: string; category?: string }>(
+      }>(
+        supabase,
+        "inventory_outbound",
+        "id,product_code,quantity,outbound_date,sales_channel,product_name,category,total_price,unit_price",
+        "outbound_date",
+        dateFrom,
+        "id"
+      ),
+      fetchAllRows<{ id?: number; product_code: string; quantity: number; inbound_date: string; dest_warehouse?: string; category?: string }>(
         supabase,
         "inventory_inbound",
-        "product_code,quantity,inbound_date,dest_warehouse,category",
+        "id,product_code,quantity,inbound_date,dest_warehouse,category",
         "inbound_date",
-        dateFrom
+        dateFrom,
+        "id"
       ),
       fetchAllRows<{
         product_code: string;
@@ -550,14 +561,30 @@ export async function GET(request: Request) {
     if (debug) {
       const monthOutboundRows = outbound.filter((o) => (o.outbound_date ?? "").slice(0, 7) === queriedMonth);
       const monthOutboundBySalesChannel: Record<string, { row_cnt: number; qty: number; amount: number }> = {};
+      const monthSalesChannelDistinctRaw = new Set<string>();
+      const monthSalesChannelNormalizedCounts: Record<string, number> = {};
+      const monthSalesChannelNullishRows: Array<{ product_code: string; outbound_date: string; sales_channel_raw: string }> = [];
       let queriedMonthSumTotalPriceRaw = 0;
       for (const o of monthOutboundRows) {
-        const ch = String(o.sales_channel ?? "NULL").trim() || "NULL";
+        const rawSc = String(o.sales_channel ?? "");
+        const ch = rawSc.trim() || "NULL";
+        monthSalesChannelDistinctRaw.add(rawSc);
         if (!monthOutboundBySalesChannel[ch]) monthOutboundBySalesChannel[ch] = { row_cnt: 0, qty: 0, amount: 0 };
         const qty = Number(o.quantity ?? 0);
         const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
         const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
         const amount = chosen.amount;
+        const normalizedKr = normalizeSalesChannelKr(rawSc);
+        monthSalesChannelNormalizedCounts[normalizedKr] = (monthSalesChannelNormalizedCounts[normalizedKr] ?? 0) + 1;
+        if (!rawSc.trim()) {
+          if (monthSalesChannelNullishRows.length < 20) {
+            monthSalesChannelNullishRows.push({
+              product_code: String(o.product_code ?? ""),
+              outbound_date: String(o.outbound_date ?? "").slice(0, 10),
+              sales_channel_raw: rawSc,
+            });
+          }
+        }
         queriedMonthSumTotalPriceRaw += parseMoney(o.total_price);
         monthOutboundBySalesChannel[ch].row_cnt += 1;
         monthOutboundBySalesChannel[ch].qty += qty;
@@ -577,6 +604,11 @@ export async function GET(request: Request) {
         queriedMonth,
         queriedMonthOutboundRows: monthOutboundRows.length,
         queriedMonthSumTotalPriceRaw,
+        queriedMonthSalesChannelFieldUsed: "inventory_outbound.sales_channel",
+        queriedMonthSalesChannelDistinctRaw: [...monthSalesChannelDistinctRaw].sort(),
+        queriedMonthSalesChannelNormalizedCounts: monthSalesChannelNormalizedCounts,
+        queriedMonthSalesChannelNullishRowsCount: monthSalesChannelNullishRows.length,
+        queriedMonthSalesChannelNullishRows: monthSalesChannelNullishRows,
         queriedMonthBySalesChannel: monthOutboundBySalesChannel,
         queriedMonthMonthlyTotals: monthlyTotals[queriedMonth] ?? null,
         suspectedUnitPriceRows,
