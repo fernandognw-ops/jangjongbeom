@@ -102,8 +102,11 @@ export async function GET(request: Request) {
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
     const monthParam = new URL(request.url).searchParams.get("month") || "";
+    const sinceParam = new URL(request.url).searchParams.get("since")?.trim() ?? "";
     const monthWindow = monthRange(monthParam);
-    const dateFrom = monthWindow?.start ?? oneMonthAgo.toISOString().slice(0, 10);
+    const dateFromBase = monthWindow?.start ?? oneMonthAgo.toISOString().slice(0, 10);
+    const dateFrom =
+      sinceParam && /^\d{4}-\d{2}-\d{2}$/.test(sinceParam) ? sinceParam : dateFromBase;
     const dateTo = monthWindow?.end;
 
     const [productsRes, snapshotRes, inboundRes, outboundFetch] = await Promise.all([

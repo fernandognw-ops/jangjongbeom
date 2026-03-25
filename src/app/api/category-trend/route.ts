@@ -124,7 +124,7 @@ async function fetchAllRows<T>(
   const all: T[] = [];
   let offset = 0;
   let pageIndex = 0;
-  const maxPages = 500;
+  const maxPages = 1000;
   while (true) {
     if (pageIndex >= maxPages) {
       onPageDebug?.({

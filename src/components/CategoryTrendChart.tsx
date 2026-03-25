@@ -133,8 +133,24 @@ export function CategoryTrendChart() {
       const chartLen = ct?.chartData?.length ?? 0;
       console.log("[CategoryTrendChart] 데이터 수신 | 소스: inventory_* (DB) | categories:", catCount, "| chartData rows:", chartLen);
     } else if (contextCategoryTrend === null && categoryTrendLoaded === true) {
+      setData({
+        months: [],
+        categories: [],
+        chartData: [],
+        momRates: {},
+        monthlyTotals: {},
+        monthlyValueByCategory: {},
+        momIndicators: {
+          outbound: null,
+          inbound: null,
+          thisMonthOutbound: 0,
+          thisMonthInbound: 0,
+        },
+      });
+      setSelectedCategories(new Set());
+      setError(null);
       setLoading(false);
-      console.log("[CategoryTrendChart] 데이터 없음 (DB 0건 또는 empty)");
+      console.log("[CategoryTrendChart] context에 추세 데이터 없음 → 빈 차트");
     } else {
       setLoading(true);
     }

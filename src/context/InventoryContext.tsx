@@ -448,6 +448,33 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       setDataRefreshKey((k) => k + 1);
       setIsSupabaseLoading(false);
 
+      const windowStart = new Date();
+      windowStart.setMonth(windowStart.getMonth() - 6);
+      const outboundSince = windowStart.toISOString().slice(0, 10);
+      void fetch(`/api/inventory/data?since=${outboundSince}&${cacheBust}`, opts)
+        .then(async (r) => {
+          if (!r.ok) return;
+          const j = (await r.json().catch(() => null)) as { outbound?: unknown[] } | null;
+          const raw = j?.outbound;
+          if (!Array.isArray(raw)) return;
+          const mapped: InventoryOutbound[] = raw.map((row) => {
+            const o = row as Record<string, unknown>;
+            return {
+              id: String(o.id ?? ""),
+              product_code: String(o.product_code ?? ""),
+              quantity: Number(o.quantity) || 0,
+              sales_channel: String(o.sales_channel ?? "general"),
+              outbound_date: String(o.outbound_date ?? "").slice(0, 10),
+              source_warehouse: o.source_warehouse != null ? String(o.source_warehouse) : null,
+              dest_warehouse: o.dest_warehouse != null ? String(o.dest_warehouse) : null,
+              note: null,
+              category: o.category != null ? String(o.category) : null,
+            };
+          });
+          setSupabaseOutbound(mapped);
+        })
+        .catch(() => {});
+
       // 2단계: 전체 snapshot(dailyVelocity) + 판매·입고·예측 백그라운드
       fetch(`/api/inventory/snapshot?${cacheBust}`, opts)
         .then((r) => r.ok ? r.json() : null)
@@ -484,7 +511,10 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         let categoryTrend: InventoryContextValue["categoryTrendData"] = null;
         if (categoryTrendRes.ok) {
           const ctJson = await categoryTrendRes.json().catch(() => null);
-          if (ctJson && typeof ctJson === "object" && !ctJson.error) {
+          if (ctJson && typeof ctJson === "object") {
+            if ("error" in ctJson && ctJson.error) {
+              console.warn("[category-trend] API 본문 오류(차트는 빈 축으로 표시):", ctJson.error);
+            }
             categoryTrend = ctJson as InventoryContextValue["categoryTrendData"];
           }
         }
