@@ -62,6 +62,9 @@ export interface CategoryTrendData {
   months: string[];
   categories: string[];
   chartData: Record<string, string | number>[];
+  /** 세 테이블 모두 0건일 때만 true (API) */
+  sourceTablesEmpty?: boolean;
+  rowCounts?: { inbound: number; outbound: number; snapshot: number };
   momRates: Record<string, Record<string, number | null>>;
   monthlyTotals?: Record<string, {
     outbound: number;
@@ -133,24 +136,11 @@ export function CategoryTrendChart() {
       const chartLen = ct?.chartData?.length ?? 0;
       console.log("[CategoryTrendChart] 데이터 수신 | 소스: inventory_* (DB) | categories:", catCount, "| chartData rows:", chartLen);
     } else if (contextCategoryTrend === null && categoryTrendLoaded === true) {
-      setData({
-        months: [],
-        categories: [],
-        chartData: [],
-        momRates: {},
-        monthlyTotals: {},
-        monthlyValueByCategory: {},
-        momIndicators: {
-          outbound: null,
-          inbound: null,
-          thisMonthOutbound: 0,
-          thisMonthInbound: 0,
-        },
-      });
+      setData(null);
       setSelectedCategories(new Set());
       setError(null);
       setLoading(false);
-      console.log("[CategoryTrendChart] context에 추세 데이터 없음 → 빈 차트");
+      console.log("[CategoryTrendChart] context에 추세 데이터 없음");
     } else {
       setLoading(true);
     }
@@ -292,7 +282,6 @@ export function CategoryTrendChart() {
 
   const filteredChartData = useMemo(() => {
     if (!effectiveChartData?.length) return [];
-    if (selectedCategories.size === 0) return [];
     let rows = effectiveChartData;
     if (yearFilter !== "all") {
       rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
@@ -300,11 +289,16 @@ export function CategoryTrendChart() {
     const base = rows.map((row) => {
       const filtered: Record<string, string | number> = { month: row.month };
       let total = 0;
-      Array.from(selectedCategories).forEach((cat) => {
+      const selected = Array.from(selectedCategories);
+      selected.forEach((cat) => {
         const val = (row[cat] as number) ?? 0;
         filtered[cat] = val;
         total += val;
       });
+      if (selected.length === 0) {
+        const monthKey = String(row.month ?? "");
+        total = Number(data?.monthlyTotals?.[monthKey]?.outbound ?? 0);
+      }
       Object.keys(row).filter((k) => k.startsWith("naver_")).forEach((k) => {
         const v = row[k];
         const num = typeof v === "number" ? v : parseFloat(String(v ?? 0)) || 0;
@@ -757,10 +751,24 @@ export function CategoryTrendChart() {
     );
   }
 
-  if (data.categories.length === 0) {
+  const hasMonths = (data.months?.length ?? 0) > 0;
+  const rc = data.rowCounts;
+  const tablesAllEmpty =
+    data.sourceTablesEmpty === true ||
+    (rc != null && rc.inbound === 0 && rc.outbound === 0 && rc.snapshot === 0);
+
+  if (tablesAllEmpty) {
     return (
       <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center text-zinc-500">
         출고·입고·재고 원본 데이터가 없어 차트를 표시할 수 없습니다.
+      </div>
+    );
+  }
+
+  if (!hasMonths) {
+    return (
+      <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-8 text-center text-amber-200/90">
+        원본 행은 있으나 유효한 월 축을 만들 수 없습니다. 날짜 컬럼 형식을 확인하세요.
       </div>
     );
   }
@@ -1155,11 +1163,7 @@ export function CategoryTrendChart() {
       </div>
 
       {/* 누적 영역 차트: 왼쪽 100만 이상 / 오른쪽 100만 미만 (스케일 분리) */}
-      {selectedCategories.size === 0 ? (
-        <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-zinc-600 bg-zinc-800/30 text-zinc-500 md:h-96">
-          카테고리를 선택하세요
-        </div>
-      ) : (highVolCats.length > 0 && lowVolCats.length > 0) ? (
+      {(selectedCategories.size > 0 && highVolCats.length > 0 && lowVolCats.length > 0) ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <div className="min-w-0 rounded-xl border border-zinc-600 bg-zinc-800/60 p-4">
             <div className="mb-2 text-xs font-medium text-cyan-400">대량 (100만 개 이상)</div>

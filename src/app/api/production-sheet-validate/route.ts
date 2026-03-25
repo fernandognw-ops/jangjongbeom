@@ -233,7 +233,7 @@ export async function POST(request: Request) {
       coupang: outboundSalesChannelDistinctRaw.filter((v) => normalizeSalesChannelKr(v) === "쿠팡"),
       general: outboundSalesChannelDistinctRaw.filter((v) => normalizeSalesChannelKr(v) === "일반"),
     };
-    const outboundSalesChannelGeneralWithCoupangHint =
+    const outboundSalesChannelGeneralHints =
       outboundSalesChannelClassifiedRaw.general.filter((v) => hasCoupangHint(v));
     const outboundTotalAmountSamples = outboundDateDiagnostics?.outboundTotalAmountSamples ?? [];
     const outboundSumTotalAmountParsed = outbound.reduce((s, r) => s + (Number(r.total_price) || 0), 0);
@@ -280,7 +280,6 @@ export async function POST(request: Request) {
       outboundAvgTotalAmount,
       outboundAmountRatioUnitOverTotal,
       outboundSalesChannelClassifiedRaw,
-      outboundSalesChannelGeneralWithCoupangHint,
       outboundChannelBreakdown,
       outboundRawRowCount: outboundRawRowCount ?? 0,
       stockCount: stockSnapshot.length,
@@ -310,9 +309,6 @@ export async function POST(request: Request) {
 
     const validationErrorReasons: string[] = [];
     if (validation.outboundDatePeriodValid !== true) validationErrorReasons.push("outboundDatePeriodValid=false");
-    if ((validation.outboundSalesChannelGeneralWithCoupangHint?.length ?? 0) > 0) {
-      validationErrorReasons.push("outboundSalesChannelGeneralWithCoupangHint not empty");
-    }
     if (!destWarehouseValid) {
       validationErrorReasons.push(`dest_warehouse invalid: ${uniqueInvalid.join(", ")}`);
     }
@@ -355,7 +351,6 @@ export async function POST(request: Request) {
         outboundAvgTotalAmount: validation.outboundAvgTotalAmount,
         outboundAmountRatioUnitOverTotal: validation.outboundAmountRatioUnitOverTotal,
         outboundSalesChannelClassifiedRaw: validation.outboundSalesChannelClassifiedRaw,
-        outboundSalesChannelGeneralWithCoupangHint: validation.outboundSalesChannelGeneralWithCoupangHint,
         outboundChannelBreakdown: validation.outboundChannelBreakdown,
         validateServerInfo: serverInfo,
         uploadPeriodValid: validation.uploadPeriodValid,
@@ -479,6 +474,11 @@ export async function POST(request: Request) {
     if (validation.filenameExpectedMonth) {
       warnings.push(
         `동일 월(${validation.filenameExpectedMonth}) 재업로드 시 기존 해당 월 데이터는 자동 교체됩니다.`
+      );
+    }
+    if (outboundSalesChannelGeneralHints.length > 0) {
+      warnings.push(
+        `출고 판매채널 원문 중 '일반'으로 분류됐지만 쿠팡 힌트가 있는 값이 ${outboundSalesChannelGeneralHints.length}건 있습니다. 업로드는 계속 진행되며, 채널 원문 정규화를 권장합니다.`
       );
     }
 

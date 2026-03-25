@@ -112,6 +112,8 @@ interface InventoryContextValue {
     months: string[];
     categories: string[];
     chartData: Record<string, string | number>[];
+    sourceTablesEmpty?: boolean;
+    rowCounts?: { inbound: number; outbound: number; snapshot: number };
     momRates: Record<string, Record<string, number | null>>;
     monthlyTotals?: Record<string, { outbound: number; inbound: number; outboundValue?: number; inboundValue?: number; outboundValueCoupang?: number; outboundValueGeneral?: number }>;
     monthlyValueByCategory?: Record<string, Record<string, number>>;

@@ -43,7 +43,6 @@ interface ValidationResult {
   outboundSalesChannelColumnFound?: boolean;
   outboundSalesChannelColumnHeader?: string;
   outboundSalesChannelClassifiedRaw?: { coupang: string[]; general: string[] };
-  outboundSalesChannelGeneralWithCoupangHint?: string[];
   outboundSumTotalAmountParsed?: number;
   outboundSumUnitPriceXQty?: number;
   outboundTotalAmountColumnFound?: boolean;
@@ -386,14 +385,6 @@ export function ProductionSheetUploader() {
                   ))}
                 </ul>
               </div>
-            )}
-            {!!validation.outboundSalesChannelGeneralWithCoupangHint?.length && (
-              <>
-                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs">일반으로 분류됐지만 쿠팡 힌트가 있는 원문</dt>
-                <dd className="col-span-2 md:col-span-3 font-mono text-[11px] text-amber-700">
-                  {validation.outboundSalesChannelGeneralWithCoupangHint.join(" | ")}
-                </dd>
-              </>
             )}
           </dl>
           {validateWarnings.length > 0 && (

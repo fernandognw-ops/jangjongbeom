@@ -7,7 +7,7 @@
  * - 금지: channel/dest/center/warehouse 계열 컬럼으로 채널 축 대체
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
- * - 월 범위: 세 원본 테이블 각각의 최소 일자 중 가장 이른 날부터 전량 로드 후, 데이터가 존재하는 월만 축에 표시 (고정 N개월·보정 없음)
+ * - 월 범위: (요청 month 없음) 세 테이블 최소 일자 중 가장 이른 날부터 전량 로드. 월 축 = 입고·출고·스냅샷에 나타난 월의 합집합(교집합 아님), 테이블별 없는 월은 0
  * - 월별 재고 자산: 해당 월 **마지막 snapshot_date** 1일만 카테고리별 total_price 합산
  * - ?debug=1: 출고 금액 샘플 20건 + 월별 채널 금액 집계 메타
  */
@@ -49,6 +49,8 @@ const emptyResponse = {
     kpiMonthKey: null as string | null,
     prevKpiMonthKey: null as string | null,
   },
+  sourceTablesEmpty: true as boolean,
+  rowCounts: { inbound: 0, outbound: 0, snapshot: 0 },
 };
 
 const PAGE_SIZE = 2000;
@@ -282,6 +284,20 @@ function monthKeyFromYmd(ymd: string): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(ymd) ? ymd.slice(0, 7) : "";
 }
 
+/** ISO YYYY-MM-DD 우선, 실패 시 문자열 앞부분 YYYY-MM / 슬래시·하이픈 월 */
+function monthKeyFromAnyDate(value: unknown): string {
+  const ymd = dateToYmdRawFirst(value);
+  if (ymd) return monthKeyFromYmd(ymd);
+  const raw = String(value ?? "").trim();
+  const m1 = raw.match(/^(\d{4})-(\d{2})/);
+  if (m1 && m1[1] && m1[2]) return `${m1[1]}-${m1[2]}`;
+  const m2 = raw.match(/^(\d{4})[\/](\d{1,2})/);
+  if (m2 && m2[1] && m2[2]) {
+    return `${m2[1]}-${String(m2[2]).padStart(2, "0")}`;
+  }
+  return "";
+}
+
 function buildMonthDebugRows<T>(
   rows: T[],
   dateGetter: (row: T) => string
@@ -344,6 +360,8 @@ export async function GET(request: Request) {
     }
 
     const supabase = createClient(url, key);
+    const rangeStart = requestedMonthWindow?.start ?? (await minDateAcrossInventoryTables(supabase));
+    const outboundEnd = requestedMonthWindow?.end;
     const jwt = jwtPayload(key);
     const jwtRole = String(jwt?.role ?? "");
     const authContext = {
@@ -355,37 +373,21 @@ export async function GET(request: Request) {
       rlsBypassLikely: jwtRole === "service_role",
     };
 
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-    // 최근 14개월 기간 (예: 25-02 ~ 26-03): 입·출고·재고 스냅샷 동일 기준일 이상
-    const fourteenMonthsAgo = new Date(year, month - 13, 1);
-    const dateFrom = `${fourteenMonthsAgo.getFullYear()}-${String(fourteenMonthsAgo.getMonth() + 1).padStart(2, "0")}-01`;
-
-    const fourteenMonthsSlots: string[] = [];
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(year, month - i, 1);
-      fourteenMonthsSlots.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
-    }
-    const monthsPreset = fourteenMonthsSlots;
-
     const fetchPageDebug: { outbound: FetchPageDebug[]; inbound: FetchPageDebug[]; snapshot: FetchPageDebug[] } = {
       outbound: [],
       inbound: [],
       snapshot: [],
     };
-    const outboundStart = requestedMonthWindow?.start ?? dateFrom;
-    const outboundEnd = requestedMonthWindow?.end;
 
     const [productsRes, outbound, inbound, stockSnapshotRows] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
-      fetchOutboundRows(supabase, outboundStart, outboundEnd, (d) => fetchPageDebug.outbound.push(d)),
+      fetchOutboundRows(supabase, rangeStart, outboundEnd, (d) => fetchPageDebug.outbound.push(d)),
       fetchAllRows<{ id?: number; product_code: string; quantity: number; inbound_date: string; sales_channel?: string; category?: string }>(
         supabase,
         "inventory_inbound",
         "id,product_code,quantity,inbound_date,sales_channel,category",
         "inbound_date",
-        dateFrom,
+        rangeStart,
         "id",
         (d) => fetchPageDebug.inbound.push(d)
       ),
@@ -403,33 +405,43 @@ export async function GET(request: Request) {
         "inventory_stock_snapshot",
         "product_code,category,snapshot_date,quantity,unit_cost,total_price,dest_warehouse,storage_center,sales_channel",
         "snapshot_date",
-        dateFrom,
+        rangeStart,
         ["product_code", "dest_warehouse", "storage_center"],
         (d) => fetchPageDebug.snapshot.push(d)
       ),
     ]);
 
+    const inboundCount = inbound.length;
+    const outboundCount = outbound.length;
+    const snapshotCount = stockSnapshotRows.length;
+    const rowCountsMeta = { inbound: inboundCount, outbound: outboundCount, snapshot: snapshotCount };
+
     const monthKeysFromData = new Set<string>();
     for (const o of outbound) {
-      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
+      const m = monthKeyFromAnyDate(o.outbound_date);
       if (m) monthKeysFromData.add(m);
     }
     for (const i of inbound) {
-      const m = monthKeyFromYmd(dateToYmdRawFirst(i.inbound_date));
+      const m = monthKeyFromAnyDate(i.inbound_date);
       if (m) monthKeysFromData.add(m);
     }
     for (const row of stockSnapshotRows) {
-      const d = String((row as { snapshot_date?: string }).snapshot_date ?? "").slice(0, 10);
-      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) monthKeysFromData.add(d.slice(0, 7));
+      const m = monthKeyFromAnyDate((row as { snapshot_date?: string }).snapshot_date);
+      if (m) monthKeysFromData.add(m);
     }
-    const months = [...monthKeysFromData].sort();
+    let months = [...monthKeysFromData].sort();
+    // 행은 있는데 날짜 파싱만 전부 실패한 극단적 경우: rangeStart 월로 축 1개 유지 (빈 months 전체 반환 방지)
+    if (months.length === 0 && inboundCount + outboundCount + snapshotCount > 0) {
+      const m0 = monthKeyFromAnyDate(rangeStart);
+      if (m0) months = [m0];
+    }
 
-    // DB 0건이면 네이버 API 호출 없이 즉시 empty 반환 (이전 데이터 표시 방지)
     const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
     const snapData = stockSnapshotRows as { product_code: string; category?: string; snapshot_date?: string }[];
-    if (outbound.length === 0 && inbound.length === 0 && products.length === 0 && snapData.length === 0) {
-      console.log("[category-trend] 데이터소스: inventory_* 0건 → empty (DB)");
-      return NextResponse.json({ ...emptyResponse, serverInfo }, {
+    // 세 원본 테이블이 모두 0건만 즉시 empty (products 유무와 무관)
+    if (inboundCount === 0 && outboundCount === 0 && snapshotCount === 0) {
+      console.log("[category-trend] source tables all empty → empty", { ...rowCountsMeta, monthsLength: 0 });
+      return NextResponse.json({ ...emptyResponse, serverInfo, sourceTablesEmpty: true, rowCounts: rowCountsMeta }, {
         headers: { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" },
       });
     }
@@ -485,7 +497,7 @@ export async function GET(request: Request) {
 
     // 그래프·전월대비: 아웃바운드(실제 출고)만 사용. 마스터 5개 카테고리만 표시
     for (const o of outbound) {
-      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
+      const m = monthKeyFromAnyDate(o.outbound_date);
       if (!m) continue;
       if (!byMonthCategory[m]) byMonthCategory[m] = {};
       const rowCat = (o.category ?? "").trim();
@@ -564,7 +576,7 @@ export async function GET(request: Request) {
     }> = [];
 
     for (const o of outbound) {
-      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
+      const m = monthKeyFromAnyDate(o.outbound_date);
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
@@ -617,7 +629,7 @@ export async function GET(request: Request) {
       );
     }
     for (const i of inbound) {
-      const m = monthKeyFromYmd(dateToYmdRawFirst(i.inbound_date));
+      const m = monthKeyFromAnyDate(i.inbound_date);
       if (!monthlyTotals[m]) continue;
       const qty = Number(i.quantity ?? 0);
       const codeKey = normalizeCode(i.product_code) || String(i.product_code).trim();
@@ -639,7 +651,7 @@ export async function GET(request: Request) {
       }
     }
     for (const o of outbound) {
-      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
+      const m = monthKeyFromAnyDate(o.outbound_date);
       if (!byMonthCategoryOutboundValue[m]) continue;
       const rowCat = (o.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(o.product_code) || "") || codeToCategory.get(String(o.product_code).trim()) || "";
@@ -651,7 +663,7 @@ export async function GET(request: Request) {
       byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + val;
     }
     for (const i of inbound) {
-      const m = monthKeyFromYmd(dateToYmdRawFirst(i.inbound_date));
+      const m = monthKeyFromAnyDate(i.inbound_date);
       if (!byMonthCategoryInboundValue[m]) continue;
       const rowCat = (i.category ?? "").trim();
       let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(i.product_code) || "") || codeToCategory.get(String(i.product_code).trim()) || "";
@@ -663,7 +675,7 @@ export async function GET(request: Request) {
       byMonthCategoryInboundValue[m][cat] = (byMonthCategoryInboundValue[m][cat] ?? 0) + qty * cost;
     }
 
-    // 월별 재고 자산: 해당 월의 **마지막 snapshot_date** 1일만 사용 → 카테고리별 total_price 합 (행 전량은 snapshot_date>=dateFrom 페이지네이션으로 로드)
+    // 월별 재고 자산: 해당 월의 **마지막 snapshot_date** 1일만 사용 → 카테고리별 total_price 합 (행 전량은 snapshot_date>=rangeStart 페이지네이션으로 로드)
     const snapRows = stockSnapshotRows as {
       product_code: string;
       category?: string;
@@ -742,18 +754,12 @@ export async function GET(request: Request) {
       }
     }
 
-    console.log(
-      "[category-trend] 데이터소스: outbound=" +
-        outbound.length +
-        ", inbound=" +
-        inbound.length +
-        ", products=" +
-        products.length +
-        ", snapshot_rows=" +
-        snapRows.length +
-        ", months_with_last_snapshot=" +
-        maxDateByMonth.size
-    );
+    console.log("[category-trend] response meta", {
+      monthsLength: months.length,
+      inbound: inboundCount,
+      outbound: outboundCount,
+      snapshot: snapshotCount,
+    });
 
     const monthlySalesByChannel: Record<string, { 일반: number; 쿠팡: number }> = {};
     const monthlyOutboundDebug: Array<{
@@ -768,7 +774,7 @@ export async function GET(request: Request) {
     const outboundRowsByMonthCount: Record<string, number> = {};
     const outboundMonthsSet = new Set<string>();
     for (const o of outbound) {
-      const mk = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
+      const mk = monthKeyFromAnyDate(o.outbound_date);
       if (!mk) continue;
       outboundMonthsSet.add(mk);
       outboundRowsByMonthCount[mk] = (outboundRowsByMonthCount[mk] ?? 0) + 1;
@@ -779,7 +785,7 @@ export async function GET(request: Request) {
         일반: t?.outboundValueGeneral ?? 0,
         쿠팡: t?.outboundValueCoupang ?? 0,
       };
-      const monthRows = outbound.filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === mk);
+      const monthRows = outbound.filter((o) => monthKeyFromAnyDate(o.outbound_date) === mk);
       const chosenSourceCounts: Record<ChosenAmountSource, number> = {
         outbound_total_amount: 0,
         total_price: 0,
@@ -859,6 +865,8 @@ export async function GET(request: Request) {
         kpiMonthKey: kpiMonth || null,
         prevKpiMonthKey: prevKpiMonth || null,
       },
+      rowCounts: rowCountsMeta,
+      sourceTablesEmpty: false,
     };
 
     if (debug) {
@@ -874,7 +882,7 @@ export async function GET(request: Request) {
         snapshot: buildMonthDebugRows(snapRows, (r) => String(r.snapshot_date ?? "")),
       };
       const monthOutboundRows = drillMonth
-        ? outbound.filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === drillMonth)
+        ? outbound.filter((o) => monthKeyFromAnyDate(o.outbound_date) === drillMonth)
         : [];
       const monthStockRows = drillMonth
         ? snapRows.filter((s) => (s.snapshot_date ?? "").slice(0, 7) === drillMonth)
@@ -930,7 +938,7 @@ export async function GET(request: Request) {
         .sort((a, b) => a - b);
       const fetchedOutboundIdsForDrillMonth = drillMonth
         ? outbound
-            .filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === drillMonth)
+            .filter((o) => monthKeyFromAnyDate(o.outbound_date) === drillMonth)
             .map((o) => (typeof o.id === "number" ? o.id : null))
             .filter((v): v is number => v != null)
             .sort((a, b) => a - b)
@@ -1051,10 +1059,10 @@ export async function GET(request: Request) {
           sourceType: "table",
           clientType: "supabase-js",
           queryFilter: {
-            outbound_date_gte: outboundStart,
+            outbound_date_gte: rangeStart,
             ...(outboundEnd ? { outbound_date_lt: outboundEnd } : {}),
             drillMonth,
-            dateFromMinTable: dateFrom,
+            rangeStartInventoryTables: rangeStart,
           },
           orderCondition: "order by outbound_date asc, id asc",
           selectedColumns:
@@ -1116,11 +1124,11 @@ export async function GET(request: Request) {
         queriedMonthBySalesChannel: monthOutboundBySalesChannel,
         drillMonthMonthlyTotals: drillMonth ? monthlyTotals[drillMonth] ?? null : null,
         requestedMonth: requestedMonth ?? null,
-        requestedRangeStart: outboundStart,
+        requestedRangeStart: rangeStart,
         requestedRangeEnd: outboundEnd ?? null,
         totalFetchedOutboundRows: outbound.length,
         outboundFetchMode: requestedMonth ? "single-month-window" : "full-from-min-date",
-        codePathSignature: "fetchOutboundRowsUnified -> monthKeyFromYmd(dateToYmdRawFirst(outbound_date))",
+        codePathSignature: "fetchOutboundRowsUnified -> monthKeyFromAnyDate(outbound_date)",
         queriedMonthStockRows: monthStockRows.length,
         queriedMonthStockSnapshotDates: [...queriedMonthStockSnapshotDatesSet].sort(),
         queriedMonthStockAssetByCategory,

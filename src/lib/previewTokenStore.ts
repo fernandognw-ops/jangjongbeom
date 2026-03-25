@@ -63,7 +63,6 @@ interface PreviewEntry {
         coupang: string[];
         general: string[];
       };
-      outboundSalesChannelGeneralWithCoupangHint?: string[];
     };
   };
   expiresAt: number;
