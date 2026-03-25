@@ -199,10 +199,7 @@ export function CategoryTrendChart() {
       if (!mt) continue;
       const 일반 = mt.outboundValueGeneral || 0;
       const 쿠팡 = mt.outboundValueCoupang || 0;
-      const total =
-        typeof mt.outboundValue === "number" && Number.isFinite(mt.outboundValue)
-          ? mt.outboundValue
-          : 일반 + 쿠팡;
+      const total = 일반 + 쿠팡;
       rows.push({
         month,
         일반,
@@ -238,7 +235,6 @@ export function CategoryTrendChart() {
     const nonZeroMonths = monthKeys.filter((m) => {
       const mt = data.monthlyTotals?.[m];
       return (
-        Number(mt?.outboundValue ?? 0) > 0 ||
         Number(mt?.outboundValueCoupang ?? 0) > 0 ||
         Number(mt?.outboundValueGeneral ?? 0) > 0
       );
@@ -886,7 +882,7 @@ export function CategoryTrendChart() {
               <div>
                 <h3 className="text-sm font-semibold text-cyan-400">판매 채널별 월별 매출 금액</h3>
                 <p className="mt-0.5 text-[10px] text-zinc-500">
-                  쿠팡 vs 일반(외) · 막대 합계·툴팁 총액은 월별 출고 매출 합(<span className="text-zinc-400">outboundValue</span>)
+                  쿠팡 vs 일반(외) · 막대 합계·툴팁 총액은 (쿠팡+일반) 채널별 월 합
                 </p>
               </div>
             </div>

@@ -297,43 +297,34 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     try {
       const cacheBust = `_t=${Date.now()}`;
       const opts = { cache: "no-store" as RequestCache, headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" } };
+      const unifiedRes = await Promise.race([
+        fetch(`/api/inventory/dashboard-aggregate?${cacheBust}`, opts),
+        timeout(60_000),
+      ]).catch(() => null);
 
-      // 1단계: quick(초고속) → 실패 시 snapshot?lite=1 (각 5초 타임아웃)
-      let snapshotRes: Response | null = null;
-      const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 5_000);
-      try {
-        snapshotRes = await fetch(`/api/inventory/quick?${cacheBust}`, { ...opts, signal: ctrl.signal });
-      } catch {
-        clearTimeout(tid);
-        const ctrl2 = new AbortController();
-        const tid2 = setTimeout(() => ctrl2.abort(), 5_000);
-        try {
-          snapshotRes = await fetch(`/api/inventory/snapshot?lite=1&${cacheBust}`, { ...opts, signal: ctrl2.signal });
-        } finally {
-          clearTimeout(tid2);
-        }
-      }
-      clearTimeout(tid);
+      if (!unifiedRes?.ok) throw new Error(unifiedRes?.statusText ?? "unified api error");
+      const unified = (await unifiedRes.json().catch(() => null)) as
+        | {
+            snapshot?: any;
+            summary?: any;
+            inventoryData?: any;
+            categoryTrend?: InventoryContextValue["categoryTrendData"] | null;
+            forecast?: any;
+            error?: string;
+          }
+        | null;
 
-      if (!snapshotRes?.ok) throw new Error(snapshotRes?.statusText ?? "API 오류");
-      const data = (await snapshotRes.json()) as {
-        items?: Array<{ product_code: string; product_name?: string; quantity: number; pack_size: number; total_price: number; sku: number; category?: string }>;
-        productCount?: number;
-        totalValue?: number;
-        totalQuantity?: number;
-        totalSku?: number;
-        dailyVelocityByProduct?: Record<string, number>;
-        stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
-        channelTotals?: Record<string, number>;
-        error?: string;
-      };
+      const snapshot = unified?.snapshot ?? null;
+      const summary = unified?.summary ?? null;
+      const inventoryData = unified?.inventoryData ?? null;
+      const categoryTrend = unified?.categoryTrend ?? null;
+      const forecastJson = unified?.forecast ?? null;
 
-      const items = data.items ?? [];
-      const totalVal = data.totalValue ?? 0;
+      const items = (snapshot?.items ?? []) as Array<{ product_code: string; product_name?: string; quantity: number; pack_size: number; total_price: number; sku: number; category?: string }>;
+      const totalVal = snapshot?.totalValue ?? 0;
       const isEmpty = items.length === 0 && totalVal === 0;
-      const isNoSnapshot = data.error === "no_snapshot";
-      if (isEmpty || isNoSnapshot) {
+      const isNoSnapshot = snapshot?.error === "no_snapshot";
+      if (!summary || isEmpty || isNoSnapshot) {
         setSupabaseFetchStatus("empty_data");
         setUseSupabaseInventory(true);
         setBaseStockState({ ...DEFAULT_STOCK });
@@ -346,218 +337,127 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         setSupabaseOutbound([]);
         setSupabaseStockSnapshot([]);
         setDailyVelocityByProduct({});
+        setDailyVelocityByProductCoupang({});
+        setDailyVelocityByProductGeneral({});
         setChannelTotals({});
         setKpiData({ productCount: 0, totalValue: 0, totalQuantity: 0, totalSku: 0 });
-        setCategoryTrendData({
-          months: [],
-          categories: [],
-          chartData: [],
-          momRates: {},
-          monthlyTotals: {},
-          momIndicators: {
-            outbound: null,
-            inbound: null,
-            thisMonthOutbound: 0,
-            thisMonthInbound: 0,
-            thisMonthOutboundValue: 0,
-            thisMonthInboundValue: 0,
-            thisMonthOutboundCoupang: 0,
-            thisMonthOutboundGeneral: 0,
-            thisMonthInboundByChannel: {},
-          },
-        });
+        setCategoryTrendData(
+          categoryTrend ?? {
+            months: [],
+            categories: [],
+            chartData: [],
+            momRates: {},
+            monthlyTotals: {},
+            momIndicators: {
+              outbound: null,
+              inbound: null,
+              thisMonthOutbound: 0,
+              thisMonthInbound: 0,
+              thisMonthOutboundValue: 0,
+              thisMonthInboundValue: 0,
+              thisMonthOutboundCoupang: 0,
+              thisMonthOutboundGeneral: 0,
+              thisMonthInboundByChannel: {},
+            },
+            sourceTablesEmpty: true,
+            rowCounts: { inbound: 0, outbound: 0, snapshot: 0 },
+          }
+        );
         setCategoryTrendLoaded(true);
         setIsSupabaseLoading(false);
         return;
       }
-      if (data.error) throw new Error(data.error);
 
-      let summaryProducts: InventoryProduct[] = [];
-      try {
-        const summaryPromise = fetch(`/api/inventory/summary?${cacheBust}`, opts).then((r) => r.ok ? r.json() : null);
-        const summaryData = await Promise.race([
-          summaryPromise,
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
-        ]);
-        if (summaryData?.products) summaryProducts = summaryData.products as InventoryProduct[];
-      } catch {
-        /* summary 실패해도 snapshot만으로 진행 */
-      }
+      // products/stockSnapshot은 summary가 unit_cost 등 포함해서 정확
+      const summaryProducts = (summary?.products ?? []) as InventoryProduct[];
+      const stockSnapshot = (summary?.stockSnapshot ?? []) as StockSnapshotRow[];
 
-      const today = new Date().toISOString().slice(0, 10);
-      const snapshot: StockSnapshotRow[] = items.map((i) => ({
-        product_code: i.product_code,
-        quantity: i.quantity,
-        unit_cost: i.quantity > 0 ? Math.round((i.total_price / i.quantity) * 100) / 100 : 0,
-        snapshot_date: today,
-      }));
-
-      const codeToSummaryProduct = new Map<string, InventoryProduct>();
-      for (const p of summaryProducts) {
-        const code = String(p.product_code ?? "").trim();
-        if (code) codeToSummaryProduct.set(code, p);
-      }
-
-      const seenCodes = new Set<string>();
-      const products: InventoryProduct[] = items
-        .filter((i) => {
-          if (seenCodes.has(i.product_code)) return false;
-          seenCodes.add(i.product_code);
-          return true;
-        })
-        .map((i) => {
-          const fromSummary = codeToSummaryProduct.get(i.product_code) ?? codeToSummaryProduct.get(String(i.product_code).trim());
-          const raw = String(i.category ?? "").trim();
-          const validFromApi = raw && raw !== "전체" && raw !== "기타" && !/^\d{10,}$/.test(raw);
-          const fromSum = String(fromSummary?.category ?? "").trim();
-          const validFromSum = fromSum && fromSum !== "기타" && !/^\d{10,}$/.test(fromSum);
-          const cat = validFromApi ? raw : (validFromSum ? fromSum : "생활용품");
-          return {
-            id: i.product_code,
-            product_code: i.product_code,
-            product_name: (i.product_name && i.product_name.trim()) ? i.product_name : (fromSummary?.product_name ?? i.product_code),
-            group_name: cat,
-            category: cat,
-            sub_group: fromSummary?.sub_group ?? "",
-            spec: fromSummary?.spec ?? "",
-            unit_cost: i.quantity > 0 ? i.total_price / i.quantity : (fromSummary?.unit_cost ?? 0),
-            pack_size: i.pack_size ?? fromSummary?.pack_size ?? 1,
-            sales_channel: "general" as const,
-            is_active: fromSummary?.is_active ?? true,
-          } satisfies InventoryProduct;
-        });
-      const stockByProduct: Record<string, number> = {};
-      for (const i of items) stockByProduct[i.product_code] = i.quantity;
+      // inventory_products에는 sales_channel 컬럼이 없을 수 있어 기존 UI 호환용으로 강제
+      const products: InventoryProduct[] = (summaryProducts ?? []).map((p) => ({
+        ...p,
+        sales_channel: "general",
+      })) as InventoryProduct[];
 
       setSupabaseProducts(products);
-      setSupabaseStockSnapshot(snapshot);
-      setDailyVelocityByProduct(data.dailyVelocityByProduct ?? {});
-      setStockByChannelFromApi(data.stockByChannel ?? { coupang: {}, general: {} });
-      const quickCh = data.channelTotals ?? {};
-      quickChannelTotalsRef.current = quickCh;
-      setChannelTotals(quickCh);
+      setSupabaseStockSnapshot(stockSnapshot);
+
+      setDailyVelocityByProduct(snapshot?.dailyVelocityByProduct ?? {});
+      setDailyVelocityByProductCoupang(snapshot?.dailyVelocityByProductCoupang ?? {});
+      setDailyVelocityByProductGeneral(snapshot?.dailyVelocityByProductGeneral ?? {});
+
+      setStockByChannelFromApi(snapshot?.stockByChannel ?? { coupang: {}, general: {} });
+      const chTotals = snapshot?.channelTotals ?? {};
+      quickChannelTotalsRef.current = chTotals;
+      setChannelTotals(chTotals);
+
+      // transactions용 outbound만 기존 로직과 동일하게 inventory/data에서 가져옴
+      const rawOutbound = inventoryData?.outbound;
+      if (Array.isArray(rawOutbound)) {
+        const mapped: InventoryOutbound[] = rawOutbound.map((row: unknown) => {
+          const o = row as Record<string, unknown>;
+          return {
+            id: String(o.id ?? ""),
+            product_code: String(o.product_code ?? ""),
+            quantity: Number(o.quantity) || 0,
+            sales_channel: String(o.sales_channel ?? "general"),
+            outbound_date: String(o.outbound_date ?? "").slice(0, 10),
+            source_warehouse: o.source_warehouse != null ? String(o.source_warehouse) : null,
+            dest_warehouse: o.dest_warehouse != null ? String(o.dest_warehouse) : null,
+            note: null,
+            category: o.category != null ? String(o.category) : null,
+          };
+        });
+        setSupabaseOutbound(mapped);
+      } else {
+        setSupabaseOutbound([]);
+      }
       setSupabaseInbound([]);
-      setSupabaseOutbound([]);
+
       setSupabaseSummary(null);
       setUseSupabaseInventory(true);
       setSupabaseFetchStatus("ok");
       setKpiData({
-        productCount: data.productCount ?? items.length,
-        totalValue: data.totalValue ?? 0,
-        totalQuantity: data.totalQuantity ?? 0,
-        totalSku: data.totalSku ?? 0,
+        productCount: snapshot?.productCount ?? summary?.productCount ?? products.length,
+        totalValue: snapshot?.totalValue ?? summary?.totalValue ?? 0,
+        totalQuantity: snapshot?.totalQuantity ?? 0,
+        totalSku: snapshot?.totalSku ?? 0,
       });
       setDataRefreshKey((k) => k + 1);
+
+      // AI forecast parsing (기존 UI와 동일 형태로 세팅)
+      let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
+      let categoryForecast: { thisMonthKey: string; byCategory: Record<string, number> } | undefined;
+      if (forecastJson && typeof forecastJson === "object") {
+        const forecasts = (forecastJson?.product_forecasts ?? []) as Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
+        for (const row of forecasts) {
+          const code = String(row.product_code ?? "").trim();
+          if (!code) continue;
+          const v = {
+            forecast_month1: Number(row.forecast_month1) || 0,
+            forecast_month2: Number(row.forecast_month2) || 0,
+            forecast_month3: Number(row.forecast_month3) || 0,
+          };
+          forecastMap[code] = v;
+          forecastMap[normalizeCode(code) || code] = v;
+        }
+
+        const cf = forecastJson?.category_forecast as Record<string, { forecast_this_month?: number }> | undefined;
+        const label = forecastJson?.forecast_this_month_label as string | undefined;
+        if (label && cf && typeof cf === "object") {
+          const byCategory: Record<string, number> = {};
+          for (const [cat, val] of Object.entries(cf)) {
+            const v = val?.forecast_this_month;
+            if (typeof v === "number" && v >= 0) byCategory[cat] = v;
+          }
+          if (Object.keys(byCategory).length > 0) categoryForecast = { thisMonthKey: label, byCategory };
+        }
+      }
+
+      setCategoryTrendData(categoryTrend);
+      setAiForecastByProduct(forecastMap);
+      setCategoryForecastThisMonth(categoryForecast);
+      setCategoryTrendLoaded(true);
       setIsSupabaseLoading(false);
-
-      const windowStart = new Date();
-      windowStart.setMonth(windowStart.getMonth() - 6);
-      const outboundSince = windowStart.toISOString().slice(0, 10);
-      void fetch(`/api/inventory/data?since=${outboundSince}&${cacheBust}`, opts)
-        .then(async (r) => {
-          if (!r.ok) return;
-          const j = (await r.json().catch(() => null)) as { outbound?: unknown[] } | null;
-          const raw = j?.outbound;
-          if (!Array.isArray(raw)) return;
-          const mapped: InventoryOutbound[] = raw.map((row) => {
-            const o = row as Record<string, unknown>;
-            return {
-              id: String(o.id ?? ""),
-              product_code: String(o.product_code ?? ""),
-              quantity: Number(o.quantity) || 0,
-              sales_channel: String(o.sales_channel ?? "general"),
-              outbound_date: String(o.outbound_date ?? "").slice(0, 10),
-              source_warehouse: o.source_warehouse != null ? String(o.source_warehouse) : null,
-              dest_warehouse: o.dest_warehouse != null ? String(o.dest_warehouse) : null,
-              note: null,
-              category: o.category != null ? String(o.category) : null,
-            };
-          });
-          setSupabaseOutbound(mapped);
-        })
-        .catch(() => {});
-
-      // 2단계: 전체 snapshot(dailyVelocity) + 판매·입고·예측 백그라운드
-      fetch(`/api/inventory/snapshot?${cacheBust}`, opts)
-        .then((r) => r.ok ? r.json() : null)
-        .then((fullData: { dailyVelocityByProduct?: Record<string, number>; dailyVelocityByProductCoupang?: Record<string, number>; dailyVelocityByProductGeneral?: Record<string, number>; stockByChannel?: { coupang: Record<string, number>; general: Record<string, number> }; channelTotals?: Record<string, number> } | null) => {
-          if (fullData?.dailyVelocityByProduct) setDailyVelocityByProduct(fullData.dailyVelocityByProduct);
-          if (fullData?.dailyVelocityByProductCoupang) setDailyVelocityByProductCoupang(fullData.dailyVelocityByProductCoupang);
-          if (fullData?.dailyVelocityByProductGeneral) setDailyVelocityByProductGeneral(fullData.dailyVelocityByProductGeneral);
-          if (fullData?.stockByChannel) setStockByChannelFromApi(fullData.stockByChannel);
-          const snapCh = fullData?.channelTotals;
-          if (snapCh && Object.keys(snapCh).length > 0) {
-            const quickCh = quickChannelTotalsRef.current;
-            console.log("[InventoryContext channelTotals] quick vs snapshot", {
-              quick: quickCh,
-              snapshot: snapCh,
-              keysEqual:
-                quickCh &&
-                JSON.stringify([...Object.keys(quickCh)].sort()) === JSON.stringify([...Object.keys(snapCh)].sort()),
-              valuesEqual:
-                quickCh &&
-                [...Object.keys({ ...quickCh, ...snapCh })].every(
-                  (k) => (quickCh[k] ?? 0) === (snapCh[k] ?? 0)
-                ),
-            });
-            setChannelTotals(snapCh);
-          }
-        })
-        .catch(() => {});
-
-      // 3단계: 판매·입고·예측 백그라운드
-      Promise.all([
-        fetch(`/api/category-trend?${cacheBust}`, opts),
-        fetch(`/api/forecast?${cacheBust}`, opts),
-      ]).then(async ([categoryTrendRes, forecastRes]) => {
-        let categoryTrend: InventoryContextValue["categoryTrendData"] = null;
-        if (categoryTrendRes.ok) {
-          const ctJson = await categoryTrendRes.json().catch(() => null);
-          if (ctJson && typeof ctJson === "object") {
-            if ("error" in ctJson && ctJson.error) {
-              console.warn("[category-trend] API 본문 오류(차트는 빈 축으로 표시):", ctJson.error);
-            }
-            categoryTrend = ctJson as InventoryContextValue["categoryTrendData"];
-          }
-        }
-        let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
-        let categoryForecast: { thisMonthKey: string; byCategory: Record<string, number> } | undefined;
-        if (forecastRes.ok) {
-          const fJson = await forecastRes.json().catch(() => null);
-          const forecasts = (fJson?.product_forecasts ?? []) as Array<{ product_code: string; forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
-          for (const row of forecasts) {
-            const code = String(row.product_code ?? "").trim();
-            if (code) {
-              const v = {
-                forecast_month1: Number(row.forecast_month1) || 0,
-                forecast_month2: Number(row.forecast_month2) || 0,
-                forecast_month3: Number(row.forecast_month3) || 0,
-              };
-              forecastMap[code] = v;
-              forecastMap[normalizeCode(code) || code] = v;
-            }
-          }
-          const cf = fJson?.category_forecast as Record<string, { forecast_this_month?: number }> | undefined;
-          const label = fJson?.forecast_this_month_label as string | undefined;
-          if (label && cf && typeof cf === "object") {
-            const byCategory: Record<string, number> = {};
-            for (const [cat, val] of Object.entries(cf)) {
-              const v = val?.forecast_this_month;
-              if (typeof v === "number" && v >= 0) byCategory[cat] = v;
-            }
-            if (Object.keys(byCategory).length > 0) {
-              categoryForecast = { thisMonthKey: label, byCategory };
-            }
-          }
-        }
-        setCategoryTrendData(categoryTrend);
-        setAiForecastByProduct(forecastMap);
-        setCategoryForecastThisMonth(categoryForecast);
-        setCategoryTrendLoaded(true);
-        setDataRefreshKey((k) => k + 1);
-      }).catch(() => {
-        setCategoryTrendLoaded(true);
-      });
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       setSupabaseFetchStatus("fetch_error");

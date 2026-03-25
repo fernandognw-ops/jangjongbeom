@@ -15,9 +15,15 @@ export type NormalizedWarehouse = typeof WAREHOUSE_GENERAL | typeof WAREHOUSE_CO
  * 엑셀·DB 값 → "쿠팡" | "일반" (대시보드·SQL·파서 공통)
  */
 export function normalizeSalesChannelKr(raw: unknown): "쿠팡" | "일반" {
-  const value = String(raw ?? "").trim().toLowerCase();
-  if (value === "coupang") return "쿠팡";
-  if (value === "general") return "일반";
+  const valueRaw = String(raw ?? "").trim();
+  if (!valueRaw) return "일반";
+  const value = valueRaw.toLowerCase();
+
+  // English/숫자/공백/부분포함까지 허용 (엑셀 원문값 기준)
+  if (value.includes("coupang") || valueRaw.includes("쿠팡")) return "쿠팡";
+  if (value.includes("general") || valueRaw.includes("일반")) return "일반";
+
+  // 알 수 없는 값은 안전하게 일반으로 처리(기본), 대신 업로드 시엔 sales_channel raw 기반 로그를 확인
   return "일반";
 }
 
