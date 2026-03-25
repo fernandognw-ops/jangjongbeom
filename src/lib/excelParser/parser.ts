@@ -521,9 +521,10 @@ export function parseOutboundSheet(
   const idxQty = findQtyCol(headerRow);
   const idxCenter = findCol(headerRow, "outbound_center");
   const { index: idxDate, headerLabel: outboundDateHeader } = findOutboundDateColumnIndex(headerRow);
-  const idxSc = findCol(headerRow, "outbound_sales_channel");
-  const outboundSalesChannelHeader =
-    idxSc >= 0 ? String(headerRow[idxSc] ?? "").trim() : "";
+  // outboud_sales_channel(엑셀 \"판매 채널\")는 유사매칭 금지: 헤더가 정확히 \"판매 채널\"인 컬럼만 사용
+  const idxSc = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널");
+  if (idxSc === -1) throw new Error("출고 시트에서 '판매 채널' 컬럼을 찾지 못함");
+  const outboundSalesChannelHeader = String(headerRow[idxSc] ?? "").trim();
   const outboundHeaderRowRaw = headerRow.map((h) => String(h ?? ""));
   const outboundHeaderRowNormalized = outboundHeaderRowRaw.map((h) => norm(h));
   const idxCat = findCol(headerRow, "category");
@@ -541,31 +542,6 @@ export function parseOutboundSheet(
         outboundSalesChannelColumnIndex: idxSc,
         outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
         outboundSalesChannelColumnFound: idxSc >= 0,
-        outboundTotalAmountColumnIndex: idxTotal,
-        outboundTotalAmountColumnHeader: outboundTotalAmountHeader,
-        outboundTotalAmountColumnFound: idxTotal >= 0,
-        outboundHeaderRowRaw,
-        outboundHeaderRowNormalized,
-        outboundSalesChannelDistinctRaw: [],
-        outboundSalesChannelDistinctTrimmed: [],
-        outboundSalesChannelSamples: [],
-        outboundTotalAmountSamples: [],
-        samples: [],
-      },
-    };
-  }
-
-  /** 「판매 채널」 열 필수 — 매출구분·출고처로 대체 불가 */
-  if (idxSc < 0) {
-    return {
-      rows: [],
-      dateDiagnostics: {
-        outboundDateColumnIndex: idxDate,
-        outboundDateColumnHeader: outboundDateHeader,
-        outboundDateColumnFound: true,
-        outboundSalesChannelColumnIndex: -1,
-        outboundSalesChannelColumnHeader: "",
-        outboundSalesChannelColumnFound: false,
         outboundTotalAmountColumnIndex: idxTotal,
         outboundTotalAmountColumnHeader: outboundTotalAmountHeader,
         outboundTotalAmountColumnFound: idxTotal >= 0,
@@ -611,9 +587,12 @@ export function parseOutboundSheet(
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
     const scRawBeforeTrim = String(row[idxSc] ?? "");
     const scRaw = scRawBeforeTrim.trim();
+    if (scRaw !== "쿠팡" && scRaw !== "일반") {
+      throw new Error(`잘못된 판매 채널 값: ${scRaw}`);
+    }
     if (rawSet.size < 200) rawSet.add(scRawBeforeTrim);
     if (trimmedSet.size < 200) trimmedSet.add(scRaw);
-    const channelKr = normalizeSalesChannelKr(scRaw);
+    const channelKr = scRaw === "쿠팡" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL;
     const sales_channel: "coupang" | "general" =
       channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
     const channel: NormalizedWarehouse =
@@ -623,7 +602,7 @@ export function parseOutboundSheet(
         rowIndex: i,
         rawBeforeTrim: scRawBeforeTrim,
         rawAfterTrim: scRaw,
-        mappedChannelKr: channelKr,
+        mappedChannelKr: scRaw,
         channel,
       });
     }
