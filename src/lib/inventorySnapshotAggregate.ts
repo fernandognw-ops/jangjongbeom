@@ -36,7 +36,6 @@ export type SnapshotChannelResolution = {
 /** 디버그·카운터용 (선택) */
 export type SnapshotChannelDebugStats = {
   sales_channel_used: number;
-  dest_warehouse_fallback_used: number;
   empty_source: number;
   chosen_coupang: number;
   chosen_general: number;
@@ -45,7 +44,6 @@ export type SnapshotChannelDebugStats = {
 export function createEmptySnapshotChannelDebugStats(): SnapshotChannelDebugStats {
   return {
     sales_channel_used: 0,
-    dest_warehouse_fallback_used: 0,
     empty_source: 0,
     chosen_coupang: 0,
     chosen_general: 0,
@@ -158,7 +156,6 @@ export type SnapshotDebugRowSample = {
 export type AggregateSnapshotDebug = {
   debug_used_channel_source_counts: {
     sales_channel_used: number;
-    dest_warehouse_fallback_used: number;
     empty_source: number;
   };
   debug_chosen_channel_counts: { coupang: number; general: number };
@@ -298,7 +295,6 @@ export function aggregateSnapshotRowsForDashboard(
       debug_aggregate: {
         debug_used_channel_source_counts: {
           sales_channel_used: stats.sales_channel_used,
-          dest_warehouse_fallback_used: stats.dest_warehouse_fallback_used,
           empty_source: stats.empty_source,
         },
         debug_chosen_channel_counts: {

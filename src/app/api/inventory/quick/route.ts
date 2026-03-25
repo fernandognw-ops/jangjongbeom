@@ -112,7 +112,6 @@ export async function GET(request: Request) {
                 ...(srcCounts && {
                   debug_used_channel_source_counts: {
                     sales_channel_used: srcCounts.sales_channel_used,
-                    dest_warehouse_fallback_used: srcCounts.dest_warehouse_fallback_used,
                     ...(typeof srcCounts.empty_source === "number" ? { empty_source: srcCounts.empty_source } : {}),
                   },
                 }),
@@ -251,7 +250,6 @@ export async function GET(request: Request) {
           ...(srcCounts && {
             debug_used_channel_source_counts: {
               sales_channel_used: srcCounts.sales_channel_used,
-              dest_warehouse_fallback_used: srcCounts.dest_warehouse_fallback_used,
               ...(typeof srcCounts.empty_source === "number" ? { empty_source: srcCounts.empty_source } : {}),
             },
           }),
