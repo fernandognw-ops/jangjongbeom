@@ -97,7 +97,7 @@ type ChannelSalesBarRow = {
   generalPct: number;
 };
 
-type YearFilter = "all" | "2025" | "2026";
+type YearFilter = "all" | string;
 
 export function CategoryTrendChart() {
   const {
@@ -166,6 +166,15 @@ export function CategoryTrendChart() {
     if (yearFilter === "all") return data.months;
     return data.months.filter((m) => m.startsWith(yearFilter));
   }, [data?.months, yearFilter]);
+
+  const yearOptions = useMemo(() => {
+    const ys = new Set<string>();
+    for (const m of data?.months ?? []) {
+      const y = String(m).slice(0, 4);
+      if (/^\d{4}$/.test(y)) ys.add(y);
+    }
+    return [...ys].sort();
+  }, [data?.months]);
 
   /**
    * 판매 채널별 월별 매출 막대용 배열.
@@ -735,7 +744,7 @@ export function CategoryTrendChart() {
   if (data.categories.length === 0) {
     return (
       <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center text-zinc-500">
-        최근 12개월 출고 데이터가 없습니다.
+        출고·입고·재고 원본 데이터가 없어 차트를 표시할 수 없습니다.
       </div>
     );
   }
@@ -752,7 +761,7 @@ export function CategoryTrendChart() {
           <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">
             연도
           </span>
-          {(["all", "2025", "2026"] as const).map((y) => (
+          {["all", ...yearOptions].map((y) => (
             <button
               key={y}
               type="button"

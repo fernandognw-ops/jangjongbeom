@@ -8,9 +8,13 @@ import { createClient } from "@supabase/supabase-js";
 export const dynamic = "force-dynamic";
 
 const DEFAULT_LIMIT = 200;
-const DEFAULT_BOARD_FROM = "2025-05";
-const DEFAULT_BOARD_TO = "2026-02";
-const BASELINE_MONTH = process.env.UPLOAD_BASELINE_MONTH ?? "2025-05";
+
+function defaultBoardRange(): { from: string; to: string } {
+  const n = new Date();
+  const toY = n.getFullYear() + 2;
+  const fromY = n.getFullYear() - 10;
+  return { from: `${fromY}-01`, to: `${toY}-12` };
+}
 
 function parseMonthKey(ym: string): { y: number; m: number } | null {
   if (!/^\d{4}-\d{2}$/.test(ym)) return null;
@@ -41,8 +45,9 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const month = searchParams.get("month")?.trim();
   const status = searchParams.get("status")?.trim();
-  const boardFrom = searchParams.get("boardFrom")?.trim() || DEFAULT_BOARD_FROM;
-  const boardTo = searchParams.get("boardTo")?.trim() || DEFAULT_BOARD_TO;
+  const { from: defaultFrom, to: defaultTo } = defaultBoardRange();
+  const boardFrom = searchParams.get("boardFrom")?.trim() || defaultFrom;
+  const boardTo = searchParams.get("boardTo")?.trim() || defaultTo;
   const limit = Math.min(Math.max(Number(searchParams.get("limit")) || DEFAULT_LIMIT, 1), 500);
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -124,10 +129,6 @@ export async function GET(request: Request) {
   }
 
   const boardMonths = enumerateMonths(boardFrom, boardTo);
-  const baselineSucceeded = (() => {
-    const b = monthLatest.get(BASELINE_MONTH);
-    return !!(b && b.status === "success" && b.validation_passed === true && b.auto_committed === true);
-  })();
   const monthBoard = boardMonths.map((ym) => {
     const latest = monthLatest.get(ym);
     const state = !latest ? "미업로드" : latest.status === "success" ? "정상" : "실패";
@@ -137,8 +138,6 @@ export async function GET(request: Request) {
       latestUploadedAt: latest?.uploaded_at ?? null,
       filename: latest?.filename ?? null,
       reason: latest?.validation_error_reason || latest?.error_message || null,
-      isBaselineMonth: ym === BASELINE_MONTH,
-      uploadEnabledByBaseline: ym === BASELINE_MONTH || baselineSucceeded,
     };
   });
 
@@ -149,8 +148,6 @@ export async function GET(request: Request) {
       monthsNeedingReupload: [...monthsNeedingReupload].sort(),
       limit,
       filters: { month: month || null, status: status || null },
-      baselineMonth: BASELINE_MONTH,
-      baselineSucceeded,
       boardFrom,
       boardTo,
       monthBoard,

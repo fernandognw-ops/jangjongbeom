@@ -1,14 +1,14 @@
 /**
  * 웹 승인 기반 DB 반영 로직 (서버 전용)
- * - 재고: 업로드에 포함된 **달력 월(YYYY-MM)** 마다, 그 달의 기존 스냅샷 전부 DELETE 후 INSERT.
- *   → 같은 달에 새 파일이 오면 해당 월은 **그 파일의 snapshot_date만** 남도록 이전 일자 스냅샷이 제거됨.
- * - 입고/출고: 파일에 나온 inbound_date / outbound_date 집합만 DELETE 후 INSERT (누적 append 금지)
+ * - 입고/출고/재고: **source_row_key**(원본행 핑거프린트)로 upsert. 동일 키 재업로드 시 update(덮어쓰기).
+ * - 날짜·월 단위 DELETE 후 전량 재삽입 없음 → 누적 DB에서 과거 월·타 월 데이터 유지.
  * - inbound/outbound/stock 적재 전 inventory_products 기준 enrichment
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { InboundRow, OutboundRow, StockSnapshotRow } from "@/lib/productionSheetParser";
 import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
+import { buildUploadSourceRowKey } from "@/lib/uploadSourceRowKey";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_INBOUND = "inventory_inbound";
@@ -23,26 +23,6 @@ function normDateYmd(d: string | undefined | null): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : "";
 }
 
-/** snapshot_date 문자열에서 서로 다른 YYYY-MM 목록 */
-function distinctCalendarMonthsFromSnapshotDates(dates: string[]): string[] {
-  const set = new Set<string>();
-  for (const raw of dates) {
-    const ymd = normDateYmd(raw) || String(raw).trim().slice(0, 10);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) continue;
-    set.add(ymd.slice(0, 7));
-  }
-  return [...set].sort();
-}
-
-/** 다음 달 1일 (exclusive 상한용): YYYY-MM → YYYY-MM-DD */
-function firstDayOfNextCalendarMonth(ym: string): string {
-  const [yStr, mStr] = ym.split("-");
-  const y = Number(yStr);
-  const m = Number(mStr);
-  if (m === 12) return `${y + 1}-01-01`;
-  return `${y}-${String(m + 1).padStart(2, "0")}-01`;
-}
-
 interface ProductEnrichment {
   product_name: string;
   category: string;
@@ -51,8 +31,10 @@ interface ProductEnrichment {
 }
 
 function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
-  const s = String(ch ?? "").trim().toLowerCase();
-  if (s === "쿠팡" || s.includes("쿠팡") || s === "coupang") return "coupang";
+  const raw = String(ch ?? "").trim();
+  const s = raw.toLowerCase();
+  if (s === "coupang" || s === "general") return s as "coupang" | "general";
+  if (raw.includes("쿠팡") || s.includes("coupang")) return "coupang";
   return "general";
 }
 
@@ -64,6 +46,12 @@ function outboundDestForDb(r: OutboundRow): string {
 function ensurePhysicalWarehouse(wh: string | undefined | null): string {
   const s = String(wh ?? "").trim();
   return s || "미지정";
+}
+
+function dedupeBySourceRowKey<T extends { source_row_key: string }>(rows: T[]): T[] {
+  const map = new Map<string, T>();
+  for (const r of rows) map.set(r.source_row_key, r);
+  return [...map.values()];
 }
 
 async function fetchProductEnrichmentMap(
@@ -173,32 +161,41 @@ export async function commitProductionSheet(
 
   let inboundInserted = 0;
   if (inbound.length > 0) {
-    const dates = [...new Set(inbound.map((r) => normDateYmd(r.inbound_date)).filter(Boolean))];
-    if (dates.length > 0) {
-      await supabase.from(TABLE_INBOUND).delete().in("inbound_date", dates);
-    }
-    const rows = inbound.map((r) => {
+    const rows = dedupeBySourceRowKey(inbound.map((r) => {
       const p = productMap.get(r.product_code);
       const unitPrice = p?.unit_cost ?? 0;
       const qty = r.quantity ?? 0;
       const totalPrice = qty * unitPrice;
+      const dateYmd = normDateYmd(r.inbound_date) || String(r.inbound_date).trim().slice(0, 10);
+      const ch = ensureChannel(r.sales_channel);
+      const center = r.inbound_center?.trim() || "";
+      const source_row_key = buildUploadSourceRowKey({
+        sheet: "inbound",
+        dateYmd,
+        salesChannel: ch,
+        productCode: r.product_code,
+        quantity: qty,
+        amount: totalPrice,
+        center,
+      });
       return {
+        source_row_key,
         product_code: r.product_code,
         product_name: p?.product_name ?? r.product_code,
         category: p?.category ?? "기타",
         pack_size: p?.pack_size ?? 1,
         quantity: qty,
-        inbound_date: normDateYmd(r.inbound_date) || r.inbound_date,
-        sales_channel: ensureChannel(r.sales_channel),
-        source_warehouse: r.inbound_center?.trim() || null,
+        inbound_date: dateYmd,
+        sales_channel: ch,
+        source_warehouse: center || null,
         dest_warehouse: null,
         unit_price: unitPrice,
         total_price: totalPrice,
       };
-    });
+    }));
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
-      const { error } = await supabase.from(TABLE_INBOUND).insert(batch);
+      const { error } = await supabase.from(TABLE_INBOUND).upsert(batch, { onConflict: "source_row_key" });
       if (error) throw new Error(`입고 저장 실패: ${error.message}`);
       inboundInserted += batch.length;
       onLog?.(TABLE_INBOUND, batch.length);
@@ -207,11 +204,7 @@ export async function commitProductionSheet(
 
   let outboundInserted = 0;
   if (outbound.length > 0) {
-    const dates = [...new Set(outbound.map((r) => normDateYmd(r.outbound_date)).filter(Boolean))];
-    if (dates.length > 0) {
-      await supabase.from(TABLE_OUTBOUND).delete().in("outbound_date", dates);
-    }
-    const rows = outbound.map((r) => {
+    const rows = dedupeBySourceRowKey(outbound.map((r) => {
       const p = productMap.get(r.product_code);
       const unitPrice = (r.unit_price ?? 0) > 0 ? (r.unit_price ?? 0) : (p?.unit_cost ?? 0);
       const qty = r.quantity ?? 0;
@@ -222,23 +215,36 @@ export async function commitProductionSheet(
             ? (r.total_price ?? 0)
             : 0;
       const totalPrice = outboundTotalAmount > 0 ? outboundTotalAmount : qty * unitPrice;
+      const dateYmd = normDateYmd(r.outbound_date) || String(r.outbound_date).trim().slice(0, 10);
+      const ch = ensureChannel(r.sales_channel);
+      const center = outboundDestForDb(r);
+      const source_row_key = buildUploadSourceRowKey({
+        sheet: "outbound",
+        dateYmd,
+        salesChannel: ch,
+        productCode: r.product_code,
+        quantity: qty,
+        amount: totalPrice,
+        center,
+      });
       return {
+        source_row_key,
         product_code: r.product_code,
         product_name: p?.product_name ?? r.product_code,
         category: p?.category ?? "기타",
         pack_size: p?.pack_size ?? 1,
         quantity: qty,
-        outbound_date: normDateYmd(r.outbound_date) || r.outbound_date,
-        sales_channel: ensureChannel(r.sales_channel),
-        dest_warehouse: outboundDestForDb(r),
+        outbound_date: dateYmd,
+        sales_channel: ch,
+        dest_warehouse: center,
         unit_price: unitPrice,
         total_price: totalPrice,
         outbound_total_amount: outboundTotalAmount,
       };
-    });
+    }));
     for (let i = 0; i < rows.length; i += BATCH) {
       const batch = rows.slice(i, i + BATCH);
-      const { error } = await supabase.from(TABLE_OUTBOUND).insert(batch);
+      const { error } = await supabase.from(TABLE_OUTBOUND).upsert(batch, { onConflict: "source_row_key" });
       if (error) throw new Error(`출고 저장 실패: ${error.message}`);
       outboundInserted += batch.length;
       onLog?.(TABLE_OUTBOUND, batch.length);
@@ -280,7 +286,7 @@ export async function commitProductionSheet(
     }
 
     /** dest_warehouse=판매채널, storage_center=보관센터. sales_channel은 레거시 스키마 호환용으로 동일 값 복제 */
-    const snapshotRows = stockSnapshot.map((s) => {
+    const snapshotRows = dedupeBySourceRowKey(stockSnapshot.map((s) => {
       const p = productMap.get(s.product_code);
       const channel = normalizeSalesChannelKr(s.sales_channel);
       const storage = ensurePhysicalWarehouse(s.storage_center);
@@ -295,34 +301,32 @@ export async function commitProductionSheet(
       }
       const qty = s.quantity ?? 0;
       const totalPrice = qty * cost;
+      const ch = ensureChannel(s.sales_channel);
+      const source_row_key = buildUploadSourceRowKey({
+        sheet: "snapshot",
+        dateYmd: snap,
+        salesChannel: ch,
+        productCode: s.product_code,
+        quantity: qty,
+        amount: totalPrice,
+        center: storage,
+      });
       return {
+        source_row_key,
         product_code: s.product_code,
         product_name: p?.product_name ?? s.product_code,
         category: p?.category ?? "기타",
         pack_size: p?.pack_size ?? 1,
         dest_warehouse: channel,
         storage_center: storage,
-        sales_channel: ensureChannel(s.sales_channel),
+        sales_channel: ch,
         quantity: qty,
         unit_cost: cost,
         total_price: totalPrice,
         snapshot_date: snap,
       };
-    });
+    }));
 
-    const monthsToReplace = distinctCalendarMonthsFromSnapshotDates(
-      snapshotRows.map((r) => r.snapshot_date).filter(Boolean) as string[]
-    );
-    for (const ym of monthsToReplace) {
-      const monthStart = `${ym}-01`;
-      const beforeNext = firstDayOfNextCalendarMonth(ym);
-      const { error: delErr } = await supabase
-        .from(TABLE_SNAPSHOT)
-        .delete()
-        .gte("snapshot_date", monthStart)
-        .lt("snapshot_date", beforeNext);
-      if (delErr) throw new Error(`재고 스냅샷 월 삭제 실패 (${ym}): ${delErr.message}`);
-    }
     for (let i = 0; i < snapshotRows.length; i += BATCH) {
       const batch = snapshotRows.slice(i, i + BATCH) as Array<
         Record<string, unknown> & { dest_warehouse: string; storage_center: string }
@@ -330,7 +334,7 @@ export async function commitProductionSheet(
       if (i === 0 && batch[0] && !("storage_center" in batch[0])) {
         throw new Error("재고 스냅샷 insert: storage_center 누락 (코드 오류)");
       }
-      const { error } = await supabase.from(TABLE_SNAPSHOT).insert(batch);
+      const { error } = await supabase.from(TABLE_SNAPSHOT).upsert(batch, { onConflict: "source_row_key" });
       if (error) throw new Error(`재고 스냅샷 저장 실패: ${error.message}`);
       stockSnapshotCount += batch.length;
       onLog?.(TABLE_SNAPSHOT, batch.length);

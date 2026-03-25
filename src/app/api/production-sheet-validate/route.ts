@@ -21,7 +21,6 @@ import { runUploadAutoValidation } from "@/lib/uploadAutoValidation";
 import { insertUploadAuditLog } from "@/lib/uploadLogWriter";
 
 const VALIDATE_SERVER_MARKER = "validate-v3-auto-audit-2026-03-24";
-const BASELINE_MONTH = process.env.UPLOAD_BASELINE_MONTH ?? "2025-05";
 
 function monthFromYmd(ymd: string | null | undefined): string | null {
   const s = String(ymd ?? "").trim().slice(0, 10);
@@ -45,22 +44,6 @@ function resolveTargetMonth(params: {
   ].filter((v): v is string => !!v && /^\d{4}-\d{2}$/.test(v));
   if (candidates.length > 0) return candidates[0];
   return "unknown";
-}
-
-async function hasBaselineSuccess(supabase: SupabaseClient, baselineMonth: string): Promise<boolean> {
-  const { data, error } = await supabase
-    .from("inventory_upload_logs")
-    .select("id")
-    .eq("target_month", baselineMonth)
-    .eq("status", "success")
-    .eq("validation_passed", true)
-    .eq("auto_committed", true)
-    .limit(1);
-  if (error) {
-    console.warn("[production-sheet-validate] baseline check failed:", error.message);
-    return false;
-  }
-  return (data?.length ?? 0) > 0;
 }
 
 async function logUploadAudit(
@@ -529,43 +512,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: false, error: "Supabase not configured", validation, serverInfo }, { status: 503 });
     }
     const supabase = supabaseForLog;
-
-    const uploadMonth =
-      resolveTargetMonth({
-        autoTargetMonth: (validation.autoValidation?.targetMonthKey as string | undefined) ?? null,
-        filenameExpectedMonth: (validation.filenameExpectedMonth as string | undefined) ?? null,
-        outboundDates: (validation.outboundDates as string[] | undefined) ?? [],
-        snapshotDates: (validation.snapshotDates as string[] | undefined) ?? [],
-        inboundDates: inbound.map((r) => r.inbound_date),
-      }) || null;
-    if (uploadMonth && uploadMonth !== BASELINE_MONTH) {
-      const baselineOk = await hasBaselineSuccess(supabase, BASELINE_MONTH);
-      if (!baselineOk) {
-        const baselineErr = `기준 월(${BASELINE_MONTH}) 업로드·검증·반영 성공 이력이 없어 ${uploadMonth} 반영을 차단합니다. 먼저 ${BASELINE_MONTH}를 정상 업로드하세요.`;
-        await logUploadAudit(supabaseForLog, {
-          filename: file.name,
-          validation: validation as Record<string, unknown>,
-          validation_passed: false,
-          auto_committed: false,
-          error_message: baselineErr,
-        });
-        return NextResponse.json(
-          {
-            ok: false,
-            blocked: true,
-            error: baselineErr,
-            validation,
-            serverInfo,
-            autoCommit: {
-              executed: false,
-              validation_passed: false,
-              validation_error_reason: baselineErr,
-            },
-          },
-          { status: 400 }
-        );
-      }
-    }
 
     const input: CommitInput = {
       filename: file.name,

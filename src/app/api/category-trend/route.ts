@@ -7,7 +7,8 @@
  * - 금지: channel/dest/center/warehouse 계열 컬럼으로 채널 축 대체
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
- * - 월별 재고 자산: snapshot_date >= 차트 시작월의 모든 행을 읽고, 월별 **마지막 snapshot_date**만 카테고리별 total_price 합산 (limit 미사용)
+ * - 월 범위: 세 원본 테이블 각각의 최소 일자 중 가장 이른 날부터 전량 로드 후, 데이터가 존재하는 월만 축에 표시 (고정 N개월·보정 없음)
+ * - 월별 재고 자산: 해당 월 **마지막 snapshot_date** 1일만 카테고리별 total_price 합산
  * - ?debug=1: 출고 금액 샘플 20건 + 월별 채널 금액 집계 메타
  */
 export const dynamic = "force-dynamic";
@@ -45,6 +46,8 @@ const emptyResponse = {
     thisMonthOutboundCoupang: 0,
     thisMonthOutboundGeneral: 0,
     thisMonthInboundByChannel: {} as Record<string, number>,
+    kpiMonthKey: null as string | null,
+    prevKpiMonthKey: null as string | null,
   },
 };
 
@@ -81,6 +84,32 @@ function jwtPayload(token: string): Record<string, unknown> | null {
 
 function fp(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 12);
+}
+
+async function minDateAcrossInventoryTables(supabase: SupabaseClient): Promise<string> {
+  const earliest = async (table: string, col: string): Promise<string | null> => {
+    const { data } = await supabase.from(table).select(col).order(col, { ascending: true }).limit(1).maybeSingle();
+    const v = (data as Record<string, unknown> | null)?.[col];
+    const s = v != null ? String(v).trim().slice(0, 10) : "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  };
+  const [a, b, c] = await Promise.all([
+    earliest("inventory_inbound", "inbound_date"),
+    earliest("inventory_outbound", "outbound_date"),
+    earliest("inventory_stock_snapshot", "snapshot_date"),
+  ]);
+  const dates = [a, b, c].filter((x): x is string => !!x);
+  if (dates.length === 0) return "1970-01-01";
+  return dates.sort()[0];
+}
+
+function prevCalendarMonthKey(ym: string): string {
+  if (!/^\d{4}-\d{2}$/.test(ym)) return "";
+  const [yStr, mStr] = ym.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  if (m <= 1) return `${y - 1}-12`;
+  return `${y}-${String(m - 1).padStart(2, "0")}`;
 }
 
 async function fetchAllRows<T>(
@@ -297,7 +326,6 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const debug = searchParams.get("debug") === "1";
     const requestedMonth = searchParams.get("month");
-    const queriedMonth = requestedMonth || "2025-03";
     const requestedMonthWindow = requestedMonth ? monthRange(requestedMonth) : null;
 
     const serverInfo = {
@@ -380,6 +408,21 @@ export async function GET(request: Request) {
         (d) => fetchPageDebug.snapshot.push(d)
       ),
     ]);
+
+    const monthKeysFromData = new Set<string>();
+    for (const o of outbound) {
+      const m = monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date));
+      if (m) monthKeysFromData.add(m);
+    }
+    for (const i of inbound) {
+      const m = monthKeyFromYmd(dateToYmdRawFirst(i.inbound_date));
+      if (m) monthKeysFromData.add(m);
+    }
+    for (const row of stockSnapshotRows) {
+      const d = String((row as { snapshot_date?: string }).snapshot_date ?? "").slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) monthKeysFromData.add(d.slice(0, 7));
+    }
+    const months = [...monthKeysFromData].sort();
 
     // DB 0건이면 네이버 API 호출 없이 즉시 empty 반환 (이전 데이터 표시 방지)
     const products = (productsRes.data ?? []) as { product_code: string; product_name?: string; unit_cost?: number; category?: string; group_name?: string }[];
@@ -471,8 +514,6 @@ export async function GET(request: Request) {
 
     const ordered = [...categoriesSet];
     const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
-
-    const months = monthsPreset;
 
     /** 월간 평균 검색 지수 (월별 출고량과 1:1 대응) */
     const naverByMonth: Record<string, Record<string, number>> = {};
@@ -567,31 +608,6 @@ export async function GET(request: Request) {
           });
         }
       }
-    }
-
-    const marchRows202603 = outbound.filter(
-      (o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === "2026-03"
-    );
-    if (marchRows202603.length > 0) {
-      let outboundValueCoupangKrw = 0;
-      let outboundValueGeneralKrw = 0;
-      for (const o of marchRows202603) {
-        const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-        const val = chosenOutboundAmount(o, codeKey, codeToCost).amount;
-        if (outboundChannelKrFromRow(o as Record<string, unknown>) === WAREHOUSE_COUPANG) {
-          outboundValueCoupangKrw += val;
-        } else {
-          outboundValueGeneralKrw += val;
-        }
-      }
-      console.log(
-        "[outbound-dashboard] channel verify 2026-03 (sales_channel-only parser)",
-        JSON.stringify({
-          rowCount: marchRows202603.length,
-          outboundValueCoupangKrw: Math.round(outboundValueCoupangKrw),
-          outboundValueGeneralKrw: Math.round(outboundValueGeneralKrw),
-        })
-      );
     }
 
     if (debug && outboundDebugSamples.length > 0) {
@@ -696,10 +712,6 @@ export async function GET(request: Request) {
       monthlyStockTotal[m] = Math.round(monthlyStockTotal[m] ?? 0);
     }
 
-    /** 증감률 표시 상한: ±50% (비정상 수치 방지) */
-    const MOM_RATE_CLAMP = 50;
-    const clampMomRate = (r: number) => Math.max(-MOM_RATE_CLAMP, Math.min(MOM_RATE_CLAMP, r));
-
     const momRates: Record<string, Record<string, number | null>> = {};
     for (const cat of finalCategories) {
       momRates[cat] = {};
@@ -709,17 +721,17 @@ export async function GET(request: Request) {
         else {
           const prev = (byMonthCategory[months[i - 1]] ?? {})[cat] ?? 0;
           const raw = prev > 0 ? Math.round(((curr - prev) / prev) * 1000) / 10 : (curr > 0 ? 100 : 0);
-          momRates[cat][months[i]] = clampMomRate(raw);
+          momRates[cat][months[i]] = raw;
         }
       }
     }
 
-    const thisMonthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
-    const prevMonthKey = month === 0 ? `${year - 1}-12` : `${year}-${String(month).padStart(2, "0")}`;
-    const thisOut = monthlyTotals[thisMonthKey]?.outbound ?? 0;
-    const thisIn = monthlyTotals[thisMonthKey]?.inbound ?? 0;
-    const prevOut = monthlyTotals[prevMonthKey]?.outbound ?? 0;
-    const prevIn = monthlyTotals[prevMonthKey]?.inbound ?? 0;
+    const kpiMonth = months.length > 0 ? months[months.length - 1]! : "";
+    const prevKpiMonth = kpiMonth ? prevCalendarMonthKey(kpiMonth) : "";
+    const thisOut = kpiMonth ? monthlyTotals[kpiMonth]?.outbound ?? 0 : 0;
+    const thisIn = kpiMonth ? monthlyTotals[kpiMonth]?.inbound ?? 0 : 0;
+    const prevOut = prevKpiMonth ? monthlyTotals[prevKpiMonth]?.outbound ?? 0 : 0;
+    const prevIn = prevKpiMonth ? monthlyTotals[prevKpiMonth]?.inbound ?? 0 : 0;
 
     const naverSearchTrend: Record<string, Record<string, number>> = {};
     for (const [kw, data] of Object.entries(naverMonthly ?? {})) {
@@ -831,30 +843,42 @@ export async function GET(request: Request) {
         outboundQty: monthlyTotals[m]?.outbound ?? 0,
       })),
       momIndicators: {
-        outbound: prevOut > 0 ? clampMomRate(Math.round(((thisOut - prevOut) / prevOut) * 1000) / 10) : null,
-        inbound: prevIn > 0 ? clampMomRate(Math.round(((thisIn - prevIn) / prevIn) * 1000) / 10) : null,
+        outbound: prevOut > 0 ? Math.round(((thisOut - prevOut) / prevOut) * 1000) / 10 : null,
+        inbound: prevIn > 0 ? Math.round(((thisIn - prevIn) / prevIn) * 1000) / 10 : null,
         thisMonthOutbound: thisOut,
         thisMonthInbound: thisIn,
         /** 출고 금액: chosenOutboundAmount 합 (total_price 우선) — DB SUM(total_price)와 동일 기준 */
-        thisMonthOutboundValue: monthlyTotals[thisMonthKey]?.outboundValue ?? 0,
-        thisMonthInboundValue: monthlyTotals[thisMonthKey]?.inboundValue ?? 0,
-        thisMonthOutboundCoupang: monthlyTotals[thisMonthKey]?.outboundCoupang ?? 0,
-        thisMonthOutboundGeneral: monthlyTotals[thisMonthKey]?.outboundGeneral ?? 0,
-        thisMonthInboundByChannel: monthlyTotals[thisMonthKey]?.inboundByChannel ?? {},
+        thisMonthOutboundValue: kpiMonth ? monthlyTotals[kpiMonth]?.outboundValue ?? 0 : 0,
+        thisMonthInboundValue: kpiMonth ? monthlyTotals[kpiMonth]?.inboundValue ?? 0 : 0,
+        thisMonthOutboundCoupang: kpiMonth ? monthlyTotals[kpiMonth]?.outboundCoupang ?? 0 : 0,
+        thisMonthOutboundGeneral: kpiMonth ? monthlyTotals[kpiMonth]?.outboundGeneral ?? 0 : 0,
+        thisMonthInboundByChannel: kpiMonth ? monthlyTotals[kpiMonth]?.inboundByChannel ?? {} : {},
         /** 채널별 출고 금액(동일 월·동일 규칙) — 그래프 막대 비율 검증용 */
-        thisMonthOutboundValueCoupang: monthlyTotals[thisMonthKey]?.outboundValueCoupang ?? 0,
-        thisMonthOutboundValueGeneral: monthlyTotals[thisMonthKey]?.outboundValueGeneral ?? 0,
+        thisMonthOutboundValueCoupang: kpiMonth ? monthlyTotals[kpiMonth]?.outboundValueCoupang ?? 0 : 0,
+        thisMonthOutboundValueGeneral: kpiMonth ? monthlyTotals[kpiMonth]?.outboundValueGeneral ?? 0 : 0,
+        kpiMonthKey: kpiMonth || null,
+        prevKpiMonthKey: prevKpiMonth || null,
       },
     };
 
     if (debug) {
+      const drillMonth =
+        requestedMonth && /^\d{4}-\d{2}$/.test(requestedMonth)
+          ? requestedMonth
+          : months.length > 0
+            ? months[months.length - 1]!
+            : "";
       const monthKeyDebug = {
         outbound: buildMonthDebugRows(outbound, (r) => String(r.outbound_date ?? "")),
         inbound: buildMonthDebugRows(inbound, (r) => String(r.inbound_date ?? "")),
         snapshot: buildMonthDebugRows(snapRows, (r) => String(r.snapshot_date ?? "")),
       };
-      const monthOutboundRows = outbound.filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === queriedMonth);
-      const monthStockRows = snapRows.filter((s) => (s.snapshot_date ?? "").slice(0, 7) === queriedMonth);
+      const monthOutboundRows = drillMonth
+        ? outbound.filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === drillMonth)
+        : [];
+      const monthStockRows = drillMonth
+        ? snapRows.filter((s) => (s.snapshot_date ?? "").slice(0, 7) === drillMonth)
+        : [];
       const monthOutboundBySalesChannel: Record<string, { row_cnt: number; qty: number; amount: number }> = {};
       const monthSalesChannelDistinctRaw = new Set<string>();
       const monthSalesChannelNormalizedCounts: Record<string, number> = {};
@@ -881,8 +905,6 @@ export async function GET(request: Request) {
       const outboundDateParsedSamples: Array<string> = [];
       const outboundMonthKeySamples: Array<string> = [];
       const outboundRowCountByMonthKey: Record<string, number> = {};
-      const outboundMonth202503Samples: Array<{ id: number | null; outbound_date_raw: string }> = [];
-      const outboundMonth202603Samples: Array<{ id: number | null; outbound_date_raw: string }> = [];
       const rawAmountSamples: Array<{
         id: number | null;
         outbound_date: string;
@@ -906,11 +928,13 @@ export async function GET(request: Request) {
         .map((o) => (typeof o.id === "number" ? o.id : null))
         .filter((v): v is number => v != null)
         .sort((a, b) => a - b);
-      const fetchedOutboundIdsForQueriedMonth = outbound
-        .filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === queriedMonth)
-        .map((o) => (typeof o.id === "number" ? o.id : null))
-        .filter((v): v is number => v != null)
-        .sort((a, b) => a - b);
+      const fetchedOutboundIdsForDrillMonth = drillMonth
+        ? outbound
+            .filter((o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === drillMonth)
+            .map((o) => (typeof o.id === "number" ? o.id : null))
+            .filter((v): v is number => v != null)
+            .sort((a, b) => a - b)
+        : [];
       let firstRowRawOutboundDate = "";
       let lastRowRawOutboundDate = "";
       for (const s of monthStockRows) {
@@ -1008,12 +1032,6 @@ export async function GET(request: Request) {
         if (outboundDateParsedSamples.length < 40) outboundDateParsedSamples.push(parsedYmd);
         if (outboundMonthKeySamples.length < 40) outboundMonthKeySamples.push(mk);
         if (mk) outboundRowCountByMonthKey[mk] = (outboundRowCountByMonthKey[mk] ?? 0) + 1;
-        if (mk === "2025-03" && outboundMonth202503Samples.length < 20) {
-          outboundMonth202503Samples.push({ id: typeof o.id === "number" ? o.id : null, outbound_date_raw: rawDate });
-        }
-        if (mk === "2026-03" && outboundMonth202603Samples.length < 20) {
-          outboundMonth202603Samples.push({ id: typeof o.id === "number" ? o.id : null, outbound_date_raw: rawDate });
-        }
       }
       const sourceDbHost = (() => {
         try {
@@ -1035,7 +1053,8 @@ export async function GET(request: Request) {
           queryFilter: {
             outbound_date_gte: outboundStart,
             ...(outboundEnd ? { outbound_date_lt: outboundEnd } : {}),
-            queriedMonth,
+            drillMonth,
+            dateFromMinTable: dateFrom,
           },
           orderCondition: "order by outbound_date asc, id asc",
           selectedColumns:
@@ -1049,8 +1068,8 @@ export async function GET(request: Request) {
           },
           authContext,
         },
-        queriedMonth,
-        queriedMonthOutboundRows: monthOutboundRows.length,
+        drillMonth,
+        drillMonthOutboundRows: monthOutboundRows.length,
         rawOutboundRowsCount: monthOutboundRows.length,
         rawOutboundIdMin:
           monthOutboundRows
@@ -1095,23 +1114,21 @@ export async function GET(request: Request) {
         queriedMonthSalesChannelNullishRowsCount: monthSalesChannelNullishRows.length,
         queriedMonthSalesChannelNullishRows: monthSalesChannelNullishRows,
         queriedMonthBySalesChannel: monthOutboundBySalesChannel,
-        queriedMonthMonthlyTotals: monthlyTotals[queriedMonth] ?? null,
+        drillMonthMonthlyTotals: drillMonth ? monthlyTotals[drillMonth] ?? null : null,
         requestedMonth: requestedMonth ?? null,
         requestedRangeStart: outboundStart,
         requestedRangeEnd: outboundEnd ?? null,
         totalFetchedOutboundRows: outbound.length,
-        outboundFetchMode: requestedMonth ? "single-month-window" : "rolling-14m-window",
+        outboundFetchMode: requestedMonth ? "single-month-window" : "full-from-min-date",
         codePathSignature: "fetchOutboundRowsUnified -> monthKeyFromYmd(dateToYmdRawFirst(outbound_date))",
         queriedMonthStockRows: monthStockRows.length,
         queriedMonthStockSnapshotDates: [...queriedMonthStockSnapshotDatesSet].sort(),
         queriedMonthStockAssetByCategory,
         queriedMonthStockTotalAsset,
-        monthlyStockValueByCategory: {
-          [queriedMonth]: monthlyValueByCategory[queriedMonth] ?? {},
-        },
-        monthlyStockTotal: {
-          [queriedMonth]: monthlyStockTotal[queriedMonth] ?? 0,
-        },
+        monthlyStockValueByCategory: drillMonth
+          ? { [drillMonth]: monthlyValueByCategory[drillMonth] ?? {} }
+          : {},
+        monthlyStockTotal: drillMonth ? { [drillMonth]: monthlyStockTotal[drillMonth] ?? 0 } : {},
         suspectedUnitPriceRows,
         suspectedUnitPriceSamples,
         samples: outboundDebugSamples,
@@ -1124,21 +1141,19 @@ export async function GET(request: Request) {
         outboundRowCountByMonthKey,
         firstRowRawOutboundDate,
         lastRowRawOutboundDate,
-        outboundMonth202503Samples,
-        outboundMonth202603Samples,
         rawAmountSamples,
         selectedSourceSamples,
         fetchedOutboundIdMin: fetchedOutboundIds.length > 0 ? fetchedOutboundIds[0] : null,
         fetchedOutboundIdMax:
           fetchedOutboundIds.length > 0 ? fetchedOutboundIds[fetchedOutboundIds.length - 1] : null,
         fetchedOutboundIdsSample: fetchedOutboundIds.slice(0, 20),
-        fetchedOutboundIdMinForQueriedMonth:
-          fetchedOutboundIdsForQueriedMonth.length > 0 ? fetchedOutboundIdsForQueriedMonth[0] : null,
-        fetchedOutboundIdMaxForQueriedMonth:
-          fetchedOutboundIdsForQueriedMonth.length > 0
-            ? fetchedOutboundIdsForQueriedMonth[fetchedOutboundIdsForQueriedMonth.length - 1]
+        fetchedOutboundIdMinForDrillMonth:
+          fetchedOutboundIdsForDrillMonth.length > 0 ? fetchedOutboundIdsForDrillMonth[0] : null,
+        fetchedOutboundIdMaxForDrillMonth:
+          fetchedOutboundIdsForDrillMonth.length > 0
+            ? fetchedOutboundIdsForDrillMonth[fetchedOutboundIdsForDrillMonth.length - 1]
             : null,
-        fetchedOutboundIdsSampleForQueriedMonth: fetchedOutboundIdsForQueriedMonth.slice(0, 20),
+        fetchedOutboundIdsSampleForDrillMonth: fetchedOutboundIdsForDrillMonth.slice(0, 20),
         grandTotalOutboundValue: Math.round(
           Object.values(monthlyTotals).reduce((s, v) => s + Number(v.outboundValue ?? 0), 0)
         ),

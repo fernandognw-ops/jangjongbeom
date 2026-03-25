@@ -30,8 +30,6 @@ type BoardCell = {
   state: "정상" | "실패" | "미업로드";
   latestUploadedAt: string | null;
   reason: string | null;
-  isBaselineMonth: boolean;
-  uploadEnabledByBaseline: boolean;
 };
 
 export default function AdminUploadLogsPage() {
@@ -42,8 +40,6 @@ export default function AdminUploadLogsPage() {
   const [rows, setRows] = useState<LogRow[]>([]);
   const [meta, setMeta] = useState<{
     monthsNeedingReupload?: string[];
-    baselineMonth?: string;
-    baselineSucceeded?: boolean;
     monthBoard?: BoardCell[];
   } | null>(null);
   const [detail, setDetail] = useState<LogRow | null>(null);
@@ -97,22 +93,6 @@ export default function AdminUploadLogsPage() {
             {meta.monthsNeedingReupload.join(", ")}
           </div>
         )}
-        {meta?.baselineMonth && (
-          <div
-            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${
-              meta.baselineSucceeded
-                ? "border-emerald-200 bg-emerald-50 text-emerald-900"
-                : "border-red-200 bg-red-50 text-red-900"
-            }`}
-          >
-            <span className="font-medium">기준 월 게이트: </span>
-            {meta.baselineMonth}
-            {meta.baselineSucceeded
-              ? " 정상 통과(이후 월 업로드 가능)"
-              : " 미통과(이후 월 업로드 차단)"}
-          </div>
-        )}
-
         {meta?.monthBoard && meta.monthBoard.length > 0 && (
           <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-card">
             <h2 className="text-sm font-semibold text-slate-800">월별 업로드 상태판</h2>
@@ -134,14 +114,8 @@ export default function AdminUploadLogsPage() {
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-xs text-slate-700">{c.month}</span>
-                    {c.isBaselineMonth && (
-                      <span className="rounded bg-indigo-100 px-1.5 py-0.5 text-[10px] text-indigo-700">기준월</span>
-                    )}
                   </div>
                   <p className="mt-1 text-xs font-semibold">{c.state}</p>
-                  {!c.uploadEnabledByBaseline && (
-                    <p className="mt-0.5 text-[10px] text-red-700">기준월 선행 필요</p>
-                  )}
                 </button>
               ))}
             </div>
