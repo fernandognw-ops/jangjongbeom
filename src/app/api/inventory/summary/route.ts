@@ -15,7 +15,7 @@ import {
   normalizeCode,
 } from "@/lib/inventoryApi";
 import type { InventoryProduct, StockSnapshotRow } from "@/lib/inventoryApi";
-import { WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
+import { outboundChannelKrFromRow, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 import { channelForSnapshotRow, type SnapshotRow } from "@/lib/inventorySnapshotAggregate";
 
 const TABLE_PRODUCTS = "inventory_products";
@@ -26,18 +26,6 @@ function toNumber(v: unknown): number {
   if (v == null) return 0;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-}
-
-/** dest_warehouse(판매채널)가 쿠팡인지. "쿠팡" 또는 legacy 테이칼튼 */
-function isCoupangInbound(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim();
-  return s === "쿠팡" || s.includes("테이칼튼");
-}
-
-/** dest_warehouse(판매채널)가 일반인지. "일반" 또는 legacy 제이에스/컬리 */
-function isGeneralInbound(dest: string | null | undefined): boolean {
-  const s = String(dest ?? "").trim();
-  return s === "일반" || s.includes("제이에스") || s.includes("컬리");
 }
 
 type MonthDebugRow = {
@@ -106,7 +94,7 @@ export async function GET(request: Request) {
         supabase.rpc("get_today_inout_count"),
         supabase
           .from("inventory_inbound")
-          .select("quantity,dest_warehouse,inbound_date")
+          .select("quantity,sales_channel,inbound_date")
           .gte("inbound_date", thisMonthStart)
           .limit(50000),
         debug
@@ -151,11 +139,14 @@ export async function GET(request: Request) {
 
     let inboundByChannel = { coupang: 0, general: 0 };
     if (!inboundRes.error && Array.isArray(inboundRes.data)) {
-      const rows = inboundRes.data as { quantity?: unknown; dest_warehouse?: string }[];
+      const rows = inboundRes.data as { quantity?: unknown; sales_channel?: string }[];
       for (const r of rows) {
         const qty = toNumber(r.quantity);
-        if (isCoupangInbound(r.dest_warehouse)) inboundByChannel.coupang += qty;
-        else inboundByChannel.general += qty;
+        if (outboundChannelKrFromRow(r as Record<string, unknown>) === WAREHOUSE_COUPANG) {
+          inboundByChannel.coupang += qty;
+        } else {
+          inboundByChannel.general += qty;
+        }
       }
     }
 

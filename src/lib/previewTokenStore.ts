@@ -4,6 +4,8 @@
  * TTL 5분
  */
 
+import type { NormalizedWarehouse } from "@/lib/inventoryChannels";
+
 const TTL_MS = 5 * 60 * 1000;
 
 interface PreviewEntry {
@@ -55,7 +57,7 @@ interface PreviewEntry {
         rawBeforeTrim: string;
         rawAfterTrim: string;
         mappedChannelKr: string;
-        mappedSalesChannel: "coupang" | "general";
+        channel: NormalizedWarehouse;
       }>;
       outboundSalesChannelClassifiedRaw?: {
         coupang: string[];

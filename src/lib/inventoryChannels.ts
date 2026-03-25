@@ -1,43 +1,60 @@
 /**
- * 재고 판매채널 집계 — API·UI 단일 기준
+ * 재고·출고 판매채널 집계 — API·UI·SQL 동일 규칙
  *
- * `inventory_stock_snapshot.dest_warehouse`: 엑셀 **「판매 채널」** →
- * `normalizeSalesChannelKr` → **"쿠팡" | "일반"** (보관센터명으로 추론하지 않음).
- *
- * `inventory_stock_snapshot.storage_center`: **보관/물류 센터** (실제 창고명).
- *
- * `sales_channel`: 엑셀 「판매 채널」 — 집계 시 **우선 사용**(`channelForSnapshotRow`). 신규 적재 시 `dest_warehouse`와 동일.
+ * - 출고(`inventory_outbound`) 채널 분리: **`sales_channel`만** (DB `channel` 컬럼·별칭 사용 금지)
+ * - 정규화: `normalizeSalesChannelKr` = trim + lower 후 `coupang`/`general` 정확 일치만 허용
+ * - 행 단위: `outboundChannelKrFromRow` — **`sales_channel`만** 읽음
  */
+
 export const WAREHOUSE_GENERAL = "일반" as const;
 export const WAREHOUSE_COUPANG = "쿠팡" as const;
 
 export type NormalizedWarehouse = typeof WAREHOUSE_GENERAL | typeof WAREHOUSE_COUPANG;
 
 /**
- * 엑셀·DB `sales_channel` 문자열 → "쿠팡" | "일반" (보관센터 기반 추론 없음)
+ * 엑셀·DB 값 → "쿠팡" | "일반" (대시보드·SQL·파서 공통)
  */
-export function normalizeSalesChannelKr(raw: string | null | undefined): NormalizedWarehouse {
-  const base = String(raw ?? "").trim().toLowerCase();
-  // 공백/구분자/특수문자 제거 후 키워드 포함 매칭
-  const s = base.replace(/[\s\-_()[\]{}.,/\\:;'"`~!@#$%^&*+=?|<>]+/g, "");
-  if (!s) return WAREHOUSE_GENERAL;
-  if (
-    s.includes("쿠팡") ||
-    s.includes("coupang") ||
-    s.includes("rocket") ||
-    s.includes("로켓") ||
-    s.includes("cp") ||
-    s.includes("cpl") ||
-    s.includes("fulfillment")
-  ) {
-    return WAREHOUSE_COUPANG;
+export function normalizeSalesChannelKr(raw: unknown): "쿠팡" | "일반" {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "coupang") return "쿠팡";
+  if (value === "general") return "일반";
+  return "일반";
+}
+
+/** enum/json/object/number 등 → 비교용 문자열 (객체는 JSON.stringify) */
+export function coerceOutboundSalesChannelValueToString(raw: unknown): string {
+  if (raw == null) return "";
+  const t = typeof raw;
+  if (t === "string" || t === "number" || t === "boolean") return String(raw);
+  if (t === "object") {
+    try {
+      return JSON.stringify(raw);
+    } catch {
+      return String(raw);
+    }
   }
-  return WAREHOUSE_GENERAL;
+  return String(raw);
 }
 
 /**
- * @deprecated 재고 스냅샷 집계 금지 — `channelForSnapshotRow` + `normalizeSalesChannelKr`만 사용.
- * 입고/추세 등 레거시에서만: 센터명에 "테이칼튼" 포함 → 쿠팡으로 보는 규칙 (재고 시트와 무관)
+ * 출고 행에서 판매채널 원문 추출 (sales_channel 단일)
+ */
+export function pickOutboundSalesChannelRawFromRow(row: Record<string, unknown>): string {
+  const v = row["sales_channel"];
+  if (v == null) return "";
+  return coerceOutboundSalesChannelValueToString(v).trim();
+}
+
+/**
+ * inventory_outbound(및 동형 객체) → 정규화 채널. **`channel` 컬럼은 읽지 않음**
+ */
+export function outboundChannelKrFromRow(row: Record<string, unknown>): NormalizedWarehouse {
+  const picked = pickOutboundSalesChannelRawFromRow(row);
+  return normalizeSalesChannelKr(picked);
+}
+
+/**
+ * @deprecated 입고·추세 등 레거시: 센터명에 "테이칼튼" 포함 → 쿠팡 (출고 집계와 별도)
  */
 export function normalizeDestWarehouse(dest: string | null | undefined): NormalizedWarehouse {
   const s = String(dest ?? "").trim().replace(/\s/g, "").toLowerCase();

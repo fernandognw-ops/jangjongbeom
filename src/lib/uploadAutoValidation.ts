@@ -4,7 +4,6 @@
  */
 
 import { normalizeValue } from "@/lib/excelParser/classifier";
-import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
 import {
   chosenOutboundAmount,
   parseMoney,
@@ -177,9 +176,7 @@ export function runUploadAutoValidation(input: {
     rowCounts[chosen.source]++;
     sumAmountBySource[chosen.source] += chosen.amount;
 
-    const ch = normalizeSalesChannelKr(r.sales_channel === "coupang" ? "쿠팡" : "일반");
-    const chKey = ch === "쿠팡" ? "쿠팡" : "일반";
-    channelAmountsKrw[chKey] += chosen.amount;
+    channelAmountsKrw[r.channel] += chosen.amount;
   }
 
   const otaRows = rowCounts.outbound_total_amount;

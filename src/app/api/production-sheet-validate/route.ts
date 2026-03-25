@@ -7,8 +7,12 @@ import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { parseProductionSheetFromBuffer } from "@/lib/productionSheetParser";
-import { toDestWarehouse } from "@/lib/excelParser/classifier";
-import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
+import {
+  normalizeSalesChannelKr,
+  outboundChannelKrFromRow,
+  WAREHOUSE_COUPANG,
+  WAREHOUSE_GENERAL,
+} from "@/lib/inventoryChannels";
 import { commitProductionSheet, type CommitInput } from "@/lib/commitProductionSheet";
 import { validateSnapshotDatesAgainstFilename } from "@/lib/snapshotUploadValidation";
 import { validateOutboundDatesForFilenameMonth } from "@/lib/outboundUploadValidation";
@@ -16,7 +20,6 @@ import { defaultDateFromFilename } from "@/lib/excelParser/parser";
 import { runUploadAutoValidation } from "@/lib/uploadAutoValidation";
 import { insertUploadAuditLog } from "@/lib/uploadLogWriter";
 
-const VALID_DEST_WAREHOUSES = ["일반", "쿠팡"];
 const VALIDATE_SERVER_MARKER = "validate-v3-auto-audit-2026-03-24";
 const BASELINE_MONTH = process.env.UPLOAD_BASELINE_MONTH ?? "2025-05";
 
@@ -118,15 +121,8 @@ async function logUploadAudit(
   });
 }
 
-function ensureDestWarehouse(wh: string | undefined | null): string {
-  const s = String(wh ?? "").trim();
-  if (!s) return "일반";
-  return toDestWarehouse(s);
-}
-
-function validateDestWarehouse(wh: string): boolean {
-  const normalized = ensureDestWarehouse(wh);
-  return VALID_DEST_WAREHOUSES.includes(normalized);
+function validateSalesChannelKr(wh: string): boolean {
+  return wh === WAREHOUSE_GENERAL || wh === WAREHOUSE_COUPANG;
 }
 
 function hasCoupangHint(raw: string | null | undefined): boolean {
@@ -194,15 +190,13 @@ export async function POST(request: Request) {
 
     const invalidWh: string[] = [];
     for (const r of inbound) {
-      const wh = r.dest_warehouse ?? "일반";
-      if (!validateDestWarehouse(wh)) invalidWh.push(`입고: ${wh}`);
+      if (!validateSalesChannelKr(r.channel)) invalidWh.push(`입고: ${r.channel}`);
     }
     for (const r of outbound) {
-      // 출고는 dest_warehouse=출고센터로 사용, 채널 검증은 sales_channel만 사용
-      const wh = normalizeSalesChannelKr(r.sales_channel === "coupang" ? "쿠팡" : "일반");
-      if (!validateDestWarehouse(wh)) invalidWh.push(`출고: ${wh}`);
+      const wh = outboundChannelKrFromRow(r as unknown as Record<string, unknown>);
+      if (!validateSalesChannelKr(wh)) invalidWh.push(`출고: ${wh}`);
     }
-    // 재고: dest_warehouse = 판매채널(쿠팡|일반), storage_center = 보관센터 — 엑셀 컬럼 그대로
+    // 재고·입고·출고 행 수 분포: 집계 축은 판매채널(channel)만 (센터 컬럼 미사용)
     const uniqueInvalid = [...new Set(invalidWh)];
     const destWarehouseValid = uniqueInvalid.length === 0;
 
@@ -210,15 +204,15 @@ export async function POST(request: Request) {
     const whCountOutbound: Record<string, number> = { 일반: 0, 쿠팡: 0 };
     const whCountStock: Record<string, number> = { 일반: 0, 쿠팡: 0 };
     for (const r of inbound) {
-      const wh = ensureDestWarehouse(r.dest_warehouse);
+      const wh = r.channel;
       whCountInbound[wh] = (whCountInbound[wh] ?? 0) + 1;
     }
     for (const r of outbound) {
-      const wh = normalizeSalesChannelKr(r.sales_channel === "coupang" ? "쿠팡" : "일반");
+      const wh = outboundChannelKrFromRow(r as unknown as Record<string, unknown>);
       whCountOutbound[wh] = (whCountOutbound[wh] ?? 0) + 1;
     }
     for (const r of stockSnapshot) {
-      const ch = normalizeSalesChannelKr(r.dest_warehouse ?? "");
+      const ch = r.channel;
       whCountStock[ch] = (whCountStock[ch] ?? 0) + 1;
     }
     const whCountTotal = {
@@ -245,7 +239,7 @@ export async function POST(request: Request) {
 
     const outboundChannelBreakdown: Record<string, number> = { 일반: 0, 쿠팡: 0 };
     for (const r of outbound) {
-      const ch = normalizeSalesChannelKr(r.sales_channel === "coupang" ? "쿠팡" : "일반");
+      const ch = outboundChannelKrFromRow(r as unknown as Record<string, unknown>);
       outboundChannelBreakdown[ch] = (outboundChannelBreakdown[ch] ?? 0) + (r.quantity ?? 0);
     }
 

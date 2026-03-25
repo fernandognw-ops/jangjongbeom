@@ -7,6 +7,7 @@
 import { createClient } from "@supabase/supabase-js";
 import type { ItemId, StockMap, Transaction } from "./types";
 import { mapGroupToItemId } from "./unifiedImport";
+import { outboundChannelKrFromRow, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 
 const TABLE_PRODUCTS = "inventory_products";
 const TABLE_INBOUND = "inventory_inbound";
@@ -78,7 +79,7 @@ export interface InventoryInbound {
   id: string;
   product_code: string;
   quantity: number;
-  /** 입고에는 채널 미사용 (출고만 사용) */
+  /** 판매채널 — 입고·출고·재고 집계 공통 처리 */
   sales_channel?: string;
   inbound_date: string;
   source_warehouse: string | null;
@@ -596,7 +597,8 @@ export function toTransactions(
       note: i.note || "",
       createdAt: 0,
       productCode: i.product_code,
-      salesChannel: "general", // 입고에는 채널 미사용
+      salesChannel:
+        outboundChannelKrFromRow(i as unknown as Record<string, unknown>) === WAREHOUSE_COUPANG ? "coupang" : "general",
     });
   }
   for (const o of outbound) {
@@ -613,7 +615,8 @@ export function toTransactions(
       note: o.note || "",
       createdAt: 0,
       productCode: o.product_code,
-      salesChannel: /coupang|쿠팡/.test(String(o.sales_channel ?? "")) ? "coupang" : "general",
+      salesChannel:
+        outboundChannelKrFromRow(o as unknown as Record<string, unknown>) === WAREHOUSE_COUPANG ? "coupang" : "general",
     });
   }
 
@@ -636,20 +639,15 @@ export function computeStockByProductByChannel(
     coupang[c] = 0;
     general[c] = 0;
   });
-  const toChannel = (v: string | null | undefined) => {
-    const ch = (v || "").toString().toLowerCase().trim();
-    if (ch === "coupang" || ch === "쿠팡" || ch.includes("쿠팡")) return "coupang";
-    return "general";
-  };
   for (const i of inbound) {
-    // 입고에는 채널 미사용 → general에만 반영
-    const t = general;
+    const t =
+      outboundChannelKrFromRow(i as unknown as Record<string, unknown>) === WAREHOUSE_COUPANG ? coupang : general;
     const code = normalizeCode(i.product_code) || String(i.product_code).trim();
     t[code] = toNumber(t[code]) + toNumber(i.quantity);
   }
   for (const o of outbound) {
-    const ch = toChannel(o.sales_channel ?? (o as { channel?: string }).channel);
-    const t = ch === "coupang" ? coupang : general;
+    const kr = outboundChannelKrFromRow(o as unknown as Record<string, unknown>);
+    const t = kr === WAREHOUSE_COUPANG ? coupang : general;
     const code = normalizeCode(o.product_code) || String(o.product_code).trim();
     t[code] = toNumber(t[code]) - toNumber(o.quantity);
   }
@@ -737,12 +735,6 @@ export function computeAvg30DayOutboundByProduct(
   return computeAvg60DayOutboundByProduct(outbound);
 }
 
-/** sales_channel(매출구분)이 쿠팡인지 판별. 출고 시트 매출구분 → DB sales_channel */
-function isCoupangSalesChannel(ch: string | null | undefined): boolean {
-  const s = String(ch ?? "").trim().toLowerCase();
-  return s === "coupang" || s === "쿠팡" || s.includes("쿠팡") || s.includes("coupang");
-}
-
 /** 최근 N일 총 출고량 (품목별) - 카테고리별 상위 SKU 랭킹용 */
 export function computeTotalOutboundByProduct(
   outbound: InventoryOutbound[],
@@ -802,7 +794,7 @@ export function computeAvgNDayOutboundByProductByChannel(
   for (const o of outbound) {
     if (o.outbound_date < cutoffStr) continue;
     const code = o.product_code;
-    if (isCoupangSalesChannel(o.sales_channel)) {
+    if (outboundChannelKrFromRow(o as unknown as Record<string, unknown>) === WAREHOUSE_COUPANG) {
       coupang[code] = (coupang[code] ?? 0) + o.quantity;
     } else {
       general[code] = (general[code] ?? 0) + o.quantity;

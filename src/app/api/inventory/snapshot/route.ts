@@ -17,17 +17,12 @@ import {
   resolveSnapshotChannelWithSource,
   type SnapshotRow,
 } from "@/lib/inventorySnapshotAggregate";
+import { outboundChannelKrFromRow, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
 
 function toNum(v: unknown): number {
   if (v == null) return 0;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-}
-
-/** sales_channel이 쿠팡(coupang)인지 판별. DB에 'coupang' 또는 '쿠팡' 저장 가능 */
-function isCoupangChannel(ch: string | null | undefined): boolean {
-  const s = String(ch ?? "").trim().toLowerCase();
-  return s === "coupang" || s === "쿠팡" || s.includes("쿠팡");
 }
 
 const PAGE_SIZE = 1000;
@@ -195,8 +190,11 @@ export async function GET(request: Request) {
       if (!code) continue;
       const qty = o.quantity;
       sumByProduct[code] = (sumByProduct[code] ?? 0) + qty;
-      if (isCoupangChannel(o.sales_channel)) sumByProductCoupang[code] = (sumByProductCoupang[code] ?? 0) + qty;
-      else sumByProductGeneral[code] = (sumByProductGeneral[code] ?? 0) + qty;
+      if (outboundChannelKrFromRow(o as Record<string, unknown>) === WAREHOUSE_COUPANG) {
+        sumByProductCoupang[code] = (sumByProductCoupang[code] ?? 0) + qty;
+      } else {
+        sumByProductGeneral[code] = (sumByProductGeneral[code] ?? 0) + qty;
+      }
     }
     const dailyVelocityByProduct: Record<string, number> = {};
     const dailyVelocityByProductCoupang: Record<string, number> = {};

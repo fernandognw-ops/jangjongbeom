@@ -10,13 +10,16 @@ import {
   type StockSheetDateDiagnostics,
   type OutboundSheetDateDiagnostics,
 } from "@/lib/excelParser";
+import type { NormalizedWarehouse } from "@/lib/inventoryChannels";
 
-/** 입고에는 sales_channel 미사용 (출고만 사용) */
+/** 입고 — 집계 축은 판매채널만. 입고센터는 inbound_center(상세) */
 export interface InboundRow {
   product_code: string;
   quantity: number;
   inbound_date: string;
-  dest_warehouse?: string;
+  sales_channel: "coupang" | "general";
+  channel: NormalizedWarehouse;
+  inbound_center?: string;
   category?: string;
 }
 
@@ -25,6 +28,7 @@ export interface OutboundRow {
   quantity: number;
   outbound_date: string;
   sales_channel: "coupang" | "general";
+  channel: NormalizedWarehouse;
   outbound_center?: string;
   dest_warehouse?: string;
   category?: string;
@@ -39,9 +43,9 @@ export interface StockSnapshotRow {
   product_code: string;
   quantity: number;
   unit_cost: number;
-  /** 판매채널 — DB `dest_warehouse` ("쿠팡"|"일반") */
-  dest_warehouse?: string;
-  /** 보관센터 — DB `storage_center` */
+  sales_channel: "coupang" | "general";
+  channel: NormalizedWarehouse;
+  /** 보관센터 — DB `storage_center` (집계 축 아님) */
   storage_center?: string;
   /** 엑셀 재고일자 → snapshot_date (없으면 오늘) */
   snapshot_date?: string;
@@ -96,7 +100,9 @@ export async function parseProductionSheetFromBuffer(
     product_code: r.product_code,
     quantity: r.quantity,
     inbound_date: r.inbound_date,
-    ...(r.dest_warehouse && { dest_warehouse: r.dest_warehouse }),
+    sales_channel: r.sales_channel,
+    channel: r.channel,
+    ...(r.inbound_center && { inbound_center: r.inbound_center }),
     ...(r.category && { category: r.category }),
   }));
 
@@ -105,6 +111,7 @@ export async function parseProductionSheetFromBuffer(
     quantity: r.quantity,
     outbound_date: r.outbound_date,
     sales_channel: r.sales_channel as "coupang" | "general",
+    channel: r.channel,
     ...(r.outbound_center && { outbound_center: r.outbound_center }),
     ...(r.dest_warehouse && { dest_warehouse: r.dest_warehouse }),
     ...(r.category && { category: r.category }),
@@ -119,7 +126,8 @@ export async function parseProductionSheetFromBuffer(
     product_code: r.product_code,
     quantity: r.quantity,
     unit_cost: r.unit_cost ?? 0,
-    dest_warehouse: r.dest_warehouse,
+    sales_channel: r.sales_channel,
+    channel: r.channel,
     storage_center: r.storage_center,
     snapshot_date: (r.snapshot_date ?? r.stock_date ?? fallbackDay).slice(0, 10),
   }));

@@ -28,28 +28,18 @@ export type UploadAuditPayload = {
   validation_debug_json?: unknown;
 };
 
-function monthFromFilename(filename: string | undefined): string | null {
-  const name = String(filename ?? "");
-  const m1 = name.match(/(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})/);
-  if (m1) return `${m1[1]}-${m1[2]}`;
-  const ym = name.match(/(\d{4})[-_.](\d{2})(?![-_.]?\d{2})/);
-  if (ym) return `${ym[1]}-${ym[2]}`;
-  const kor = name.match(/(\d{2,4})년\s*(\d{1,2})월/);
-  if (kor) {
-    let y = parseInt(kor[1], 10);
-    if (y < 100) y += y < 50 ? 2000 : 1900;
-    const mo = parseInt(kor[2], 10);
-    if (mo >= 1 && mo <= 12) return `${y}-${String(mo).padStart(2, "0")}`;
-  }
-  return null;
-}
-
-function toMonthKeyOrNow(raw: unknown, filename: string | undefined): string {
+function toMonthKeyOrNow(raw: unknown): string {
   const s = String(raw ?? "").trim();
   if (/^\d{4}-\d{2}$/.test(s)) return s;
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s.slice(0, 7);
-  const fromFilename = monthFromFilename(filename);
-  if (fromFilename) return fromFilename;
+  if (s) {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      return `${y}-${m}`;
+    }
+  }
   const d = new Date();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -63,12 +53,9 @@ export async function insertUploadAuditLog(
   supabase: SupabaseClient,
   payload: UploadAuditPayload
 ): Promise<void> {
-  const normalizedTargetMonth = toMonthKeyOrNow(
-    payload.target_month ?? payload.snapshot_date,
-    payload.filename
-  );
+  const normalizedTargetMonth = toMonthKeyOrNow(payload.target_month ?? new Date().toISOString());
 
-  const base = {
+  const finalPayload = {
     uploaded_by: payload.uploaded_by ?? "web",
     source: payload.source ?? "web",
     filename: payload.filename,
@@ -96,7 +83,7 @@ export async function insertUploadAuditLog(
     validation_debug_json: payload.validation_debug_json,
   };
 
-  const { error } = await supabase.from(TABLE_UPLOAD_LOGS).insert(base as Record<string, unknown>);
+  const { error } = await supabase.from(TABLE_UPLOAD_LOGS).insert(finalPayload as Record<string, unknown>);
   if (error) {
     throw new Error(`[insertUploadAuditLog] ${error.message}`);
   }

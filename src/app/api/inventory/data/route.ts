@@ -108,8 +108,8 @@ export async function GET(request: Request) {
 
     const [productsRes, snapshotRes, inboundRes, outboundFetch] = await Promise.all([
       supabase.from("inventory_products").select("*").order("product_code").limit(5000),
-      supabase.from("inventory_stock_snapshot").select("product_code,quantity,snapshot_date,dest_warehouse").limit(20000),
-      supabase.from("inventory_inbound").select("id,product_code,quantity,inbound_date").gte("inbound_date", dateFrom).limit(10000),
+      supabase.from("inventory_stock_snapshot").select("product_code,quantity,snapshot_date,sales_channel").limit(20000),
+      supabase.from("inventory_inbound").select("id,product_code,quantity,inbound_date,sales_channel").gte("inbound_date", dateFrom).limit(10000),
       fetchOutboundRowsUnified<{ id?: number; product_code?: string; quantity?: number; outbound_date?: string; sales_channel?: string }>(
         supabase,
         {
@@ -132,7 +132,7 @@ export async function GET(request: Request) {
     const outbound = outboundFetch.rows ?? [];
     const snapshotRows = (snapshotRes.data ?? []) as Array<{ product_code?: unknown; quantity?: unknown; snapshot_date?: string }>;
 
-    // 수량: inventory_stock_snapshot 최신 snapshot_date 기준, dest_warehouse별 합산 후 product_code별 합 (총합 = 일반 + 쿠팡)
+    // 수량: inventory_stock_snapshot 최신 snapshot_date 기준, product_code별 수량 합 (채널은 sales_channel으로만 구분·집계)
     const maxDate = snapshotRows.length > 0
       ? snapshotRows.reduce((max, r) => {
           const d = (r.snapshot_date ?? "").toString().slice(0, 10);

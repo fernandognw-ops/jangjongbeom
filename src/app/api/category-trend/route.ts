@@ -3,7 +3,8 @@
  * GET /api/category-trend
  * - 출고 금액: inventory_outbound 행별 outbound_total_amount > 0 우선 → else total_price > 0 → else unit_price×qty → else 마스터 unit_cost×qty
  *   (문자열/쉼표 포함 금액은 parseMoney로 파싱해 SUM(total_price)와 일치)
- * - 출고 채널: sales_channel만 `normalizeSalesChannelKr` — dest_warehouse·매출구분·보관센터 금지
+ * - 출고 채널: `outboundChannelKrFromRow`(sales_channel only) → `normalizeSalesChannelKr`
+ * - 금지: channel/dest/center/warehouse 계열 컬럼으로 채널 축 대체
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
  * - 월별 재고 자산: snapshot_date >= 차트 시작월의 모든 행을 읽고, 월별 **마지막 snapshot_date**만 카테고리별 total_price 합산 (limit 미사용)
@@ -15,8 +16,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
 import { normalizeCode } from "@/lib/inventoryApi";
 import {
-  normalizeDestWarehouse,
   normalizeSalesChannelKr,
+  outboundChannelKrFromRow,
   WAREHOUSE_COUPANG,
 } from "@/lib/inventoryChannels";
 import { fetchOutboundRowsUnified, monthRange } from "@/lib/outboundQuery";
@@ -351,10 +352,10 @@ export async function GET(request: Request) {
     const [productsRes, outbound, inbound, stockSnapshotRows] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
       fetchOutboundRows(supabase, outboundStart, outboundEnd, (d) => fetchPageDebug.outbound.push(d)),
-      fetchAllRows<{ id?: number; product_code: string; quantity: number; inbound_date: string; dest_warehouse?: string; category?: string }>(
+      fetchAllRows<{ id?: number; product_code: string; quantity: number; inbound_date: string; sales_channel?: string; category?: string }>(
         supabase,
         "inventory_inbound",
-        "id,product_code,quantity,inbound_date,dest_warehouse,category",
+        "id,product_code,quantity,inbound_date,sales_channel,category",
         "inbound_date",
         dateFrom,
         "id",
@@ -372,7 +373,7 @@ export async function GET(request: Request) {
       }>(
         supabase,
         "inventory_stock_snapshot",
-        "product_code,category,snapshot_date,quantity,unit_cost,total_price,dest_warehouse,storage_center",
+        "product_code,category,snapshot_date,quantity,unit_cost,total_price,dest_warehouse,storage_center,sales_channel",
         "snapshot_date",
         dateFrom,
         ["product_code", "dest_warehouse", "storage_center"],
@@ -528,7 +529,7 @@ export async function GET(request: Request) {
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
       const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
       const val = chosen.amount;
-      const channelKr = normalizeSalesChannelKr(o.sales_channel ?? "");
+      const channelKr = outboundChannelKrFromRow(o as Record<string, unknown>);
       const isCoupang = channelKr === WAREHOUSE_COUPANG;
 
       monthlyTotals[m].outbound += qty;
@@ -568,6 +569,31 @@ export async function GET(request: Request) {
       }
     }
 
+    const marchRows202603 = outbound.filter(
+      (o) => monthKeyFromYmd(dateToYmdRawFirst(o.outbound_date)) === "2026-03"
+    );
+    if (marchRows202603.length > 0) {
+      let outboundValueCoupangKrw = 0;
+      let outboundValueGeneralKrw = 0;
+      for (const o of marchRows202603) {
+        const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
+        const val = chosenOutboundAmount(o, codeKey, codeToCost).amount;
+        if (outboundChannelKrFromRow(o as Record<string, unknown>) === WAREHOUSE_COUPANG) {
+          outboundValueCoupangKrw += val;
+        } else {
+          outboundValueGeneralKrw += val;
+        }
+      }
+      console.log(
+        "[outbound-dashboard] channel verify 2026-03 (sales_channel-only parser)",
+        JSON.stringify({
+          rowCount: marchRows202603.length,
+          outboundValueCoupangKrw: Math.round(outboundValueCoupangKrw),
+          outboundValueGeneralKrw: Math.round(outboundValueGeneralKrw),
+        })
+      );
+    }
+
     if (debug && outboundDebugSamples.length > 0) {
       console.log(
         "[category-trend:debug] outbound amount samples (20)",
@@ -582,7 +608,7 @@ export async function GET(request: Request) {
       const cost = codeToCost.get(codeKey) ?? 0;
       monthlyTotals[m].inbound += qty;
       monthlyTotals[m].inboundValue += qty * cost;
-      const ch = normalizeDestWarehouse(i.dest_warehouse);
+      const ch = outboundChannelKrFromRow(i as Record<string, unknown>);
       monthlyTotals[m].inboundByChannel[ch] = (monthlyTotals[m].inboundByChannel[ch] ?? 0) + qty;
     }
 
@@ -927,7 +953,7 @@ export async function GET(request: Request) {
         sumChosenAmountDirect += amount;
         const qtyXUnit = parseMoney(o.unit_price) * qty;
         const qtyXMaster = (codeToCost.get(codeKey) ?? 0) * qty;
-        const normalizedKr = normalizeSalesChannelKr(rawSc);
+        const normalizedKr = outboundChannelKrFromRow(o as Record<string, unknown>);
         monthSalesChannelNormalizedCounts[normalizedKr] = (monthSalesChannelNormalizedCounts[normalizedKr] ?? 0) + 1;
         chosenAmountDistributionBySource[chosen.source].row_cnt += 1;
         chosenAmountDistributionBySource[chosen.source].amount_sum += amount;

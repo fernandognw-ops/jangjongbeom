@@ -36,6 +36,8 @@ export const SYNONYMS: Record<string, string[]> = {
   total_price: ["재고 금액", "재고금액", "합계금액", "합계원가", "합계"],
   /** 레거시(입고 등). 출고 시트 채널에는 사용하지 않음 — 출고는 outbound_sales_channel만 */
   sales_channel: ["매출구분", "판매처"],
+  /** 입고 시트 「판매 채널」 — 집계 축 (입고센터와 별도) */
+  inbound_sales_channel: ["판매 채널", "판매채널", "판매 채널명"],
   /** 재고 시트 「판매 채널」 */
   stock_sales_channel: ["판매 채널", "판매채널", "판매 채널명"],
   /** 출고 시트 「판매 채널」만 — 매출구분·출고처·보관센터로 채널 추론 금지 */

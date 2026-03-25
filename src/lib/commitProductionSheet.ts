@@ -8,7 +8,6 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { InboundRow, OutboundRow, StockSnapshotRow } from "@/lib/productionSheetParser";
-import { toDestWarehouse } from "@/lib/excelParser/classifier";
 import { normalizeSalesChannelKr } from "@/lib/inventoryChannels";
 
 const TABLE_PRODUCTS = "inventory_products";
@@ -55,13 +54,6 @@ function ensureChannel(ch: string | undefined | null): "coupang" | "general" {
   const s = String(ch ?? "").trim().toLowerCase();
   if (s === "쿠팡" || s.includes("쿠팡") || s === "coupang") return "coupang";
   return "general";
-}
-
-/** 입고·레거시 창고명 → 쿠팡|일반 (출고 행에는 사용하지 않음) */
-function ensureDestWarehouse(wh: string | undefined | null): string {
-  const s = String(wh ?? "").trim();
-  if (!s) return "일반";
-  return toDestWarehouse(s);
 }
 
 /** 출고: dest_warehouse는 출고센터(물류) 의미로만 저장 */
@@ -197,7 +189,9 @@ export async function commitProductionSheet(
         pack_size: p?.pack_size ?? 1,
         quantity: qty,
         inbound_date: normDateYmd(r.inbound_date) || r.inbound_date,
-        dest_warehouse: ensureDestWarehouse(r.dest_warehouse),
+        sales_channel: ensureChannel(r.sales_channel),
+        source_warehouse: r.inbound_center?.trim() || null,
+        dest_warehouse: null,
         unit_price: unitPrice,
         total_price: totalPrice,
       };
@@ -279,7 +273,7 @@ export async function commitProductionSheet(
         sales_channel?: string;
         unit_cost: number;
       };
-      const ch = normalizeSalesChannelKr(row.dest_warehouse ?? row.sales_channel ?? "");
+      const ch = normalizeSalesChannelKr(String(row.sales_channel ?? ""));
       const st = (row.storage_center ?? "").trim() || "미지정";
       const key = `${row.product_code}|${ch}|${st}`;
       if ((row.unit_cost ?? 0) > 0) costByKey.set(key, row.unit_cost);
@@ -288,7 +282,7 @@ export async function commitProductionSheet(
     /** dest_warehouse=판매채널, storage_center=보관센터. sales_channel은 레거시 스키마 호환용으로 동일 값 복제 */
     const snapshotRows = stockSnapshot.map((s) => {
       const p = productMap.get(s.product_code);
-      const channel = normalizeSalesChannelKr(s.dest_warehouse ?? "");
+      const channel = normalizeSalesChannelKr(s.sales_channel);
       const storage = ensurePhysicalWarehouse(s.storage_center);
       const snap = normDateYmd(s.snapshot_date) || (s.snapshot_date ?? today).slice(0, 10);
       let cost = s.unit_cost ?? 0;
@@ -308,7 +302,7 @@ export async function commitProductionSheet(
         pack_size: p?.pack_size ?? 1,
         dest_warehouse: channel,
         storage_center: storage,
-        sales_channel: channel,
+        sales_channel: ensureChannel(s.sales_channel),
         quantity: qty,
         unit_cost: cost,
         total_price: totalPrice,

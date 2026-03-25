@@ -1,10 +1,10 @@
 /**
  * inventory_stock_snapshot 행 집계 — quick / KPI / snapshot 공통
- * - 채널은 **`resolveSnapshotChannelWithSource` → `buildChannelTotalsAndStockByChannel` / `applyChannelQtyToMetrics` 단일 경로**
- * - `sales_channel` 우선, 없으면 `dest_warehouse`를 `normalizeSalesChannelKr`만 적용 (테이칼튼 추론 없음)
+ * - 집계 축은 **`sales_channel`(판매채널)만** — dest_warehouse·storage_center·channel 컬럼으로 축 대체 없음
  */
 import {
   normalizeSalesChannelKr,
+  pickOutboundSalesChannelRawFromRow,
   WAREHOUSE_COUPANG,
   WAREHOUSE_GENERAL,
   type NormalizedWarehouse,
@@ -17,11 +17,11 @@ export type SnapshotRow = {
   pack_size?: unknown;
   total_price?: unknown;
   unit_cost?: unknown;
-  /** 판매채널 ("쿠팡"|"일반") */
+  /** 레거시: 물류/표시용 (집계 축 아님) */
   dest_warehouse?: string;
   /** 보관센터 (집계 키 아님) */
   storage_center?: string;
-  /** 레거시 DB 호환 — 신규 적재 시 dest_warehouse와 동일 */
+  /** 판매채널 — 집계 유일 축 */
   sales_channel?: string;
   category?: string;
   snapshot_date?: string;
@@ -30,7 +30,7 @@ export type SnapshotRow = {
 /** `channelForSnapshotRow` / 집계용 — 선택 소스와 정규화된 채널 */
 export type SnapshotChannelResolution = {
   channel: NormalizedWarehouse;
-  source: "sales_channel" | "dest_warehouse" | "empty";
+  source: "sales_channel" | "empty";
 };
 
 /** 디버그·카운터용 (선택) */
@@ -52,20 +52,13 @@ export function createEmptySnapshotChannelDebugStats(): SnapshotChannelDebugStat
   };
 }
 
-/**
- * 판매채널만 반환 (보관센터·테이칼튼 추론 없음).
- * 레거시: `sales_channel` 우선 → `dest_warehouse` 폴백.
- */
+/** DB 행의 `sales_channel`만으로 정규화 (쿠팡|일반). dest_warehouse 미사용. */
 export function resolveSnapshotChannelWithSource(r: SnapshotRow): SnapshotChannelResolution {
-  const fromSales = String(r.sales_channel ?? "").trim();
-  if (fromSales) {
-    return { channel: normalizeSalesChannelKr(fromSales), source: "sales_channel" };
+  const picked = pickOutboundSalesChannelRawFromRow(r as Record<string, unknown>);
+  if (picked) {
+    return { channel: normalizeSalesChannelKr(picked), source: "sales_channel" };
   }
-  const fromDest = String(r.dest_warehouse ?? "").trim();
-  if (fromDest) {
-    return { channel: normalizeSalesChannelKr(fromDest), source: "dest_warehouse" };
-  }
-  return { channel: normalizeSalesChannelKr(""), source: "empty" };
+  return { channel: WAREHOUSE_GENERAL, source: "empty" };
 }
 
 function applySnapshotChannelStats(
@@ -74,7 +67,6 @@ function applySnapshotChannelStats(
 ): void {
   if (!stats) return;
   if (res.source === "sales_channel") stats.sales_channel_used += 1;
-  else if (res.source === "dest_warehouse") stats.dest_warehouse_fallback_used += 1;
   else stats.empty_source += 1;
   if (res.channel === WAREHOUSE_COUPANG) stats.chosen_coupang += 1;
   else stats.chosen_general += 1;

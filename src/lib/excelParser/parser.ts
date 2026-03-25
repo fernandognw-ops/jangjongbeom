@@ -11,8 +11,14 @@ import {
   QTY_EXCLUDE,
   OUTBOUND_DATE_HEADER_TERMS,
 } from "./rules";
-import { normalizeValue, toDestWarehouse } from "./classifier";
-import { normalizeSalesChannelKr, WAREHOUSE_COUPANG } from "@/lib/inventoryChannels";
+import { normalizeValue } from "./classifier";
+import {
+  normalizeSalesChannelKr,
+  WAREHOUSE_COUPANG,
+  WAREHOUSE_GENERAL,
+  type NormalizedWarehouse,
+} from "@/lib/inventoryChannels";
+import { toYmd } from "@/lib/dateFormat";
 
 type Row = unknown[];
 
@@ -181,7 +187,10 @@ function parseDate(
     const d = val as Date;
     let y = d.getFullYear();
     if (y < 2000 || y > 2030) y = year;
-    return `${y}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const ymd = toYmd(d);
+    if (!ymd) return fallback;
+    const [, mo, day] = ymd.split("-");
+    return `${y}-${mo}-${day}`;
   }
   if (typeof val === "number" && Number.isFinite(val) && val > 0) {
     try {
@@ -195,7 +204,10 @@ function parseDate(
       const jsDate = new Date(excelEpoch.getTime() + val * 86400 * 1000);
       let y = jsDate.getFullYear();
       if (y < 2000 || y > 2030) y = year;
-      return `${y}-${String(jsDate.getMonth() + 1).padStart(2, "0")}-${String(jsDate.getDate()).padStart(2, "0")}`;
+      const ymd = toYmd(jsDate);
+      if (!ymd) return fallback;
+      const [, mo, day] = ymd.split("-");
+      return `${y}-${mo}-${day}`;
     } catch {
       return fallback;
     }
@@ -214,7 +226,8 @@ function parseDate(
   try {
     const dt = new Date(val as string | number);
     if (!isNaN(dt.getTime())) {
-      return dt.toISOString().slice(0, 10);
+      const ymd = toYmd(dt);
+      if (ymd) return ymd;
     }
   } catch {
     // ignore
@@ -324,11 +337,14 @@ export interface InboundRow {
   product_code: string;
   product_name: string;
   quantity: number;
+  /** 입고센터(물류) — 집계 축 아님 */
   inbound_center: string;
   inbound_date: string;
+  /** 판매채널 정규화 (쿠팡|일반) */
   warehouse_group: string;
+  sales_channel: "coupang" | "general";
+  channel: NormalizedWarehouse;
   event_type: "inbound";
-  dest_warehouse?: string;
   category?: string;
   pack_size?: number;
   unit_price?: number;
@@ -343,6 +359,8 @@ export interface OutboundRow {
   outbound_date: string;
   warehouse_group: string;
   sales_channel: "coupang" | "general";
+  /** 정규화 판매채널 ("쿠팡" | "일반") — sales_channel 기준 */
+  channel: NormalizedWarehouse;
   event_type: "outbound";
   dest_warehouse?: string;
   category?: string;
@@ -359,8 +377,8 @@ export interface StockRow {
   stock_date: string;
   warehouse_group: string;
   event_type: "stock";
-  dest_warehouse: string;
-  sales_channel?: string; //
+  sales_channel: "coupang" | "general";
+  channel: NormalizedWarehouse;
   unit_cost: number;
   total_price: number;
   snapshot_date: string;
@@ -379,6 +397,10 @@ export function parseInboundSheet(
   const idxName = findCol(headerRow, "product_name");
   const idxQty = findQtyCol(headerRow);
   const idxCenter = findCol(headerRow, "inbound_center");
+  const idxSalesCh =
+    findCol(headerRow, "inbound_sales_channel") >= 0
+      ? findCol(headerRow, "inbound_sales_channel")
+      : findCol(headerRow, "stock_sales_channel");
   const idxDate = findCol(headerRow, "inbound_date");
   const idxCat = findCol(headerRow, "category");
   const idxPack = findCol(headerRow, "pack_size");
@@ -402,7 +424,10 @@ export function parseInboundSheet(
     const name =
       idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
-    const destWh = toDestWarehouse(centerRaw);
+    const salesRaw = idxSalesCh >= 0 ? String(row[idxSalesCh] ?? "").trim() : "";
+    const channelKr = normalizeSalesChannelKr(salesRaw);
+    const sales_channel: "coupang" | "general" =
+      channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
     const unit = idxUnit >= 0 ? safeFloat(row[idxUnit]) : 0;
@@ -414,9 +439,10 @@ export function parseInboundSheet(
       quantity: qty,
       inbound_center: centerRaw,
       inbound_date: dateStr,
-      warehouse_group: destWh,
+      warehouse_group: channelKr,
+      sales_channel,
+      channel: channelKr,
       event_type: "inbound",
-      dest_warehouse: destWh,
       category: cat || "기타",
       pack_size: pack > 0 ? pack : 1,
       unit_price: unit,
@@ -451,7 +477,7 @@ export interface OutboundSheetDateDiagnostics {
     rawBeforeTrim: string;
     rawAfterTrim: string;
     mappedChannelKr: string;
-    mappedSalesChannel: "coupang" | "general";
+    channel: NormalizedWarehouse;
   }>;
   outboundTotalAmountSamples: Array<{
     rowIndex: number;
@@ -570,14 +596,14 @@ export function parseOutboundSheet(
     const code = String(row[idxCode] ?? "").trim();
     const qty = safeInt(row[idxQty]);
     const dateVal = row[idxDate];
-    const dateStr = parseDate(dateVal, year, today);
-    if (!validProductCode(code) || qty <= 0 || !dateStr) continue;
+    const outbound_date = parseDate(dateVal, year, today);
+    if (!validProductCode(code) || qty <= 0 || !outbound_date) continue;
 
     if (samples.length < maxSamples) {
       samples.push({
         rowIndex: i,
         rawCell: dateVal,
-        parsedDate: dateStr,
+        parsedDate: outbound_date,
       });
     }
 
@@ -588,14 +614,17 @@ export function parseOutboundSheet(
     if (rawSet.size < 200) rawSet.add(scRawBeforeTrim);
     if (trimmedSet.size < 200) trimmedSet.add(scRaw);
     const channelKr = normalizeSalesChannelKr(scRaw);
-    const salesChannel: "coupang" | "general" = channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
+    const sales_channel: "coupang" | "general" =
+      channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
+    const channel: NormalizedWarehouse =
+      sales_channel === "coupang" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL;
     if (outboundSalesChannelSamples.length < maxChannelSamples) {
       outboundSalesChannelSamples.push({
         rowIndex: i,
         rawBeforeTrim: scRawBeforeTrim,
         rawAfterTrim: scRaw,
         mappedChannelKr: channelKr,
-        mappedSalesChannel: salesChannel,
+        channel,
       });
     }
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
@@ -618,9 +647,10 @@ export function parseOutboundSheet(
       product_name: name || code,
       quantity: qty,
       outbound_center: centerRaw,
-      outbound_date: dateStr,
+      outbound_date,
       warehouse_group: channelKr,
-      sales_channel: salesChannel,
+      sales_channel,
+      channel,
       event_type: "outbound",
       // 출고는 의미 분리: sales_channel=판매채널, dest_warehouse=출고센터
       dest_warehouse: centerRaw || "미지정",
@@ -759,6 +789,8 @@ export function parseStockSheet(
     const storageRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
     const salesChannelRaw = idxSalesCh >= 0 ? String(row[idxSalesCh] ?? "").trim() : "";
     const channelKr = normalizeSalesChannelKr(salesChannelRaw || "");
+    const sales_channel: "coupang" | "general" =
+      channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
     const dateVal = idxDate >= 0 ? row[idxDate] : undefined;
     const dateStr = parseDate(dateVal, year, fileDefaultDate);
     const finalSnap = (dateStr ?? fileDefaultDate).slice(0, 10);
@@ -784,8 +816,8 @@ export function parseStockSheet(
       stock_date: dateStr ?? fileDefaultDate,
       warehouse_group: channelKr,
       event_type: "stock",
-      dest_warehouse: channelKr,
-      sales_channel: channelKr,
+      sales_channel,
+      channel: channelKr,
       unit_cost: cost,
       total_price: total > 0 ? total : 0,
       snapshot_date: finalSnap,
