@@ -21,7 +21,7 @@ import {
   outboundChannelKrFromRow,
   WAREHOUSE_COUPANG,
 } from "@/lib/inventoryChannels";
-import { fetchOutboundRowsUnified, monthRange } from "@/lib/outboundQuery";
+import { fetchOutboundRowsUnified } from "@/lib/outboundQuery";
 import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
 import {
   parseMoney,
@@ -341,8 +341,6 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const debug = searchParams.get("debug") === "1";
-    const requestedMonth = searchParams.get("month");
-    const requestedMonthWindow = requestedMonth ? monthRange(requestedMonth) : null;
 
     const serverInfo = {
       marker: CATEGORY_TREND_SERVER_MARKER,
@@ -360,8 +358,9 @@ export async function GET(request: Request) {
     }
 
     const supabase = createClient(url, key);
-    const rangeStart = requestedMonthWindow?.start ?? (await minDateAcrossInventoryTables(supabase));
-    const outboundEnd = requestedMonthWindow?.end;
+    // month 쿼리 기반 필터링/슬라이싱/최근 N개월 제한 로직은 제거하고,
+    // DB에서 조회된 모든 month를 합집합으로 그대로 반환한다.
+    const rangeStart = await minDateAcrossInventoryTables(supabase);
     const jwt = jwtPayload(key);
     const jwtRole = String(jwt?.role ?? "");
     const authContext = {
@@ -381,7 +380,7 @@ export async function GET(request: Request) {
 
     const [productsRes, outbound, inbound, stockSnapshotRows] = await Promise.all([
       supabase.from("inventory_products").select("product_code,product_name,unit_cost,category").limit(5000),
-      fetchOutboundRows(supabase, rangeStart, outboundEnd, (d) => fetchPageDebug.outbound.push(d)),
+      fetchOutboundRows(supabase, rangeStart, undefined, (d) => fetchPageDebug.outbound.push(d)),
       fetchAllRows<{ id?: number; product_code: string; quantity: number; inbound_date: string; sales_channel?: string; category?: string }>(
         supabase,
         "inventory_inbound",
@@ -870,12 +869,7 @@ export async function GET(request: Request) {
     };
 
     if (debug) {
-      const drillMonth =
-        requestedMonth && /^\d{4}-\d{2}$/.test(requestedMonth)
-          ? requestedMonth
-          : months.length > 0
-            ? months[months.length - 1]!
-            : "";
+      const drillMonth = months.length > 0 ? months[months.length - 1]! : "";
       const monthKeyDebug = {
         outbound: buildMonthDebugRows(outbound, (r) => String(r.outbound_date ?? "")),
         inbound: buildMonthDebugRows(inbound, (r) => String(r.inbound_date ?? "")),
@@ -1060,7 +1054,6 @@ export async function GET(request: Request) {
           clientType: "supabase-js",
           queryFilter: {
             outbound_date_gte: rangeStart,
-            ...(outboundEnd ? { outbound_date_lt: outboundEnd } : {}),
             drillMonth,
             rangeStartInventoryTables: rangeStart,
           },
@@ -1123,11 +1116,7 @@ export async function GET(request: Request) {
         queriedMonthSalesChannelNullishRows: monthSalesChannelNullishRows,
         queriedMonthBySalesChannel: monthOutboundBySalesChannel,
         drillMonthMonthlyTotals: drillMonth ? monthlyTotals[drillMonth] ?? null : null,
-        requestedMonth: requestedMonth ?? null,
-        requestedRangeStart: rangeStart,
-        requestedRangeEnd: outboundEnd ?? null,
         totalFetchedOutboundRows: outbound.length,
-        outboundFetchMode: requestedMonth ? "single-month-window" : "full-from-min-date",
         codePathSignature: "fetchOutboundRowsUnified -> monthKeyFromAnyDate(outbound_date)",
         queriedMonthStockRows: monthStockRows.length,
         queriedMonthStockSnapshotDates: [...queriedMonthStockSnapshotDatesSet].sort(),
