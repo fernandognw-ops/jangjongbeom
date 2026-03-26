@@ -256,14 +256,35 @@ export function ProductionSheetUploader() {
         </label>
       </div>
 
+      {/* 완료/오류 한 줄 (DB 반영 결과 또는 오류 — 검증 상세보다 먼저) */}
+      {message && (
+        <div
+          className={`mt-4 rounded-xl px-4 py-3 text-sm ${
+            status === "error"
+              ? "border border-red-200 bg-red-50 text-red-700"
+              : status === "success"
+                ? "border border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border border-slate-200 bg-slate-50 text-slate-700"
+          }`}
+          role="alert"
+        >
+          {status === "success" && (
+            <p className="mb-1.5 text-xs font-semibold text-emerald-900">처리 완료 — 추가로 누를 단계 없음</p>
+          )}
+          {message}
+        </div>
+      )}
+
       {/* 검증 결과 (성공·실패 모두 상세 표시) */}
       {validation && (status === "success" || status === "error") && (
         <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-600">자동 검증 결과</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-600">
+            {status === "success" ? "파일 검증 요약 (엑셀 파싱 기준)" : "자동 검증 결과"}
+          </h3>
           <p className="mt-0.5 text-[10px] text-slate-500">
             {status === "error"
               ? "반영 차단 — 아래 차단 사유·금액·행 수를 확인하세요."
-              : "검증 통과 후 DB에 반영되었습니다."}
+              : "위 초록 상자가 실제 DB 반영(삽입) 결과입니다. 아래 숫자는 파일에서 읽은 행·금액이며, 삽입 건수와 다를 수 있습니다(동일 월 재업로드 시 치환·중복 제거 등)."}
           </p>
           <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm md:grid-cols-3">
             <dt className="text-slate-500">rawdata 건수</dt>
@@ -419,22 +440,7 @@ export function ProductionSheetUploader() {
               초기화
             </button>
           </div>
-        </div>
-      )}
-
-      {message && (
-        <div
-          className={`mt-4 rounded-xl px-4 py-3 text-sm ${
-            status === "error"
-              ? "border border-red-200 bg-red-50 text-red-700"
-              : status === "success"
-                ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
-                : "border border-slate-200 bg-slate-50 text-slate-700"
-          }`}
-          role="alert"
-        >
-          {message}
-        </div>
+          </div>
       )}
     </div>
   );
