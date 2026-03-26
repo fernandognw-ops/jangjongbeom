@@ -69,6 +69,15 @@ function findQtyCol(row: Row): number {
   return -1;
 }
 
+/** 스프레드시트 하단 빈 줄 등 — 셀에 의미 있는 값이 없으면 true */
+function rowHasAnyNonEmptyCell(row: Row): boolean {
+  for (let c = 0; c < row.length; c++) {
+    const s = String(row[c] ?? "").trim();
+    if (s.length > 0 && s.toLowerCase() !== "nan") return true;
+  }
+  return false;
+}
+
 /**
  * 재고 시트 기준일 열 인덱스.
  * `findCol(..., "stock_date")`는 동의어 "일자"가 **입고일자** 열과 먼저 매칭되어
@@ -444,7 +453,10 @@ export function parseInboundSheet(
     const salesRaw = String(row[idxSalesCh] ?? "").trim();
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
 
-    if (!code || code.toLowerCase() === "nan") throw new Error(`[parseInboundSheet] 입고 시트: 품목코드 비어있음 (row=${i})`);
+    if (!code || code.toLowerCase() === "nan") {
+      if (!rowHasAnyNonEmptyCell(row)) continue;
+      throw new Error(`[parseInboundSheet] 입고 시트: 품목코드 비어있음 (row=${i})`);
+    }
     if (!name || name.toLowerCase() === "nan") throw new Error(`[parseInboundSheet] 입고 시트: 품목명 비어있음 (row=${i})`);
     if (code.includes("합계") || code.includes("소계")) throw new Error(`[parseInboundSheet] 입고 시트: 품목코드가 합계/소계로 보입니다 (row=${i}, code=${code})`);
     if (qty <= 0) throw new Error(`[parseInboundSheet] 입고 시트: 수량 <= 0 (row=${i}, qty=${qty})`);
@@ -580,7 +592,10 @@ export function parseOutboundSheet(
     const name = String(row[idxName] ?? "").trim();
     const salesRawCell = String(row[idxSc] ?? "").trim();
 
-    if (!code || code.toLowerCase() === "nan") throw new Error(`출고 시트: 품목코드 비어있음 (row=${i})`);
+    if (!code || code.toLowerCase() === "nan") {
+      if (!rowHasAnyNonEmptyCell(row)) continue;
+      throw new Error(`출고 시트: 품목코드 비어있음 (row=${i})`);
+    }
     if (!name || name.toLowerCase() === "nan") throw new Error(`출고 시트: 품목명 비어있음 (row=${i})`);
     if (qty <= 0) throw new Error(`출고 시트: 수량 <= 0 (row=${i}, qty=${qty})`);
     if (!outbound_date) throw new Error(`출고 시트: 출고일자 비어있거나 형식 오류 (row=${i})`);
@@ -794,6 +809,7 @@ export function parseStockSheet(
     const row = (data[i] ?? []) as Row;
     const code = String(row[idxCode] ?? "").trim();
     if (!code || code.toLowerCase() === "nan") {
+      if (!rowHasAnyNonEmptyCell(row)) continue;
       throw new Error(`[parseStockSheet] 재고 시트: 품목코드 비어있음 (row=${i})`);
     }
 
