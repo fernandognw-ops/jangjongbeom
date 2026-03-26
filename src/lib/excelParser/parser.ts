@@ -621,10 +621,17 @@ export function parseOutboundSheet(
     const pack = idxPack >= 0 ? safeInt(row[idxPack]) : undefined;
     const unit = idxUnit >= 0 ? safeFloat(row[idxUnit]) : 0;
     const totalRaw = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
-    const invalidBySanity = unit > 0 && totalRaw > 0 && totalRaw < unit * 1.2;
+    const expectedLine = unit * qty;
+    // 기존 `totalRaw < unit*1.2` 는 수량 1(합계≈단가)인 정상 행에서 항상 오탐 → 단가×수량 대비 과소만 검사
+    const invalidBySanity =
+      unit > 0 &&
+      totalRaw > 0 &&
+      qty > 0 &&
+      expectedLine > 0 &&
+      totalRaw + 1e-6 < expectedLine * 0.85;
     if (invalidBySanity) {
       throw new Error(
-        `[parseOutboundSheet] 출고 합계 금액이 단가와 불일치해 형식 검증 실패 (row=${i}, unit=${unit}, total=${totalRaw})`
+        `[parseOutboundSheet] 출고 합계 금액이 단가×수량과 불일치 (row=${i}, unit=${unit}, qty=${qty}, total=${totalRaw}, 단가×수량=${expectedLine})`
       );
     }
     const total = totalRaw;
