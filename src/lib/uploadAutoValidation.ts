@@ -147,8 +147,10 @@ export function runUploadAutoValidation(input: {
     const tp = parseMoney(r.total_price);
     const up = parseMoney(r.unit_price);
     const qty = Number(r.quantity) || 0;
-    if (qty > 0 && up > 0 && (ota > 0 || tp > 0)) {
+    if (qty > 1 && up > 0 && (ota > 0 || tp > 0)) {
       const lineTotal = ota > 0 ? ota : tp;
+      // 수량 1이면 합계=단가×1 이라 동일한 것이 정상(동일 품번·단가라도 판매 채널이 다르면 별도 행).
+      // 수량>1 인데 합계≈단가만 '합계 열에 단가만 입력' 의심.
       if (Math.abs(lineTotal - up) < 0.01) {
         outboundTotalEqualsUnitPriceRowCount++;
         if (outboundTotalEqualsUnitPriceSamples.length < 15) {
