@@ -892,23 +892,25 @@ export function parseStockSheet(
   return { rows, dateDiagnostics };
 }
 
-const RAWDATA_HEADER_POOL = [
-  ["품목코드", "품번"],
-  ["품목명", "제품명", "품명"],
-];
-
-function findHeaderRowRawdata(data: unknown[][]): number {
-  for (let r = 0; r < Math.min(10, data.length); r++) {
+/** rawdata 시트 상단 몇 행에서 품목코드·품목명·원가(단가) 열이 모두 있는 헤더 행 탐색 */
+function findRawdataHeaderRow(data: unknown[][]): {
+  headerIndex: number;
+  headerRow: Row;
+  idxCode: number;
+  idxName: number;
+  idxCost: number;
+} | null {
+  const maxScan = Math.min(20, data.length);
+  for (let r = 0; r < maxScan; r++) {
     const row = (data[r] ?? []) as Row;
-    const hasCode = RAWDATA_HEADER_POOL[0].some((n) =>
-      row.some((c) => norm(String(c ?? "")).includes(norm(n)))
-    );
-    const hasName = RAWDATA_HEADER_POOL[1].some((n) =>
-      row.some((c) => norm(String(c ?? "")).includes(norm(n)))
-    );
-    if (hasCode && hasName) return r;
+    const idxCode = findCol(row, "product_code");
+    const idxName = findCol(row, "product_name");
+    const idxCost = findCol(row, "unit_cost");
+    if (idxCode >= 0 && idxName >= 0 && idxCost >= 0) {
+      return { headerIndex: r, headerRow: row, idxCode, idxName, idxCost };
+    }
   }
-  return -1;
+  return null;
 }
 
 export function parseRawdataSheet(
@@ -919,30 +921,16 @@ export function parseRawdataSheet(
     throw new Error("[parseRawdataSheet] rawdata 시트에 헤더 행이 없습니다.");
   }
 
-  const requiredHeaders = ["품목코드", "품목명", "원가"];
-  let headerIndex = -1;
-  let headerRow: Row = [];
-  for (let r = 0; r < Math.min(10, data.length); r++) {
-    const candidate = (data[r] ?? []) as Row;
-    const hasAll = requiredHeaders.every((want) =>
-      candidate.some((c) => String(c ?? "").trim() === want)
+  const found = findRawdataHeaderRow(data);
+  if (!found) {
+    throw new Error(
+      `[parseRawdataSheet] rawdata 시트에서 필수 열을 찾지 못했습니다. ` +
+        `다음 조합이 한 행에 있어야 합니다: 품목코드(또는 ${(SYNONYMS.product_code as string[]).join("/")}), ` +
+        `품목명(또는 ${(SYNONYMS.product_name as string[]).join("/")}), ` +
+        `원가·단가(또는 ${(SYNONYMS.unit_cost as string[]).join("/")})`
     );
-    if (hasAll) {
-      headerIndex = r;
-      headerRow = candidate;
-      break;
-    }
   }
-  if (headerIndex < 0) {
-    throw new Error("[parseRawdataSheet] rawdata 시트에서 필수 헤더(품목코드/품목명/원가)를 찾지 못했습니다.");
-  }
-
-  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
-  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
-  const idxCost = headerRow.findIndex((h) => String(h ?? "").trim() === "원가");
-  if (idxCode < 0 || idxName < 0 || idxCost < 0) {
-    throw new Error("[parseRawdataSheet] rawdata 시트 필수 헤더 인덱스 계산 실패");
-  }
+  const { headerIndex, headerRow, idxCode, idxName, idxCost } = found;
 
   const rows: RawdataRow[] = [];
   for (let i = headerIndex + 1; i < data.length; i++) {
@@ -952,6 +940,7 @@ export function parseRawdataSheet(
     const costRaw = String(row[idxCost] ?? "").trim();
 
     if (!code || code.toLowerCase() === "nan") {
+      if (!rowHasAnyNonEmptyCell(row)) continue;
       throw new Error(`[parseRawdataSheet] rawdata 시트: 품목코드 비어있음 (row=${i})`);
     }
     if (!name || name.toLowerCase() === "nan") {
