@@ -109,6 +109,23 @@ export function findStockDateColumnIndex(headerRow: Row): { index: number; heade
 }
 
 /**
+ * 입고 시트 입고일 열 — 헤더 동의어 순서대로 먼저 매칭 (「일자」만 있는 경우 다른 시트보다 후순위).
+ */
+function findInboundDateColumnIndex(headerRow: Row): { index: number; headerLabel: string } {
+  const terms = [...(SYNONYMS.inbound_date as readonly string[])];
+  for (const term of terms) {
+    const tn = norm(term);
+    for (let i = 0; i < headerRow.length; i++) {
+      const h = norm(String(headerRow[i] ?? ""));
+      if (h === tn) {
+        return { index: i, headerLabel: String(headerRow[i] ?? "").trim() };
+      }
+    }
+  }
+  return { index: -1, headerLabel: "" };
+}
+
+/**
  * 출고 시트 출고일 열 — `findCol(..., "outbound_date")`의 "일자"가 입고/다른 열과 먼저 맞는 문제 완화.
  */
 export function findOutboundDateColumnIndex(headerRow: Row): { index: number; headerLabel: string } {
@@ -385,18 +402,34 @@ export function parseInboundSheet(
 ): InboundRow[] {
   if (data.length <= HEADER_ROW) throw new Error("[parseInboundSheet] 입고 시트에 헤더 행이 없습니다.");
   const headerRow = data[HEADER_ROW] ?? [];
-  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
-  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
-  const idxQty = headerRow.findIndex((h) => String(h ?? "").trim() === "수량");
-  const idxDate = headerRow.findIndex((h) => String(h ?? "").trim() === "입고일자");
-  const idxSalesCh = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널");
-  const idxCenter = headerRow.findIndex((h) => String(h ?? "").trim() === "입고 센터"); // optional
+  const idxCode = findCol(headerRow, "product_code");
+  const idxName = findCol(headerRow, "product_name");
+  const idxQty = findQtyCol(headerRow);
+  const { index: idxDate } = findInboundDateColumnIndex(headerRow);
+  const idxSalesCh = findCol(headerRow, "inbound_sales_channel");
+  const idxCenter = findCol(headerRow, "inbound_center"); // optional
 
-  if (idxCode < 0) throw new Error(`[parseInboundSheet] 입고 시트: '품목코드' 헤더 없음`);
-  if (idxName < 0) throw new Error(`[parseInboundSheet] 입고 시트: '품목명' 헤더 없음`);
-  if (idxQty < 0) throw new Error(`[parseInboundSheet] 입고 시트: '수량' 헤더 없음`);
-  if (idxDate < 0) throw new Error(`[parseInboundSheet] 입고 시트: '입고일자' 헤더 없음`);
-  if (idxSalesCh < 0) throw new Error(`[parseInboundSheet] 입고 시트: '판매 채널' 헤더 없음`);
+  if (idxCode < 0) {
+    throw new Error(
+      `[parseInboundSheet] 입고 시트: 품목코드 열 없음 (다음 중 하나 필요: ${(SYNONYMS.product_code as string[]).join(", ")})`
+    );
+  }
+  if (idxName < 0) {
+    throw new Error(
+      `[parseInboundSheet] 입고 시트: 품목명 열 없음 (다음 중 하나: ${(SYNONYMS.product_name as string[]).join(", ")})`
+    );
+  }
+  if (idxQty < 0) throw new Error(`[parseInboundSheet] 입고 시트: 수량 열 없음`);
+  if (idxDate < 0) {
+    throw new Error(
+      `[parseInboundSheet] 입고 시트: 입고일자 열 없음 (다음 중 하나: ${(SYNONYMS.inbound_date as string[]).join(", ")})`
+    );
+  }
+  if (idxSalesCh < 0) {
+    throw new Error(
+      `[parseInboundSheet] 입고 시트: 판매 채널 열 없음 (다음 중 하나: ${(SYNONYMS.inbound_sales_channel as string[]).join(", ")})`
+    );
+  }
 
   const year = yearFromFilename(filename);
   const rows: InboundRow[] = [];
@@ -500,15 +533,17 @@ export function parseOutboundSheet(
     throw new Error("[parseOutboundSheet] 출고 시트에 헤더 행이 없습니다.");
   }
   const headerRow = data[HEADER_ROW] ?? [];
-  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
-  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
-  const idxQty = headerRow.findIndex((h) => String(h ?? "").trim() === "수량");
-  const idxCenter = headerRow.findIndex((h) => String(h ?? "").trim() === "출고 센터"); // optional
-  const idxDate = headerRow.findIndex((h) => String(h ?? "").trim() === "출고일자");
-  const outboundDateHeader = idxDate >= 0 ? String(headerRow[idxDate] ?? "").trim() : "";
-  // outboud_sales_channel(엑셀 \"판매 채널\")는 유사매칭 금지: 헤더가 정확히 \"판매 채널\"인 컬럼만 사용
-  const idxSc = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널");
-  if (idxSc === -1) throw new Error("출고 시트에서 '판매 채널' 컬럼을 찾지 못함");
+  const idxCode = findCol(headerRow, "product_code");
+  const idxName = findCol(headerRow, "product_name");
+  const idxQty = findQtyCol(headerRow);
+  const idxCenter = findCol(headerRow, "outbound_center"); // optional
+  const { index: idxDate, headerLabel: outboundDateHeader } = findOutboundDateColumnIndex(headerRow);
+  const idxSc = findCol(headerRow, "outbound_sales_channel");
+  if (idxSc === -1) {
+    throw new Error(
+      `출고 시트에서 판매 채널 열을 찾지 못함 (다음 중 하나 필요: ${(SYNONYMS.outbound_sales_channel as string[]).join(", ")})`
+    );
+  }
   const outboundSalesChannelHeader = String(headerRow[idxSc] ?? "").trim();
   const outboundHeaderRowRaw = headerRow.map((h) => String(h ?? ""));
   const outboundHeaderRowNormalized = outboundHeaderRowRaw.map((h) => norm(h));
@@ -517,10 +552,14 @@ export function parseOutboundSheet(
   const idxUnit = findCol(headerRow, "unit_price");
   const { index: idxTotal, headerLabel: outboundTotalAmountHeader } = findOutboundTotalAmountColumnIndex(headerRow);
 
-  if (idxCode < 0) throw new Error("출고 시트: '품목코드' 헤더 없음");
-  if (idxName < 0) throw new Error("출고 시트: '품목명' 헤더 없음");
-  if (idxQty < 0) throw new Error("출고 시트: '수량' 헤더 없음");
-  if (idxDate < 0) throw new Error("출고 시트: '출고일자' 헤더 없음");
+  if (idxCode < 0) {
+    throw new Error(`출고 시트: 품목코드 열 없음 (다음 중 하나: ${(SYNONYMS.product_code as string[]).join(", ")})`);
+  }
+  if (idxName < 0) {
+    throw new Error(`출고 시트: 품목명 열 없음 (다음 중 하나: ${(SYNONYMS.product_name as string[]).join(", ")})`);
+  }
+  if (idxQty < 0) throw new Error("출고 시트: 수량 열 없음");
+  if (idxDate < 0) throw new Error("출고 시트: 출고일자 열 없음 (출고일자·출고일·기준일자 등)");
 
   const year = yearFromFilename(filename);
   const rows: OutboundRow[] = [];
@@ -704,13 +743,12 @@ export function parseStockSheet(
     throw new Error("[parseStockSheet] 재고 시트에 헤더 행이 없습니다.");
   }
   const headerRow = data[HEADER_ROW] ?? [];
-  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
-  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
-  const idxQty = headerRow.findIndex((h) => String(h ?? "").trim() === "수량");
-  const idxCenter = headerRow.findIndex((h) => String(h ?? "").trim() === "보관 센터"); // optional
-  const idxSalesCh = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널"); // required
-  const idxDate = headerRow.findIndex((h) => String(h ?? "").trim() === "기준일자"); // required
-  const stockDateHeaderLabel = idxDate >= 0 ? String(headerRow[idxDate] ?? "").trim() : "";
+  const idxCode = findCol(headerRow, "product_code");
+  const idxName = findCol(headerRow, "product_name");
+  const idxQty = findQtyCol(headerRow);
+  const idxCenter = findCol(headerRow, "storage_center"); // optional
+  const idxSalesCh = findCol(headerRow, "stock_sales_channel"); // required
+  const { index: idxDate, headerLabel: stockDateHeaderLabel } = findStockDateColumnIndex(headerRow);
 
   const idxCost = findCol(headerRow, "unit_cost");
   const idxTotal = findCol(headerRow, "total_price");
@@ -723,11 +761,23 @@ export function parseStockSheet(
   // 진단용(실제 파싱 보정엔 사용하지 않음)
   const fileDefaultDate = filenameDay ?? today;
 
-  if (idxCode < 0) throw new Error("[parseStockSheet] 재고 시트: '품목코드' 헤더 없음");
-  if (idxName < 0) throw new Error("[parseStockSheet] 재고 시트: '품목명' 헤더 없음");
-  if (idxQty < 0) throw new Error("[parseStockSheet] 재고 시트: '수량' 헤더 없음");
-  if (idxSalesCh < 0) throw new Error("[parseStockSheet] 재고 시트: '판매 채널' 헤더 없음");
-  if (idxDate < 0) throw new Error("[parseStockSheet] 재고 시트: '기준일자' 헤더 없음");
+  if (idxCode < 0) {
+    throw new Error(
+      `[parseStockSheet] 재고 시트: 품목코드 열 없음 (다음 중 하나: ${(SYNONYMS.product_code as string[]).join(", ")})`
+    );
+  }
+  if (idxName < 0) {
+    throw new Error(
+      `[parseStockSheet] 재고 시트: 품목명 열 없음 (다음 중 하나: ${(SYNONYMS.product_name as string[]).join(", ")})`
+    );
+  }
+  if (idxQty < 0) throw new Error("[parseStockSheet] 재고 시트: 수량 열 없음");
+  if (idxSalesCh < 0) {
+    throw new Error(
+      `[parseStockSheet] 재고 시트: 판매 채널 열 없음 (다음 중 하나: ${(SYNONYMS.stock_sales_channel as string[]).join(", ")})`
+    );
+  }
+  if (idxDate < 0) throw new Error("[parseStockSheet] 재고 시트: 기준일자(재고 기준일) 열 없음");
 
   const rows: StockRow[] = [];
   const samples: StockSheetDateDiagnostics["samples"] = [];
