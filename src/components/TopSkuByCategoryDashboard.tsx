@@ -30,6 +30,14 @@ export function TopSkuByCategoryDashboard() {
   } = useInventory() ?? {};
 
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const safeNumber = (value: unknown): number => Number(value ?? 0) || 0;
+  const renderData = {
+    inventoryProducts,
+    inventoryOutbound,
+    stockByProduct,
+    dailyVelocityByProduct,
+  };
+  console.log("RENDER STEP", renderData);
 
   /** 품목별 총 출고량 (최근 3개월) - 주력 품목 선정용 */
   const totalOutbound90d = useMemo(
@@ -58,9 +66,9 @@ export function TopSkuByCategoryDashboard() {
 
   /** 3개월 출고량 (EA) - inventory_outbound 기반만 (fallback 제거, DB 0건이면 0) */
   const quantityFor90d = useMemo(() => {
-    if (inventoryOutbound.length === 0) return {} as Record<string, number>;
+    if ((inventoryOutbound ?? []).length === 0) return {} as Record<string, number>;
     return totalOutbound90d;
-  }, [inventoryOutbound.length, totalOutbound90d]);
+  }, [inventoryOutbound, totalOutbound90d]);
 
   /** 3개월 매출 (원) - 주력 품목 선정용 */
   const revenueFor90d = useMemo(() => {
@@ -78,9 +86,9 @@ export function TopSkuByCategoryDashboard() {
 
   /** 1개월 매출용: 최근 30일 출고량 × 단가 (표시용) - inventory_outbound 기반만 */
   const quantityFor30d = useMemo(() => {
-    if (inventoryOutbound.length === 0) return {} as Record<string, number>;
+    if ((inventoryOutbound ?? []).length === 0) return {} as Record<string, number>;
     return totalOutbound30d;
-  }, [inventoryOutbound.length, totalOutbound30d]);
+  }, [inventoryOutbound, totalOutbound30d]);
 
   const revenueFor30d = useMemo(() => {
     const result: Record<string, number> = {};
@@ -131,7 +139,7 @@ export function TopSkuByCategoryDashboard() {
 
   /** 1주일 판매량 (권장 입고 계산용) - inventory_outbound 기반만 */
   const oneWeekSalesByProduct = useMemo(() => {
-    if (inventoryOutbound.length === 0) return {} as Record<string, number>;
+    if ((inventoryOutbound ?? []).length === 0) return {} as Record<string, number>;
     return computeTotalOutboundByProduct(inventoryOutbound, RECOMMENDED_WEEK_DAYS);
   }, [inventoryOutbound]);
 
@@ -198,24 +206,34 @@ export function TopSkuByCategoryDashboard() {
     revenueFor30d,
   ]);
 
-  if (!useSupabaseInventory || inventoryProducts.length === 0) {
-    return null;
-  }
-
   const hasAnyTopSkus = CATEGORY_ORDER.some((cat) => (topSkusByCategory[cat] ?? []).length > 0);
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
+    <div className="mt-8 min-h-[12rem] min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:mt-10 md:p-6">
       <div className="mb-4">
         <h2 className="text-lg font-bold text-slate-800 md:text-xl">
-          최상위 주력 품목 관리
+          카테고리별 주력 SKU 재고 관리
         </h2>
+        {!useSupabaseInventory && (
+          <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            데이터 없음 (로컬 모드). 집계값은 0으로 표시됩니다.
+          </div>
+        )}
         <p className="mt-1 text-xs text-slate-500">
-          {inventoryOutbound.length > 0
+          {(inventoryOutbound ?? []).length > 0
             ? "최근 3개월 전체 매출의 70~80%를 차지하는 상위 20% 품목"
             : "일평균 출고 × 90일 × 단가 (최근 30일 출고 기반 추정)"}
           {" "}· 월매출 500만원 이상 · 2주 안전재고 미달 품목만 표시
         </p>
+        <div className="mt-2 text-xs text-slate-500">
+          {(inventoryProducts ?? []).length > 0
+            ? `품목 ${safeNumber(inventoryProducts?.length).toLocaleString()}건 기준`
+            : "품목 데이터 없음 (0건)"}
+          {" · "}
+          {(inventoryOutbound ?? []).length > 0
+            ? `출고 ${safeNumber(inventoryOutbound?.length).toLocaleString()}건 기준`
+            : "출고 데이터 없음 (0건)"}
+        </div>
         <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"
@@ -306,10 +324,10 @@ export function TopSkuByCategoryDashboard() {
                     {String(r.product.product_name ?? r.product.product_code ?? "").trim() || r.product.product_code}
                   </td>
                   <td className="border border-slate-200 px-3 py-2 text-right tabular-nums font-medium text-slate-800">
-                    {Math.round(r.revenue1m).toLocaleString()}원
+                    {safeNumber(Math.round(r.revenue1m)).toLocaleString()}원
                   </td>
                   <td className="border border-slate-200 px-3 py-2 text-right tabular-nums text-slate-700">
-                    {Math.round(r.stock).toLocaleString()}
+                    {safeNumber(Math.round(r.stock)).toLocaleString()}
                   </td>
                   <td className="border border-slate-200 px-2 py-2 text-center">
                     <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
@@ -329,7 +347,7 @@ export function TopSkuByCategoryDashboard() {
                     )}
                   </td>
                   <td className="border border-slate-200 px-3 py-2 text-right tabular-nums text-indigo-600">
-                    {r.recommendedOrder > 0 ? Math.round(r.recommendedOrder).toLocaleString() : "-"}
+                    {r.recommendedOrder > 0 ? safeNumber(Math.round(r.recommendedOrder)).toLocaleString() : "-"}
                   </td>
                   <td className="border border-slate-200 px-3 py-2 text-right tabular-nums">
                     {r.dueDate ? (

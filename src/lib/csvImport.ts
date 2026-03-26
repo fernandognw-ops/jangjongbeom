@@ -77,11 +77,11 @@ function splitCsvLine(line: string): string[] {
 }
 
 function normalizeHeader(s: string) {
-  return s.replace(/\s+/g, "").replace(/"/g, "");
+  return String(s ?? "").replace(/\s+/g, "").replace(/"/g, "");
 }
 
 function parseNumberLike(s: string): number | null {
-  const cleaned = s.replace(/["\s]/g, "").replace(/,/g, "");
+  const cleaned = String(s ?? "").replace(/["\s]/g, "").replace(/,/g, "");
   if (!cleaned) return null;
   const n = Number.parseInt(cleaned, 10);
   return Number.isFinite(n) ? n : null;
@@ -92,7 +92,7 @@ function pad2(n: number) {
 }
 
 export function parseKoreanDateToISO(input: string, year = new Date().getFullYear()): string | null {
-  const s = input.replace(/["\s]/g, "");
+  const s = String(input ?? "").replace(/["\s]/g, "");
   const m1 = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (m1) return `${m1[1]}-${m1[2]}-${m1[3]}`;
   const m2 = s.match(/^(\d{1,2})월(\d{1,2})일$/);
@@ -103,7 +103,7 @@ export function parseKoreanDateToISO(input: string, year = new Date().getFullYea
 }
 
 export function mapGroupToItemId(group: string): ItemId {
-  const g = group.replace(/\s+/g, "").toLowerCase();
+  const g = String(group ?? "").replace(/\s+/g, "").toLowerCase();
   if (g.includes("마스크")) return "mask";
   if (g.includes("캡슐세제") || (g.includes("캡슐") && g.includes("세제"))) return "capsule";
   if (g.includes("섬유유연제") || g.includes("유연제")) return "fabric";
@@ -184,9 +184,9 @@ export function parseOutboundCsv(
       continue;
     }
     const itemId = mapGroupToItemId(rawGroup);
-    const person = (idxPerson >= 0 ? cols[idxPerson] : "").replace(/["\s]/g, "") || "-";
-    const product = (idxProduct >= 0 ? cols[idxProduct] : "").replace(/["\s]/g, "") || "";
-    const code = (idxCode >= 0 ? cols[idxCode] : "").replace(/["\s]/g, "") || "";
+    const person = String(idxPerson >= 0 ? cols[idxPerson] : "").replace(/["\s]/g, "") || "-";
+    const product = String(idxProduct >= 0 ? cols[idxProduct] : "").replace(/["\s]/g, "") || "";
+    const code = String(idxCode >= 0 ? cols[idxCode] : "").replace(/["\s]/g, "") || "";
     const rawSc = scIdx >= 0 ? String(cols[scIdx] ?? "").replace(/["\s]/g, "").toLowerCase() : "";
     const salesChannel: SalesChannel | undefined = rawSc.includes("쿠팡") ? "coupang" : rawSc ? "general" : undefined;
     const productKey = product ? product.trim() : "";
@@ -303,9 +303,9 @@ export function parseInboundCsv(
       continue;
     }
     const itemId = mapGroupToItemId(rawGroup);
-    const person = (idxPerson >= 0 ? cols[idxPerson] : "").replace(/["\s]/g, "") || "-";
-    const product = (idxProduct >= 0 ? cols[idxProduct] : "").replace(/["\s]/g, "") || "";
-    const code = (idxCode >= 0 ? cols[idxCode] : "").replace(/["\s]/g, "") || "";
+    const person = String(idxPerson >= 0 ? cols[idxPerson] : "").replace(/["\s]/g, "") || "-";
+    const product = String(idxProduct >= 0 ? cols[idxProduct] : "").replace(/["\s]/g, "") || "";
+    const code = String(idxCode >= 0 ? cols[idxCode] : "").replace(/["\s]/g, "") || "";
     const rawSc = scIdxIn >= 0 ? String(cols[scIdxIn] ?? "").replace(/["\s]/g, "").toLowerCase() : "";
     const salesChannel: SalesChannel | undefined = rawSc.includes("쿠팡") ? "coupang" : rawSc ? "general" : undefined;
     const productKey = product ? product.trim() : "";
@@ -412,8 +412,8 @@ export function parseStockCsvToOpeningInbounds(
     usedRows++;
 
     if (hasProduct) {
-      const productName = (idxProduct >= 0 ? cols[idxProduct] ?? "" : "").replace(/["\s]/g, "").trim() || "";
-      const productCode = (idxCode >= 0 ? cols[idxCode] ?? "" : "").replace(/["\s]/g, "").trim() || "";
+      const productName = String(idxProduct >= 0 ? cols[idxProduct] ?? "" : "").replace(/["\s]/g, "").trim() || "";
+      const productCode = String(idxCode >= 0 ? cols[idxCode] ?? "" : "").replace(/["\s]/g, "").trim() || "";
       const keyVal = productCode || productName;
       const key = keyVal ? `${itemId}|${keyVal}` : "";
       if (key) {
@@ -539,9 +539,9 @@ export function parseRawdataProducts(csvText: string): { products: ProductMaster
     const line = lines[i];
     if (!line || !line.trim()) continue;
     const cols = splitCsvLine(line);
-    const code = (cols[idxCode] ?? "").replace(/["\s]/g, "");
-    const name = (cols[idxName] ?? "").replace(/["\s]/g, "");
-    const group = (cols[idxGroup] ?? "").replace(/["\s]/g, "");
+    const code = String(cols[idxCode] ?? "").replace(/["\s]/g, "");
+    const name = String(cols[idxName] ?? "").replace(/["\s]/g, "");
+    const group = String(cols[idxGroup] ?? "").replace(/["\s]/g, "");
     if (!code || !name) continue;
     const unitCost = idxCost >= 0 ? parseNumberLike(cols[idxCost] ?? "") ?? undefined : undefined;
     const packSizeRaw = idxPackSize >= 0 ? parseNumberLike(cols[idxPackSize] ?? "") : undefined;
@@ -550,8 +550,8 @@ export function parseRawdataProducts(csvText: string): { products: ProductMaster
       code,
       name,
       group,
-      subGroup: idxSub >= 0 ? (cols[idxSub] ?? "").replace(/["\s]/g, "") : "",
-      spec: idxSpec >= 0 ? (cols[idxSpec] ?? "").replace(/["\s]/g, "") : "",
+      subGroup: idxSub >= 0 ? String(cols[idxSub] ?? "").replace(/["\s]/g, "") : "",
+      spec: idxSpec >= 0 ? String(cols[idxSpec] ?? "").replace(/["\s]/g, "") : "",
       unitCost,
       packSize,
     });

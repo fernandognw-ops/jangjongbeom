@@ -54,7 +54,7 @@ export function createEmptySnapshotChannelDebugStats(): SnapshotChannelDebugStat
 export function resolveSnapshotChannelWithSource(r: SnapshotRow): SnapshotChannelResolution {
   const picked = pickOutboundSalesChannelRawFromRow(r as Record<string, unknown>);
   if (picked) {
-    return { channel: normalizeSalesChannelKr(picked), source: "sales_channel" };
+    return { channel: normalizeSalesChannelKr(picked, { lenient: true }), source: "sales_channel" };
   }
   return { channel: WAREHOUSE_GENERAL, source: "empty" };
 }
@@ -233,7 +233,7 @@ export function aggregateSnapshotRowsForDashboard(
         debugSalesCoupang.push(rowDebug);
       }
       if (salesTrim !== "") {
-        const salesNorm = normalizeSalesChannelKr(r.sales_channel);
+        const salesNorm = normalizeSalesChannelKr(r.sales_channel, { lenient: true });
         if (salesNorm === WAREHOUSE_GENERAL && wh === WAREHOUSE_COUPANG && debugAnomaly.length < 20) {
           debugAnomaly.push(rowDebug);
         }

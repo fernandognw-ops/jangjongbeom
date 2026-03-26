@@ -110,7 +110,7 @@ function validateSalesChannelKr(wh: string): boolean {
 
 function hasCoupangHint(raw: string | null | undefined): boolean {
   const s = String(raw ?? "").toLowerCase();
-  const compact = s.replace(/[\s\-_()[\]{}.,/\\:;'"`~!@#$%^&*+=?|<>]+/g, "");
+  const compact = String(s ?? "").replace(/[\s\-_()[\]{}.,/\\:;'"`~!@#$%^&*+=?|<>]+/g, "");
   return (
     compact.includes("쿠팡") ||
     compact.includes("coupang") ||

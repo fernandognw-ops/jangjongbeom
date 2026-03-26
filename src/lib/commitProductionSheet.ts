@@ -111,13 +111,53 @@ export async function commitProductionSheet(
   const { filename, inbound, outbound, stockSnapshot, rawdata, currentProductCodes } = input;
 
   if (rawdata.length > 0) {
-    const productRows = rawdata.map((r) => ({
-      product_code: r.product_code,
-      product_name: (r.product_name ?? r.product_code).trim() || r.product_code,
-      unit_cost: r.unit_cost ?? 0,
-      category: (r.category ?? "기타").trim() || "기타",
-      pack_size: Math.max(1, r.pack_size ?? 1),
-    }));
+    const codes = Array.from(new Set(rawdata.map((r) => r.product_code)));
+    const { data: existingProducts } = await supabase
+      .from(TABLE_PRODUCTS)
+      .select("product_code,category,pack_size")
+      .in("product_code", codes);
+
+    const productMetaByCode = new Map<
+      string,
+      { category?: string | null; pack_size?: number | null }
+    >();
+    for (const r of existingProducts ?? []) {
+      const row = r as { product_code: string; category?: string | null; pack_size?: number | null };
+      productMetaByCode.set(row.product_code, { category: row.category, pack_size: row.pack_size });
+    }
+
+    const productRows = rawdata.map((r) => {
+      const meta = productMetaByCode.get(r.product_code);
+      const categoryRaw = r.category != null ? String(r.category) : meta?.category ?? null;
+      const packSizeRaw = r.pack_size != null ? r.pack_size : meta?.pack_size ?? null;
+      const productNameRaw = r.product_name;
+
+      if (categoryRaw == null || String(categoryRaw).trim() === "") {
+        throw new Error(`[commitProductionSheet] rawdata로는 category 기본값을 주입하지 않습니다. product_code=${r.product_code}`);
+      }
+      if (!productNameRaw || String(productNameRaw).trim() === "") {
+        throw new Error(`[commitProductionSheet] rawdata로는 product_name이 비어있는 값을 허용하지 않습니다. product_code=${r.product_code}`);
+      }
+      if (r.unit_cost == null || !Number.isFinite(Number(r.unit_cost)) || Number(r.unit_cost) < 0) {
+        throw new Error(`[commitProductionSheet] rawdata로는 원가(unit_cost)가 비정상인 값을 허용하지 않습니다. product_code=${r.product_code}`);
+      }
+      if (packSizeRaw == null || !Number.isFinite(Number(packSizeRaw))) {
+        throw new Error(`[commitProductionSheet] rawdata로는 pack_size 기본값을 주입하지 않습니다. product_code=${r.product_code}`);
+      }
+
+      const pack_sizeNum = Math.max(1, Number(packSizeRaw));
+      if (!Number.isFinite(pack_sizeNum) || pack_sizeNum < 1) {
+        throw new Error(`[commitProductionSheet] pack_size 값이 올바르지 않습니다. product_code=${r.product_code}`);
+      }
+
+      return {
+        product_code: r.product_code,
+        product_name: String(productNameRaw).trim(),
+        unit_cost: Number(r.unit_cost),
+        category: String(categoryRaw).trim(),
+        pack_size: pack_sizeNum,
+      };
+    });
     for (let i = 0; i < productRows.length; i += BATCH) {
       const batch = productRows.slice(i, i + BATCH);
       const { error } = await supabase.from(TABLE_PRODUCTS).upsert(batch, { onConflict: "product_code" });
@@ -279,7 +319,10 @@ export async function commitProductionSheet(
         sales_channel?: string;
         unit_cost: number;
       };
-      const ch = normalizeSalesChannelKr(String(row.sales_channel ?? ""));
+      if (!row.sales_channel || String(row.sales_channel).trim() === "") {
+        throw new Error("[commitProductionSheet] inventory_stock_snapshot row has empty sales_channel; refusing to default.");
+      }
+      const ch = normalizeSalesChannelKr(String(row.sales_channel));
       const st = (row.storage_center ?? "").trim() || "미지정";
       const key = `${row.product_code}|${ch}|${st}`;
       if ((row.unit_cost ?? 0) > 0) costByKey.set(key, row.unit_cost);

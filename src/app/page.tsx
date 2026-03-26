@@ -1,28 +1,18 @@
 "use client";
 
-import { lazy, Suspense, useEffect } from "react";
+import { useEffect } from "react";
 import { useInventory } from "@/context/InventoryContext";
-import { ShortageList } from "@/components/ShortageList";
-import { RunOutDateCard } from "@/components/RunOutDateCard";
-import { ItemCards } from "@/components/ItemCards";
-import { BaseStockAndDailyStock } from "@/components/BaseStockAndDailyStock";
-import { TransactionTable } from "@/components/TransactionTable";
-import { DataManagement } from "@/components/DataManagement";
-import { SyncSettings } from "@/components/SyncSettings";
 import { DashboardBoxHero } from "@/components/DashboardBoxHero";
-import { ProductionSheetUploader } from "@/components/ProductionSheetUploader";
 import { TopSkuByCategoryDashboard } from "@/components/TopSkuByCategoryDashboard";
-
-const CategoryTrendChart = lazy(() =>
-  import("@/components/CategoryTrendChart").then((m) => ({ default: m.CategoryTrendChart }))
-);
-const AIForecastReport = lazy(() =>
-  import("@/components/AIForecastReport").then((m) => ({ default: m.AIForecastReport }))
-);
+import { RuntimeErrorLogger } from "@/components/RuntimeErrorLogger";
+import { TotalInventorySummary } from "@/components/TotalInventorySummary";
+import { ProductionSheetUpload } from "@/components/ProductionSheetUpload";
+import { OtherEtcSection } from "@/components/OtherEtcSection";
+import { DashboardTrendAndAiReports } from "@/components/DashboardTrendAndAiReports";
 
 function SupabaseDiagnosticBanner() {
   const { supabaseFetchStatus, supabaseFetchError, refresh } = useInventory();
-  if (supabaseFetchStatus === "idle" || supabaseFetchStatus === "ok") return null;
+  if (supabaseFetchStatus === "idle" || supabaseFetchStatus === "ok" || supabaseFetchStatus === "success") return null;
 
   const messages: Record<string, { title: string; desc: string }> = {
     supabase_not_configured: {
@@ -61,24 +51,36 @@ function SupabaseDiagnosticBanner() {
 
 export default function DashboardPage() {
   const ctx = useInventory();
+  const safeNumber = (value: unknown): number => Number(value ?? 0) || 0;
   const totalValue = ctx?.totalValue ?? 0;
   const useSupabaseInventory = ctx?.useSupabaseInventory ?? false;
   const isSupabaseLoading = ctx?.isSupabaseLoading ?? false;
   const supabaseFetchStatus = ctx?.supabaseFetchStatus ?? "idle";
+  const nonBlockingError = ctx?.supabaseNonBlockingError;
+  const blockingError = ctx?.supabaseFetchError;
+  const hasAnyErrorBanner = Boolean(nonBlockingError || blockingError);
   const kpiData = ctx?.kpiData;
   const refresh = ctx?.refresh ?? (() => window.location.reload());
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const uploadVisible = useSupabaseInventory && (supabaseFetchStatus === "empty_data" || supabaseFetchStatus === "ok");
+    const uploadVisible =
+      useSupabaseInventory &&
+      (supabaseFetchStatus === "empty_data" || supabaseFetchStatus === "ok" || supabaseFetchStatus === "success");
     console.log("[Dashboard] 데이터 소스 디버그", {
       supabaseFetchStatus,
-      supabaseFetchError: ctx?.supabaseFetchError,
+      supabaseFetchError: ctx?.supabaseFetchError ?? "",
       useSupabaseInventory,
       kpiData: kpiData ?? null,
-      totalValue,
+      totalValue: safeNumber(totalValue),
       uploadUI: uploadVisible ? "표시" : "숨김",
-      uploadReason: !useSupabaseInventory ? "localStorage 모드" : supabaseFetchStatus === "empty_data" ? "DB 0건" : supabaseFetchStatus === "ok" ? "데이터 있음(하단)" : "fetch_error 등",
+      uploadReason: !useSupabaseInventory
+        ? "localStorage 모드"
+        : supabaseFetchStatus === "empty_data"
+          ? "DB 0건"
+          : supabaseFetchStatus === "ok" || supabaseFetchStatus === "success"
+            ? "데이터 있음(하단)"
+            : "fetch_error 등",
     });
   }, [supabaseFetchStatus, ctx?.supabaseFetchError, useSupabaseInventory, kpiData, totalValue]);
 
@@ -87,6 +89,7 @@ export default function DashboardPage() {
       className="min-h-screen bg-[#E0E7FF]"
       style={{ minHeight: "100vh", backgroundColor: "#E0E7FF", color: "#1e293b" }}
     >
+      <RuntimeErrorLogger />
       <header
         className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 backdrop-blur shadow-sm pt-[env(safe-area-inset-top)]"
         style={{ backgroundColor: "rgba(255,255,255,0.98)", borderBottom: "1px solid #E2E8F0" }}
@@ -102,8 +105,14 @@ export default function DashboardPage() {
       </header>
 
       <main className="mx-auto max-w-6xl min-w-0 px-3 py-3 md:px-6 md:py-8 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] pb-[max(1.5rem,env(safe-area-inset-bottom))] overflow-x-hidden">
-        {isSupabaseLoading && supabaseFetchStatus === "idle" ? (
-          <div className="rounded-2xl border border-slate-200 bg-white py-16 px-4 text-center shadow-card">
+        {hasAnyErrorBanner && (
+          <div style={{ background: "#ffe5e5", color: "#d00", padding: "10px", marginBottom: "12px", borderRadius: "10px" }}>
+            데이터 일부 로딩 실패 (대시보드는 계속 표시됩니다)
+            {blockingError || nonBlockingError ? `: ${blockingError ?? nonBlockingError}` : ""}
+          </div>
+        )}
+        {isSupabaseLoading && (
+          <div className="mb-4 rounded-2xl border border-slate-200 bg-white py-6 px-4 text-center shadow-card">
             <p className="text-slate-600">Supabase 데이터 로딩 중입니다…</p>
             <p className="mt-2 text-xs text-slate-500">모든 데이터는 Supabase에서 가져옵니다. 15초 이상 걸리면 아래 버튼으로 재시도하세요.</p>
             <div className="mt-4 flex flex-wrap justify-center gap-3">
@@ -125,156 +134,16 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
-        ) : useSupabaseInventory ? (
-          /* 박스히어로 스타일 대시보드 (Supabase 전용 - 모든 데이터 Supabase 출처) */
-          <>
-            <SupabaseDiagnosticBanner />
-            {/* 데이터 없을 때 업로드 UI를 최상단에 배치 (가장 먼저 보이도록) */}
-            {supabaseFetchStatus === "empty_data" && (
-              <div className="mb-6">
-                <ProductionSheetUploader />
-              </div>
-            )}
-            {/* KPI 카드: snapshot 단일 출처 (재고 금액, 품목 수, 수량 EA, SKU 박스). DB 0건이어도 0으로 표시 */}
-            {(kpiData != null || totalValue > 0 || supabaseFetchStatus === "empty_data") && (
-              <>
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs text-slate-500">데이터가 안 바뀌면 →</span>
-                <button
-                  type="button"
-                  onClick={() => refresh()}
-                  className="rounded-lg bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600"
-                >
-                  데이터 새로고침
-                </button>
-              </div>
-              <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 md:gap-4">
-                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-indigo-600 md:text-xs">
-                    총 재고 금액
-                  </div>
-                  <div
-                    className={`mt-1 min-w-0 overflow-hidden font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl ${
-                      (kpiData?.totalValue ?? totalValue) >= 1000000000 ? "text-lg md:text-2xl" : ""
-                    }`}
-                    style={{ wordBreak: "break-word" }}
-                  >
-                    {((kpiData?.totalValue ?? totalValue) ?? 0).toLocaleString()}원
-                  </div>
-                </div>
-                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500 md:text-xs">
-                    품목 수
-                  </div>
-                  <div className="mt-1 font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl">
-                    {(kpiData?.productCount ?? 0).toLocaleString()}건
-                  </div>
-                </div>
-                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500 md:text-xs">
-                    총 재고 수량 (EA)
-                  </div>
-                  <div className="mt-1 font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl">
-                    {(kpiData?.totalQuantity ?? 0).toLocaleString()}EA
-                  </div>
-                </div>
-                <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-card md:p-6">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-500 md:text-xs">
-                    SKU (박스)
-                  </div>
-                  <div className="mt-1 font-bold tabular-nums text-slate-800 md:mt-2 md:text-2xl lg:text-3xl">
-                    {(kpiData?.totalSku ?? 0).toLocaleString()}박스
-                  </div>
-                </div>
-              </div>
-              </>
-            )}
-            {/* 데이터 있을 때는 KPI 아래에 업로드 UI */}
-            {supabaseFetchStatus !== "empty_data" && (
-              <div className="mb-6">
-                <ProductionSheetUploader />
-              </div>
-            )}
-            <DashboardBoxHero />
-            <section className="mt-8" id="top-sku-dashboard">
-              <h2 className="mb-3 text-base font-bold text-slate-800 md:text-lg">
-                카테고리별 주력 SKU 재고 관리
-              </h2>
-              <TopSkuByCategoryDashboard />
-            </section>
-            {/* 카테고리 트렌드·AI 예측 (비동기 로딩) */}
-            <Suspense
-              fallback={
-                <div className="mt-8 rounded-2xl border border-zinc-700 bg-zinc-900/50 py-12 text-center text-zinc-500">
-                  차트 로딩 중…
-                </div>
-              }
-            >
-              <section className="mt-8 md:mt-10">
-                <CategoryTrendChart />
-              </section>
-              <section className="mt-8 md:mt-10">
-                <AIForecastReport />
-              </section>
-            </Suspense>
-          </>
-        ) : (
-          /* 기존 대시보드 (localStorage/sync) */
-          <>
-            <div className="mb-3 md:mb-6">
-              <SyncSettings />
-            </div>
-            <SupabaseDiagnosticBanner />
-
-            <div className="mb-3 min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-card md:mb-6 md:p-6">
-              <div className="text-[10px] font-medium uppercase tracking-wider text-indigo-600 md:text-xs">
-                재고 금액
-              </div>
-              <div
-                className={`mt-1 min-w-0 overflow-hidden font-bold tabular-nums text-slate-800 md:mt-2 md:text-4xl ${
-                  totalValue >= 1000000000 ? "text-lg md:text-3xl" : totalValue >= 1000000 ? "text-xl md:text-4xl" : "text-2xl"
-                }`}
-                style={{ wordBreak: "break-word" }}
-              >
-                {(totalValue ?? 0).toLocaleString()}원
-              </div>
-            </div>
-
-            <div className="mb-3 md:mb-6">
-              <ShortageList />
-            </div>
-
-            <div className="mb-3 md:mb-6">
-              <RunOutDateCard />
-            </div>
-
-            <div className="mb-3 md:mb-8">
-              <BaseStockAndDailyStock />
-            </div>
-
-            <div className="mb-3 md:mb-8">
-              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-600 md:mb-4 md:text-sm">
-                품목별 재고 현황
-              </h2>
-              <ItemCards />
-            </div>
-
-            <div className="mb-3 md:mb-8">
-              <DataManagement />
-            </div>
-
-            <TransactionTable />
-          </>
         )}
+        {useSupabaseInventory && <SupabaseDiagnosticBanner />}
 
-        {/* Supabase 사용 시: 소진일 예측·데이터 관리·입출고 */}
-        {useSupabaseInventory && (
-          <div className="mt-12 space-y-8 border-t border-slate-200 pt-8">
-            <RunOutDateCard />
-            <DataManagement />
-            <TransactionTable />
-          </div>
-        )}
+        {/* 순서: 생산수불 업로드 → 총 재고 금액(KPI) → 재고 대시보드 → … */}
+        <ProductionSheetUpload />
+        <TotalInventorySummary />
+        <DashboardBoxHero />
+        <TopSkuByCategoryDashboard />
+        <DashboardTrendAndAiReports />
+        <OtherEtcSection />
       </main>
     </div>
   );

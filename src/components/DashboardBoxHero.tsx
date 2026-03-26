@@ -134,6 +134,15 @@ export function DashboardBoxHero() {
     [channelTotalsFromCtx]
   );
   const aiForecastByProduct = contextAiForecast ?? {};
+  const safeNumber = (value: unknown): number => Number(value ?? 0) || 0;
+  const renderData = {
+    inventoryProducts,
+    inventoryOutbound,
+    channelTotals,
+    categoryTrendData,
+    stockByProductByChannel,
+  };
+  console.log("RENDER STEP", renderData);
 
   const stockByProductRaw = useMemo(
     () => getStockByChannel(stockByProductByChannel, channel),
@@ -360,18 +369,21 @@ export function DashboardBoxHero() {
   };
   const theme = channelTheme[channel];
 
-  if (!useSupabaseInventory || inventoryProducts.length === 0) {
-    return null;
-  }
-
   return (
-    <div className={`min-w-0 space-y-6 overflow-hidden rounded-2xl border ${theme.border} ${theme.bg} p-4 shadow-card transition-colors md:p-6`}>
+    <div
+      className={`mt-8 min-h-[12rem] min-w-0 space-y-6 overflow-hidden rounded-2xl border ${theme.border} ${theme.bg} p-4 shadow-card transition-colors md:mt-10 md:p-6`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-bold text-slate-800 md:text-xl">
           재고 대시보드
         </h1>
         <SupabaseInventoryRefresh />
       </div>
+      {!useSupabaseInventory && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          데이터 없음 (로컬 모드). 값은 0 기준으로 표시됩니다.
+        </div>
+      )}
 
       {/* 채널 탭: 전체 | 쿠팡 보유 재고 | 일반 보유 재고 */}
       <div className="space-y-2">
@@ -411,14 +423,14 @@ export function DashboardBoxHero() {
           </button>
         </div>
         <div className="flex flex-wrap gap-4 text-sm text-slate-600">
-          <span>쿠팡: <span className="font-semibold text-orange-600">{coupangStockTotal.toLocaleString()}EA</span></span>
-          <span>일반: <span className="font-semibold text-sky-600">{generalStockTotal.toLocaleString()}EA</span></span>
+          <span>쿠팡: <span className="font-semibold text-orange-600">{safeNumber(coupangStockTotal).toLocaleString()}EA</span></span>
+          <span>일반: <span className="font-semibold text-sky-600">{safeNumber(generalStockTotal).toLocaleString()}EA</span></span>
         </div>
-        {Object.keys(channelTotals).length > 0 && (
+        {Object.keys(channelTotals).length > 0 ? (
           <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 min-w-0">
             <div className="text-xs font-medium uppercase tracking-wider text-slate-500">채널별 재고</div>
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
-              {Object.entries(channelTotals)
+              {Object.entries(channelTotals ?? {})
                 .sort(([, a], [, b]) => b - a)
                 .map(([ch, qty]) => (
                   <div key={ch} className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
@@ -426,10 +438,14 @@ export function DashboardBoxHero() {
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${ch === WAREHOUSE_COUPANG ? "bg-orange-100 text-orange-700" : "bg-sky-100 text-sky-700"}`}>
                       {ch === WAREHOUSE_COUPANG ? "(쿠팡)" : "(일반)"}
                     </span>
-                    <span className="font-bold tabular-nums text-slate-800">{qty.toLocaleString()}EA</span>
+                    <span className="font-bold tabular-nums text-slate-800">{safeNumber(qty).toLocaleString()}EA</span>
                   </div>
                 ))}
             </div>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 min-w-0 text-sm text-slate-500">
+            채널별 재고 데이터 없음 (0)
           </div>
         )}
       </div>
@@ -532,41 +548,41 @@ export function DashboardBoxHero() {
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-card">
           <div className="text-xs font-medium uppercase tracking-wider text-slate-500">전체</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-slate-800 md:text-3xl">
-            {productsForDisplay.length.toLocaleString()}건
+            {safeNumber(productsForDisplay?.length).toLocaleString()}건
           </div>
         </div>
         <div className="rounded-2xl border-2 border-rose-300 bg-rose-50 p-5 shadow-card">
           <div className="text-xs font-medium uppercase tracking-wider text-rose-600">품절임박</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-rose-700 md:text-3xl">
-            {nearOutCount.toLocaleString()}건
+            {safeNumber(nearOutCount).toLocaleString()}건
           </div>
           <div className="mt-1 text-[10px] text-rose-600/90">3일 이내 재고 소진</div>
         </div>
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-card">
           <div className="text-xs font-medium uppercase tracking-wider text-amber-600">부족</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-amber-700 md:text-3xl">
-            {lowCount.toLocaleString()}건
+            {safeNumber(lowCount).toLocaleString()}건
           </div>
           <div className="mt-1 text-[10px] text-amber-600/90">14일 미만 보유</div>
         </div>
         <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5 shadow-card">
           <div className="text-xs font-medium uppercase tracking-wider text-violet-600">과재고</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-violet-700 md:text-3xl">
-            {overstockCount.toLocaleString()}건
+            {safeNumber(overstockCount).toLocaleString()}건
           </div>
           <div className="mt-1 text-[10px] text-violet-600/90">60일 이상 보유</div>
         </div>
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-card">
           <div className="text-xs font-medium uppercase tracking-wider text-emerald-600">정상</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-emerald-700 md:text-3xl">
-            {normalCount.toLocaleString()}건
+            {safeNumber(normalCount).toLocaleString()}건
           </div>
           <div className="mt-1 text-[10px] text-emerald-600/90">14~60일 보유</div>
         </div>
         <div className="rounded-2xl border border-red-200 bg-red-50 p-5 shadow-card">
           <div className="text-xs font-medium uppercase tracking-wider text-red-600">데이터 오류</div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-red-700 md:text-3xl">
-            {warningCount.toLocaleString()}건
+            {safeNumber(warningCount).toLocaleString()}건
           </div>
           <div className="mt-1 text-[10px] text-red-600/90">재고·정보 확인 필요</div>
         </div>
@@ -575,10 +591,10 @@ export function DashboardBoxHero() {
             오늘 입고/출고
           </div>
           <div className="mt-2 text-2xl font-bold tabular-nums text-emerald-700 md:text-3xl">
-            {todayInOutCount.inbound} / {todayInOutCount.outbound}건
+            {safeNumber(todayInOutCount?.inbound).toLocaleString()} / {safeNumber(todayInOutCount?.outbound).toLocaleString()}건
           </div>
         </div>
-        {momIndicators && (
+        {momIndicators ? (
           <>
             <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-5 shadow-card">
               <div className="text-xs font-medium uppercase tracking-wider text-indigo-600">
@@ -586,7 +602,7 @@ export function DashboardBoxHero() {
               </div>
               <div className="mt-2 flex items-baseline gap-2">
                 <span className="text-2xl font-bold tabular-nums text-indigo-700 md:text-3xl">
-                  {momIndicators.thisMonthOutbound.toLocaleString()}건
+                  {safeNumber(momIndicators?.thisMonthOutbound).toLocaleString()}건
                 </span>
                 {momIndicators.outbound != null && (
                   <span className={`text-sm font-medium ${momIndicators.outbound >= 0 ? "text-red-600" : "text-blue-600"}`}>
@@ -595,8 +611,8 @@ export function DashboardBoxHero() {
                 )}
               </div>
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-600">
-                <span>쿠팡: {(momIndicators.thisMonthOutboundCoupang ?? 0).toLocaleString()}EA</span>
-                <span>일반: {(momIndicators.thisMonthOutboundGeneral ?? 0).toLocaleString()}EA</span>
+                <span>쿠팡: {safeNumber(momIndicators?.thisMonthOutboundCoupang).toLocaleString()}EA</span>
+                <span>일반: {safeNumber(momIndicators?.thisMonthOutboundGeneral).toLocaleString()}EA</span>
               </div>
               <div className="mt-0.5 text-[10px] text-slate-500">전월 대비</div>
             </div>
@@ -606,7 +622,7 @@ export function DashboardBoxHero() {
               </div>
               <div className="mt-2 flex items-baseline gap-2">
                 <span className="text-2xl font-bold tabular-nums text-sky-700 md:text-3xl">
-                  {momIndicators.thisMonthInbound.toLocaleString()}EA
+                  {safeNumber(momIndicators?.thisMonthInbound).toLocaleString()}EA
                 </span>
                 {momIndicators.inbound != null && (
                   <span className={`text-sm font-medium ${momIndicators.inbound >= 0 ? "text-red-600" : "text-blue-600"}`}>
@@ -627,13 +643,17 @@ export function DashboardBoxHero() {
                     )
                       .sort(([, a], [, b]) => b - a)
                       .map(([ch, qty]) => (
-                        <span key={ch}>{ch}: {qty.toLocaleString()}EA</span>
+                        <span key={ch}>{ch}: {safeNumber(qty).toLocaleString()}EA</span>
                       ))
                   : <span>채널별 데이터 없음</span>}
               </div>
               <div className="mt-0.5 text-[10px] text-slate-500">입고처 → 판매채널(쿠팡/일반) 기준 · 전월 대비</div>
             </div>
           </>
+        ) : (
+          <div className="col-span-2 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-500 shadow-card">
+            월간 입출고 지표 데이터 없음
+          </div>
         )}
       </div>
 
@@ -648,11 +668,11 @@ export function DashboardBoxHero() {
           )}
         </div>
         <div className="mt-1 text-2xl font-bold tabular-nums text-slate-800 md:text-3xl">
-          {totalValue.toLocaleString()}원
+          {safeNumber(totalValue).toLocaleString()}원
         </div>
         {channel === "all" && valueVariance != null && lastMonthEndValue != null && lastMonthEndValue > 0 && (
           <div className="mt-1 text-xs text-slate-500">
-            전월 말 대비 {valueVariance >= 0 ? "+" : ""}{valueVariance.toLocaleString()}원
+            전월 말 대비 {valueVariance >= 0 ? "+" : ""}{safeNumber(valueVariance).toLocaleString()}원
             {valueVariance !== 0 && (
               <span className={`ml-1 ${valueVariance > 0 ? "text-emerald-600" : "text-red-600"}`}>
                 ({valueVariance > 0 ? "▲" : "▼"} {Math.abs(Math.round((valueVariance / lastMonthEndValue) * 100))}%)
@@ -801,6 +821,7 @@ function ProductCard({
   recommendedOrder?: number;
   aiShortfall?: number;
 }) {
+  const safeNumber = (value: unknown): number => Number(value ?? 0) || 0;
   const cfg = STATUS_CONFIG[status];
   const displayStock = Number.isFinite(stock) ? Math.floor(stock) : 0;
   const shortfall = safetyStock > 0 && displayStock < safetyStock
@@ -841,12 +862,12 @@ function ProductCard({
       <div className="mt-4 space-y-2">
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
           <span className="text-slate-500">재고</span>
-          <span className="font-semibold tabular-nums text-slate-800">{displayStock.toLocaleString()}개</span>
+          <span className="font-semibold tabular-nums text-slate-800">{safeNumber(displayStock).toLocaleString()}개</span>
           {boxCount != null && (
             <>
               <span className="text-slate-400">·</span>
               <span className="text-slate-500">박스</span>
-              <span className="font-medium tabular-nums text-slate-700">{boxCount.toLocaleString()}박스</span>
+              <span className="font-medium tabular-nums text-slate-700">{safeNumber(boxCount).toLocaleString()}박스</span>
             </>
           )}
           {daysOfStock != null && daysOfStock > 0 && (
@@ -871,7 +892,7 @@ function ProductCard({
                   )}
                 </span>
                 <span className="font-semibold tabular-nums text-red-600">
-                  {Math.ceil((aiShortfall != null && aiShortfall > 0 ? aiShortfall : shortfall) / (packSize || 1)).toLocaleString()}박스
+                  {safeNumber(Math.ceil((aiShortfall != null && aiShortfall > 0 ? aiShortfall : shortfall) / (packSize || 1))).toLocaleString()}박스
                 </span>
               </div>
             )}
@@ -881,7 +902,7 @@ function ProductCard({
                   권장 입고 수량
                 </span>
                 <span className={`font-bold tabular-nums ${needsAction ? "text-rose-700" : "text-indigo-700"}`}>
-                  {Math.ceil((recommendedOrder ?? 0) / (packSize || 1)).toLocaleString()}박스
+                  {safeNumber(Math.ceil((recommendedOrder ?? 0) / (packSize || 1))).toLocaleString()}박스
                 </span>
               </div>
             )}

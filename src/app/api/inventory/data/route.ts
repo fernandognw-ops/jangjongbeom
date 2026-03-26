@@ -51,7 +51,7 @@ function jwtPayload(token: string): Record<string, unknown> | null {
   try {
     const p = token.split(".")[1];
     if (!p) return null;
-    const norm = p.replace(/-/g, "+").replace(/_/g, "/");
+    const norm = String(p ?? "").replace(/-/g, "+").replace(/_/g, "/");
     const json = Buffer.from(norm, "base64").toString("utf8");
     return JSON.parse(json) as Record<string, unknown>;
   } catch {

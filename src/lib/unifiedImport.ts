@@ -15,7 +15,7 @@ export interface CsvImportTxDraft {
 
 // 품목구분 → 카테고리: 마스크, 캡슐세제, 섬유유연제, 액상세제, 생활용품
 export function mapGroupToItemId(group: string): ItemId {
-  const g = group.replace(/\s+/g, "").toLowerCase();
+  const g = String(group ?? "").replace(/\s+/g, "").toLowerCase();
   if (g.includes("마스크")) return "mask";
   if (g.includes("캡슐세제") || (g.includes("캡슐") && g.includes("세제"))) return "capsule";
   if (g.includes("섬유유연제") || g.includes("유연제")) return "fabric";
@@ -51,7 +51,7 @@ function findSheet(wb: XLSX.WorkBook, names: string[]): XLSX.WorkSheet | null {
   for (const name of names) {
     const exact = wb.Sheets[name];
     if (exact) return exact;
-    const found = sheetNames.find((s) => s.replace(/\s/g, "").includes(name.replace(/\s/g, "")));
+    const found = sheetNames.find((s) => String(s ?? "").replace(/\s/g, "").includes(String(name ?? "").replace(/\s/g, "")));
     if (found) return wb.Sheets[found];
   }
   return null;

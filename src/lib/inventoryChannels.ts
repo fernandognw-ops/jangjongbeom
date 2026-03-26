@@ -14,17 +14,34 @@ export type NormalizedWarehouse = typeof WAREHOUSE_GENERAL | typeof WAREHOUSE_CO
 /**
  * 엑셀·DB 값 → "쿠팡" | "일반" (대시보드·SQL·파서 공통)
  */
-export function normalizeSalesChannelKr(raw: unknown): "쿠팡" | "일반" {
+export function normalizeSalesChannelKr(
+  raw: unknown,
+  options?: { lenient?: boolean }
+): "쿠팡" | "일반" {
+  const lenient = options?.lenient === true;
   const valueRaw = String(raw ?? "").trim();
-  if (!valueRaw) return "일반";
-  const value = valueRaw.toLowerCase();
+  if (!valueRaw) {
+    if (lenient) {
+      console.warn("[normalizeSalesChannelKr] empty sales_channel → 일반 (lenient)");
+      return WAREHOUSE_GENERAL;
+    }
+    throw new Error("sales_channel 값이 비어 있습니다.");
+  }
+  const lower = valueRaw.toLowerCase();
 
-  // English/숫자/공백/부분포함까지 허용 (엑셀 원문값 기준)
-  if (value.includes("coupang") || valueRaw.includes("쿠팡")) return "쿠팡";
-  if (value.includes("general") || valueRaw.includes("일반")) return "일반";
+  // Excel 원문(KR) 우선
+  if (valueRaw === "쿠팡") return "쿠팡";
+  if (valueRaw === "일반") return "일반";
 
-  // 알 수 없는 값은 안전하게 일반으로 처리(기본), 대신 업로드 시엔 sales_channel raw 기반 로그를 확인
-  return "일반";
+  // DB/레거시 호환(영문 lower-case)
+  if (lower === "coupang") return "쿠팡";
+  if (lower === "general") return "일반";
+
+  if (lenient) {
+    console.warn(`[normalizeSalesChannelKr] invalid sales_channel → 일반 (lenient): ${valueRaw}`);
+    return WAREHOUSE_GENERAL;
+  }
+  throw new Error(`잘못된 sales_channel 값: ${valueRaw}`);
 }
 
 /** enum/json/object/number 등 → 비교용 문자열 (객체는 JSON.stringify) */
@@ -56,7 +73,7 @@ export function pickOutboundSalesChannelRawFromRow(row: Record<string, unknown>)
  */
 export function outboundChannelKrFromRow(row: Record<string, unknown>): NormalizedWarehouse {
   const picked = pickOutboundSalesChannelRawFromRow(row);
-  return normalizeSalesChannelKr(picked);
+  return normalizeSalesChannelKr(picked, { lenient: true });
 }
 
 /**

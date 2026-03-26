@@ -60,7 +60,7 @@ export function SyncSettings() {
       showMsg("err", "Supabase 설정이 필요합니다.");
       return;
     }
-    const code = inputCode.trim().toUpperCase().replace(/\s/g, "");
+    const code = String(inputCode ?? "").trim().toUpperCase().replace(/\s/g, "");
     if (code.length < 8) {
       showMsg("err", "연동코드는 8자 이상이어야 합니다.");
       return;

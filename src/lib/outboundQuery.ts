@@ -51,6 +51,7 @@ export async function fetchOutboundRowsUnified<T>(
   let pageIndex = 0;
   while (true) {
     if (pageIndex >= maxPages) {
+      console.error(`[fetchOutboundRowsUnified] max pages reached pageIndex=${pageIndex}, returning partial rows=${rows.length}`);
       opts.onPageDebug?.({
         table: "inventory_outbound",
         pageIndex,
@@ -62,7 +63,7 @@ export async function fetchOutboundRowsUnified<T>(
         breakReason: "max_pages_guard",
         error: null,
       });
-      throw new Error(`[fetchOutboundRowsUnified] max pages reached pageIndex=${pageIndex}`);
+      break;
     }
     const rangeStart = offset;
     const rangeEnd = offset + pageSize - 1;
@@ -75,6 +76,9 @@ export async function fetchOutboundRowsUnified<T>(
     if (opts.endDate) q = q.lt("outbound_date", opts.endDate);
     const { data, error } = await q.range(rangeStart, rangeEnd);
     if (error) {
+      console.error(
+        `[fetchOutboundRowsUnified] query failed page=${pageIndex} range=${rangeStart}-${rangeEnd} error=${error.message}`
+      );
       opts.onPageDebug?.({
         table: "inventory_outbound",
         pageIndex,
@@ -86,9 +90,7 @@ export async function fetchOutboundRowsUnified<T>(
         breakReason: "error",
         error: error.message,
       });
-      throw new Error(
-        `[fetchOutboundRowsUnified] query failed page=${pageIndex} range=${rangeStart}-${rangeEnd} error=${error.message}`
-      );
+      break;
     }
     const fetched = (data ?? []) as T[];
     rows.push(...fetched);

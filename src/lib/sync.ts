@@ -61,7 +61,7 @@ export async function fetchFromCloud(syncCode: string): Promise<SyncResult & { d
     const { data, error } = await supabase
       .from("inventory_sync")
       .select("data")
-      .eq("sync_code", syncCode.toUpperCase().replace(/\s/g, ""))
+      .eq("sync_code", String(syncCode ?? "").toUpperCase().replace(/\s/g, ""))
       .single();
 
     if (error) {
@@ -94,7 +94,7 @@ export async function pushToCloud(syncCode: string, jsonData: string): Promise<S
   const supabase = getSupabase();
   if (!supabase) return { ok: false, error: "Supabase가 설정되지 않았습니다." };
 
-  const code = syncCode.toUpperCase().replace(/\s/g, "");
+  const code = String(syncCode ?? "").toUpperCase().replace(/\s/g, "");
   if (!code || code.length < 8) return { ok: false, error: "연동코드는 8자 이상이어야 합니다." };
 
   try {

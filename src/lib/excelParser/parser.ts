@@ -46,10 +46,10 @@ function findCol(
   }
   for (let i = 0; i < row.length; i++) {
     const v = norm(String(row[i] ?? ""));
-    if (excl.size > 0 && [...excl].some((ex) => v.includes(ex))) continue;
+    if (excl.size > 0 && excl.has(v)) continue;
     for (const n of names) {
       const nv = norm(n);
-      if (nv.includes(v) || v.includes(nv)) return i;
+      if (nv === v) return i;
     }
   }
   return -1;
@@ -60,10 +60,10 @@ function findQtyCol(row: Row): number {
   const excl = new Set(QTY_EXCLUDE.map(norm));
   for (let i = 0; i < row.length; i++) {
     const v = norm(String(row[i] ?? ""));
-    if ([...excl].some((ex) => v.includes(ex))) continue;
+    if (excl.has(v)) continue;
     for (const n of names) {
       const nv = norm(n);
-      if (nv.includes(v) || v.includes(nv)) return i;
+      if (nv === v) return i;
     }
   }
   return -1;
@@ -153,28 +153,17 @@ function isInvalidTotalHeader(header: string): boolean {
  * - 우선순위: 합계* > 총금액/출고금액/판매금액 > 기타 후보
  */
 function findOutboundTotalAmountColumnIndex(headerRow: Row): { index: number; headerLabel: string } {
-  const candidates = SYNONYMS.total_price_outbound ?? [];
-  const prio1 = [norm("합계")];
-  const prio2 = [norm("총금액"), norm("출고금액"), norm("판매금액"), norm("공급가액"), norm("결제금액")];
-  const scored: Array<{ i: number; raw: string; score: number }> = [];
+  const candidates = (SYNONYMS.total_price_outbound ?? []).map((c) => norm(c));
   for (let i = 0; i < headerRow.length; i++) {
     const raw = String(headerRow[i] ?? "").trim();
     const n = norm(raw);
     if (!n) continue;
     if (isInvalidTotalHeader(raw)) continue;
-    const matched = candidates.some((c) => {
-      const cn = norm(c);
-      return cn.includes(n) || n.includes(cn);
-    });
-    if (!matched) continue;
-    let score = 1;
-    if (prio2.some((k) => n.includes(k))) score = 2;
-    if (prio1.some((k) => n.includes(k))) score = 3;
-    scored.push({ i, raw, score });
+    if (candidates.includes(n)) {
+      return { index: i, headerLabel: raw };
+    }
   }
-  if (scored.length === 0) return { index: -1, headerLabel: "" };
-  scored.sort((a, b) => b.score - a.score || a.i - b.i);
-  return { index: scored[0].i, headerLabel: scored[0].raw };
+  return { index: -1, headerLabel: "" };
 }
 
 function parseDate(
@@ -185,8 +174,8 @@ function parseDate(
   if (val == null) return fallback;
   if (typeof val === "object" && "getFullYear" in val) {
     const d = val as Date;
-    let y = d.getFullYear();
-    if (y < 2000 || y > 2030) y = year;
+    const y = d.getFullYear();
+    if (y < 2000 || y > 2030) return fallback;
     const ymd = toYmd(d);
     if (!ymd) return fallback;
     const [, mo, day] = ymd.split("-");
@@ -196,14 +185,14 @@ function parseDate(
     try {
       const parsed = XLSX.SSF?.parse_date_code?.(val);
       if (parsed?.y && parsed?.m && parsed?.d) {
-        let y = parsed.y;
-        if (y < 2000 || y > 2030) y = year;
+        const y = parsed.y;
+        if (y < 2000 || y > 2030) return fallback;
         return `${y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`;
       }
       const excelEpoch = new Date(1899, 11, 30);
       const jsDate = new Date(excelEpoch.getTime() + val * 86400 * 1000);
-      let y = jsDate.getFullYear();
-      if (y < 2000 || y > 2030) y = year;
+      const y = jsDate.getFullYear();
+      if (y < 2000 || y > 2030) return fallback;
       const ymd = toYmd(jsDate);
       if (!ymd) return fallback;
       const [, mo, day] = ymd.split("-");
@@ -214,13 +203,16 @@ function parseDate(
   }
   const s = String(val).trim();
   if (!s) return fallback;
+  // month-only 문자열은 엄격하게 실패(날짜 기본값 주입 금지)
+  if (/^(\d{4})[-_.](\d{2})$/.test(s)) return fallback;
   if (s.length >= 10 && s[4] === "-" && s[7] === "-") return s.slice(0, 10);
   const m = s.match(/^(\d{2,4})년?\s*(\d{2})\.?(\d{2})?/);
   if (m) {
-    let y = parseInt(m[1], 10);
-    if (y < 100) y += y < 50 ? 2000 : 1900;
+    if (m[1].length !== 4) return fallback; // 연도 기본값 대체 금지
+    const y = parseInt(m[1], 10);
     const mo = parseInt(m[2], 10);
-    const d = m[3] ? parseInt(m[3], 10) : 1;
+    if (!m[3]) return fallback; // 일 기본값 대체 금지
+    const d = parseInt(m[3], 10);
     return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   }
   try {
@@ -391,51 +383,47 @@ export function parseInboundSheet(
   filename?: string,
   sheetName = "입고"
 ): InboundRow[] {
-  if (data.length <= HEADER_ROW) return [];
+  if (data.length <= HEADER_ROW) throw new Error("[parseInboundSheet] 입고 시트에 헤더 행이 없습니다.");
   const headerRow = data[HEADER_ROW] ?? [];
-  const idxCode = findCol(headerRow, "product_code");
-  const idxName = findCol(headerRow, "product_name");
-  const idxQty = findQtyCol(headerRow);
-  const idxCenter = findCol(headerRow, "inbound_center");
-  const idxSalesCh =
-    findCol(headerRow, "inbound_sales_channel") >= 0
-      ? findCol(headerRow, "inbound_sales_channel")
-      : findCol(headerRow, "stock_sales_channel");
-  const idxDate = findCol(headerRow, "inbound_date");
-  const idxCat = findCol(headerRow, "category");
-  const idxPack = findCol(headerRow, "pack_size");
-  const idxUnit = findCol(headerRow, "unit_price");
-  const idxTotal = findCol(headerRow, "total_price_inbound");
+  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
+  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
+  const idxQty = headerRow.findIndex((h) => String(h ?? "").trim() === "수량");
+  const idxDate = headerRow.findIndex((h) => String(h ?? "").trim() === "입고일자");
+  const idxSalesCh = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널");
+  const idxCenter = headerRow.findIndex((h) => String(h ?? "").trim() === "입고 센터"); // optional
 
-  if (idxCode < 0 || idxQty < 0 || idxDate < 0) return [];
+  if (idxCode < 0) throw new Error(`[parseInboundSheet] 입고 시트: '품목코드' 헤더 없음`);
+  if (idxName < 0) throw new Error(`[parseInboundSheet] 입고 시트: '품목명' 헤더 없음`);
+  if (idxQty < 0) throw new Error(`[parseInboundSheet] 입고 시트: '수량' 헤더 없음`);
+  if (idxDate < 0) throw new Error(`[parseInboundSheet] 입고 시트: '입고일자' 헤더 없음`);
+  if (idxSalesCh < 0) throw new Error(`[parseInboundSheet] 입고 시트: '판매 채널' 헤더 없음`);
 
   const year = yearFromFilename(filename);
-  const today = new Date().toISOString().slice(0, 10);
   const rows: InboundRow[] = [];
 
   for (let i = DATA_START_ROW; i < data.length; i++) {
     const row = (data[i] ?? []) as Row;
     const code = String(row[idxCode] ?? "").trim();
+    const name = String(row[idxName] ?? "").trim();
     const qty = safeInt(row[idxQty]);
     const dateVal = row[idxDate];
-    const dateStr = parseDate(dateVal, year, today);
-    if (!validProductCode(code) || qty <= 0 || !dateStr) continue;
-
-    const name =
-      idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
+    const dateStr = parseDate(dateVal, year, null);
+    const salesRaw = String(row[idxSalesCh] ?? "").trim();
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
-    const salesRaw = idxSalesCh >= 0 ? String(row[idxSalesCh] ?? "").trim() : "";
-    const channelKr = normalizeSalesChannelKr(salesRaw);
-    const sales_channel: "coupang" | "general" =
-      channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
-    const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
-    const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
-    const unit = idxUnit >= 0 ? safeFloat(row[idxUnit]) : 0;
-    const total = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
+
+    if (!code || code.toLowerCase() === "nan") throw new Error(`[parseInboundSheet] 입고 시트: 품목코드 비어있음 (row=${i})`);
+    if (!name || name.toLowerCase() === "nan") throw new Error(`[parseInboundSheet] 입고 시트: 품목명 비어있음 (row=${i})`);
+    if (code.includes("합계") || code.includes("소계")) throw new Error(`[parseInboundSheet] 입고 시트: 품목코드가 합계/소계로 보입니다 (row=${i}, code=${code})`);
+    if (qty <= 0) throw new Error(`[parseInboundSheet] 입고 시트: 수량 <= 0 (row=${i}, qty=${qty})`);
+    if (!dateStr) throw new Error(`[parseInboundSheet] 입고 시트: 입고일자 비어있거나 형식 오류 (row=${i})`);
+    if (salesRaw !== "쿠팡" && salesRaw !== "일반") throw new Error(`[parseInboundSheet] 입고 시트: 판매 채널 값 오류 (row=${i}, value=${salesRaw})`);
+
+    const channelKr: NormalizedWarehouse = salesRaw === "쿠팡" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL;
+    const sales_channel: "coupang" | "general" = salesRaw === "쿠팡" ? "coupang" : "general";
 
     rows.push({
       product_code: code,
-      product_name: name || code,
+      product_name: name,
       quantity: qty,
       inbound_center: centerRaw,
       inbound_date: dateStr,
@@ -443,10 +431,6 @@ export function parseInboundSheet(
       sales_channel,
       channel: channelKr,
       event_type: "inbound",
-      category: cat || "기타",
-      pack_size: pack > 0 ? pack : 1,
-      unit_price: unit,
-      total_price: total,
     });
   }
   return rows;
@@ -513,14 +497,15 @@ export function parseOutboundSheet(
   });
 
   if (data.length <= HEADER_ROW) {
-    return { rows: [], dateDiagnostics: emptyDiag() };
+    throw new Error("[parseOutboundSheet] 출고 시트에 헤더 행이 없습니다.");
   }
   const headerRow = data[HEADER_ROW] ?? [];
-  const idxCode = findCol(headerRow, "product_code");
-  const idxName = findCol(headerRow, "product_name");
-  const idxQty = findQtyCol(headerRow);
-  const idxCenter = findCol(headerRow, "outbound_center");
-  const { index: idxDate, headerLabel: outboundDateHeader } = findOutboundDateColumnIndex(headerRow);
+  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
+  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
+  const idxQty = headerRow.findIndex((h) => String(h ?? "").trim() === "수량");
+  const idxCenter = headerRow.findIndex((h) => String(h ?? "").trim() === "출고 센터"); // optional
+  const idxDate = headerRow.findIndex((h) => String(h ?? "").trim() === "출고일자");
+  const outboundDateHeader = idxDate >= 0 ? String(headerRow[idxDate] ?? "").trim() : "";
   // outboud_sales_channel(엑셀 \"판매 채널\")는 유사매칭 금지: 헤더가 정확히 \"판매 채널\"인 컬럼만 사용
   const idxSc = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널");
   if (idxSc === -1) throw new Error("출고 시트에서 '판매 채널' 컬럼을 찾지 못함");
@@ -532,32 +517,12 @@ export function parseOutboundSheet(
   const idxUnit = findCol(headerRow, "unit_price");
   const { index: idxTotal, headerLabel: outboundTotalAmountHeader } = findOutboundTotalAmountColumnIndex(headerRow);
 
-  if (idxCode < 0 || idxQty < 0 || idxDate < 0) {
-    return {
-      rows: [],
-      dateDiagnostics: {
-        outboundDateColumnIndex: idxDate,
-        outboundDateColumnHeader: outboundDateHeader,
-        outboundDateColumnFound: idxDate >= 0,
-        outboundSalesChannelColumnIndex: idxSc,
-        outboundSalesChannelColumnHeader: outboundSalesChannelHeader,
-        outboundSalesChannelColumnFound: idxSc >= 0,
-        outboundTotalAmountColumnIndex: idxTotal,
-        outboundTotalAmountColumnHeader: outboundTotalAmountHeader,
-        outboundTotalAmountColumnFound: idxTotal >= 0,
-        outboundHeaderRowRaw,
-        outboundHeaderRowNormalized,
-        outboundSalesChannelDistinctRaw: [],
-        outboundSalesChannelDistinctTrimmed: [],
-        outboundSalesChannelSamples: [],
-        outboundTotalAmountSamples: [],
-        samples: [],
-      },
-    };
-  }
+  if (idxCode < 0) throw new Error("출고 시트: '품목코드' 헤더 없음");
+  if (idxName < 0) throw new Error("출고 시트: '품목명' 헤더 없음");
+  if (idxQty < 0) throw new Error("출고 시트: '수량' 헤더 없음");
+  if (idxDate < 0) throw new Error("출고 시트: '출고일자' 헤더 없음");
 
   const year = yearFromFilename(filename);
-  const today = new Date().toISOString().slice(0, 10);
   const rows: OutboundRow[] = [];
   const samples: OutboundSheetDateDiagnostics["samples"] = [];
   const maxSamples = 5;
@@ -572,8 +537,16 @@ export function parseOutboundSheet(
     const code = String(row[idxCode] ?? "").trim();
     const qty = safeInt(row[idxQty]);
     const dateVal = row[idxDate];
-    const outbound_date = parseDate(dateVal, year, today);
-    if (!validProductCode(code) || qty <= 0 || !outbound_date) continue;
+    const outbound_date = parseDate(dateVal, year, null);
+    const name = String(row[idxName] ?? "").trim();
+    const salesRawCell = String(row[idxSc] ?? "").trim();
+
+    if (!code || code.toLowerCase() === "nan") throw new Error(`출고 시트: 품목코드 비어있음 (row=${i})`);
+    if (!name || name.toLowerCase() === "nan") throw new Error(`출고 시트: 품목명 비어있음 (row=${i})`);
+    if (qty <= 0) throw new Error(`출고 시트: 수량 <= 0 (row=${i}, qty=${qty})`);
+    if (!outbound_date) throw new Error(`출고 시트: 출고일자 비어있거나 형식 오류 (row=${i})`);
+    if (salesRawCell !== "쿠팡" && salesRawCell !== "일반")
+      throw new Error(`출고 시트: 판매 채널 값 오류 (row=${i}, value=${salesRawCell})`);
 
     if (samples.length < maxSamples) {
       samples.push({
@@ -583,7 +556,6 @@ export function parseOutboundSheet(
       });
     }
 
-    const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
     const centerRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
     const scRawBeforeTrim = String(row[idxSc] ?? "");
     const scRaw = scRawBeforeTrim.trim();
@@ -607,11 +579,16 @@ export function parseOutboundSheet(
       });
     }
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
-    const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
+    const pack = idxPack >= 0 ? safeInt(row[idxPack]) : undefined;
     const unit = idxUnit >= 0 ? safeFloat(row[idxUnit]) : 0;
     const totalRaw = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
     const invalidBySanity = unit > 0 && totalRaw > 0 && totalRaw < unit * 1.2;
-    const total = invalidBySanity ? 0 : totalRaw;
+    if (invalidBySanity) {
+      throw new Error(
+        `[parseOutboundSheet] 출고 합계 금액이 단가와 불일치해 형식 검증 실패 (row=${i}, unit=${unit}, total=${totalRaw})`
+      );
+    }
+    const total = totalRaw;
     if (outboundTotalAmountSamples.length < maxChannelSamples) {
       outboundTotalAmountSamples.push({
         rowIndex: i,
@@ -623,7 +600,7 @@ export function parseOutboundSheet(
 
     rows.push({
       product_code: code,
-      product_name: name || code,
+      product_name: name,
       quantity: qty,
       outbound_center: centerRaw,
       outbound_date,
@@ -632,11 +609,11 @@ export function parseOutboundSheet(
       channel,
       event_type: "outbound",
       // 출고는 의미 분리: sales_channel=판매채널, dest_warehouse=출고센터
-      dest_warehouse: centerRaw || "미지정",
-      category: cat || "기타",
-      pack_size: pack > 0 ? pack : 1,
-      unit_price: unit,
-      total_price: total,
+      dest_warehouse: centerRaw || undefined,
+      category: cat || undefined,
+      pack_size: idxPack >= 0 && pack && pack > 0 ? pack : undefined,
+      unit_price: idxUnit >= 0 ? unit : undefined,
+      total_price: idxTotal >= 0 ? total : undefined,
     });
   }
 
@@ -724,35 +701,33 @@ export function parseStockSheet(
   });
 
   if (data.length <= HEADER_ROW) {
-    const y = yearFromFilename(filename);
-    const today = new Date().toISOString().slice(0, 10);
-    const fn = defaultDateFromFilename(filename);
-    return { rows: [], dateDiagnostics: emptyDiag(fn ?? today, fn, y) };
+    throw new Error("[parseStockSheet] 재고 시트에 헤더 행이 없습니다.");
   }
   const headerRow = data[HEADER_ROW] ?? [];
-  const idxCode = findCol(headerRow, "product_code");
-  const idxName = findCol(headerRow, "product_name");
-  const idxQty = findQtyCol(headerRow);
-  const idxCenter = findCol(headerRow, "storage_center") >= 0
-  ? findCol(headerRow, "storage_center")
-  : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("보관 센터"));
-  const idxSalesCh = findCol(headerRow, "stock_sales_channel") >= 0
-  ? findCol(headerRow, "stock_sales_channel")
-  : headerRow.findIndex((v) => norm(String(v ?? "")) === norm("판매 채널"));
-  const { index: idxDate, headerLabel: stockDateHeaderLabel } = findStockDateColumnIndex(headerRow);
+  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
+  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
+  const idxQty = headerRow.findIndex((h) => String(h ?? "").trim() === "수량");
+  const idxCenter = headerRow.findIndex((h) => String(h ?? "").trim() === "보관 센터"); // optional
+  const idxSalesCh = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널"); // required
+  const idxDate = headerRow.findIndex((h) => String(h ?? "").trim() === "기준일자"); // required
+  const stockDateHeaderLabel = idxDate >= 0 ? String(headerRow[idxDate] ?? "").trim() : "";
+
   const idxCost = findCol(headerRow, "unit_cost");
   const idxTotal = findCol(headerRow, "total_price");
   const idxCat = findCol(headerRow, "category");
-  const idxPack = findCol(headerRow, "pack_size"); 
+  const idxPack = findCol(headerRow, "pack_size");
+
   const year = yearFromFilename(filename);
   const today = new Date().toISOString().slice(0, 10);
   const filenameDay = defaultDateFromFilename(filename);
-  /** 기준일 셀 공란 시: 파일명 날짜 → 오늘 */
+  // 진단용(실제 파싱 보정엔 사용하지 않음)
   const fileDefaultDate = filenameDay ?? today;
 
-  if (idxCode < 0 || idxQty < 0) {
-    return { rows: [], dateDiagnostics: emptyDiag(fileDefaultDate, filenameDay, year) };
-  }
+  if (idxCode < 0) throw new Error("[parseStockSheet] 재고 시트: '품목코드' 헤더 없음");
+  if (idxName < 0) throw new Error("[parseStockSheet] 재고 시트: '품목명' 헤더 없음");
+  if (idxQty < 0) throw new Error("[parseStockSheet] 재고 시트: '수량' 헤더 없음");
+  if (idxSalesCh < 0) throw new Error("[parseStockSheet] 재고 시트: '판매 채널' 헤더 없음");
+  if (idxDate < 0) throw new Error("[parseStockSheet] 재고 시트: '기준일자' 헤더 없음");
 
   const rows: StockRow[] = [];
   const samples: StockSheetDateDiagnostics["samples"] = [];
@@ -761,38 +736,51 @@ export function parseStockSheet(
   for (let i = DATA_START_ROW; i < data.length; i++) {
     const row = (data[i] ?? []) as Row;
     const code = String(row[idxCode] ?? "").trim();
-    if (!validProductCode(code)) continue;
+    if (!code || code.toLowerCase() === "nan") {
+      throw new Error(`[parseStockSheet] 재고 시트: 품목코드 비어있음 (row=${i})`);
+    }
 
     const qty = safeInt(row[idxQty]);
+    if (qty < 0) throw new Error(`[parseStockSheet] 재고 시트: 수량 < 0 (row=${i}, qty=${qty})`);
     const name = idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
+    if (!name || name.toLowerCase() === "nan") {
+      throw new Error(`[parseStockSheet] 재고 시트: 품목명 비어있음 (row=${i})`);
+    }
     const storageRaw = idxCenter >= 0 ? String(row[idxCenter] ?? "").trim() : "";
     const salesChannelRaw = idxSalesCh >= 0 ? String(row[idxSalesCh] ?? "").trim() : "";
-    const channelKr = normalizeSalesChannelKr(salesChannelRaw || "");
+    if (salesChannelRaw !== "쿠팡" && salesChannelRaw !== "일반") {
+      throw new Error(`[parseStockSheet] 재고 시트: 판매 채널 값 오류 (row=${i}, value=${salesChannelRaw})`);
+    }
     const sales_channel: "coupang" | "general" =
-      channelKr === WAREHOUSE_COUPANG ? "coupang" : "general";
+      salesChannelRaw === "쿠팡" ? "coupang" : "general";
+    const channelKr: NormalizedWarehouse =
+      salesChannelRaw === "쿠팡" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL;
     const dateVal = idxDate >= 0 ? row[idxDate] : undefined;
-    const dateStr = parseDate(dateVal, year, fileDefaultDate);
-    const finalSnap = (dateStr ?? fileDefaultDate).slice(0, 10);
+    const dateStr = parseDate(dateVal, year, null);
+    if (!dateStr) {
+      throw new Error(`[parseStockSheet] 재고 시트: 기준일자 비어있거나 형식 오류 (row=${i})`);
+    }
+    const finalSnap = dateStr.slice(0, 10);
     const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
     const total = idxTotal >= 0 ? safeFloat(row[idxTotal]) : 0;
     const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
-    const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
+    const pack = idxPack >= 0 ? safeInt(row[idxPack]) : undefined;
 
     if (samples.length < maxSamples) {
       samples.push({
         rowIndex: i,
         rawCell: dateVal,
-        parsedDate: dateStr ?? fileDefaultDate,
+        parsedDate: dateStr,
         finalSnapshotDate: finalSnap,
       });
     }
 
     rows.push({
       product_code: code,
-      product_name: name || code,
+      product_name: name,
       quantity: qty,
       storage_center: storageRaw,
-      stock_date: dateStr ?? fileDefaultDate,
+      stock_date: dateStr,
       warehouse_group: channelKr,
       event_type: "stock",
       sales_channel,
@@ -800,8 +788,8 @@ export function parseStockSheet(
       unit_cost: cost,
       total_price: total > 0 ? total : 0,
       snapshot_date: finalSnap,
-      category: cat || "기타",
-      pack_size: pack > 0 ? pack : 1,
+      category: cat || undefined,
+      pack_size: typeof pack === "number" && pack > 0 ? pack : undefined,
     });
   }
 
@@ -854,40 +842,67 @@ export function parseRawdataSheet(
   data: unknown[][],
   filename?: string
 ): RawdataRow[] {
-  const hr = findHeaderRowRawdata(data);
-  if (hr < 0) return [];
+  if (data.length <= HEADER_ROW) {
+    throw new Error("[parseRawdataSheet] rawdata 시트에 헤더 행이 없습니다.");
+  }
 
-  const headerRow = (data[hr] ?? []) as Row;
-  const idxCode = findCol(headerRow, "product_code");
-  const idxName = findCol(headerRow, "product_name");
-  const idxCost = findCol(headerRow, "unit_cost");
-  const idxCat = findCol(headerRow, "category");
-  const idxPack = findCol(headerRow, "pack_size");
+  const requiredHeaders = ["품목코드", "품목명", "원가"];
+  let headerIndex = -1;
+  let headerRow: Row = [];
+  for (let r = 0; r < Math.min(10, data.length); r++) {
+    const candidate = (data[r] ?? []) as Row;
+    const hasAll = requiredHeaders.every((want) =>
+      candidate.some((c) => String(c ?? "").trim() === want)
+    );
+    if (hasAll) {
+      headerIndex = r;
+      headerRow = candidate;
+      break;
+    }
+  }
+  if (headerIndex < 0) {
+    throw new Error("[parseRawdataSheet] rawdata 시트에서 필수 헤더(품목코드/품목명/원가)를 찾지 못했습니다.");
+  }
 
-  if (idxCode < 0) return [];
+  const idxCode = headerRow.findIndex((h) => String(h ?? "").trim() === "품목코드");
+  const idxName = headerRow.findIndex((h) => String(h ?? "").trim() === "품목명");
+  const idxCost = headerRow.findIndex((h) => String(h ?? "").trim() === "원가");
+  if (idxCode < 0 || idxName < 0 || idxCost < 0) {
+    throw new Error("[parseRawdataSheet] rawdata 시트 필수 헤더 인덱스 계산 실패");
+  }
 
   const rows: RawdataRow[] = [];
-  for (let i = hr + 1; i < data.length; i++) {
+  for (let i = headerIndex + 1; i < data.length; i++) {
     const row = (data[i] ?? []) as Row;
     const code = String(row[idxCode] ?? "").trim();
-    if (!code || code.toLowerCase() === "nan") continue;
-    const digits = (code.match(/\d/g) ?? []).length;
-    if (code.length < 5 || digits < code.length * 0.5) continue;
+    const name = String(row[idxName] ?? "").trim();
+    const costRaw = String(row[idxCost] ?? "").trim();
 
-    const name =
-      idxName >= 0 ? String(row[idxName] ?? "").trim() : "";
-    const cost = idxCost >= 0 ? safeFloat(row[idxCost]) : 0;
-    const cat = idxCat >= 0 ? String(row[idxCat] ?? "").trim() : "";
-    const pack = idxPack >= 0 ? safeInt(row[idxPack]) : 1;
+    if (!code || code.toLowerCase() === "nan") {
+      throw new Error(`[parseRawdataSheet] rawdata 시트: 품목코드 비어있음 (row=${i})`);
+    }
+    if (!name || name.toLowerCase() === "nan") {
+      throw new Error(`[parseRawdataSheet] rawdata 시트: 품목명 비어있음 (row=${i})`);
+    }
+    if (!costRaw || costRaw.toLowerCase() === "nan") {
+      throw new Error(`[parseRawdataSheet] rawdata 시트: 원가 비어있음 (row=${i})`);
+    }
+
+    const cost = parseFloat(String(costRaw ?? "").replace(/,/g, ""));
+    if (!Number.isFinite(cost)) {
+      throw new Error(`[parseRawdataSheet] rawdata 시트: 원가 숫자 형식 오류 (row=${i}, value=${costRaw})`);
+    }
+    if (cost < 0) {
+      throw new Error(`[parseRawdataSheet] rawdata 시트: 원가 0 미만 (row=${i}, value=${cost})`);
+    }
 
     rows.push({
       product_code: code,
-      product_name: name || code,
-      unit_cost: cost || 0,
-      category: cat || "기타",
-      pack_size: pack > 0 ? pack : 1,
+      product_name: name,
+      unit_cost: cost,
     });
   }
+
   return rows;
 }
 
@@ -895,8 +910,8 @@ export interface RawdataRow {
   product_code: string;
   product_name: string;
   unit_cost: number;
-  category: string;
-  pack_size: number;
+  category?: string;
+  pack_size?: number;
 }
 
 /** 재고 시트 헤더(2행)만 보고 「판매 채널」열 인식 여부 — DB NULL 원인 진단용 */
@@ -905,7 +920,7 @@ export function inspectStockSheetHeaders(data: unknown[][]): { salesChannelColum
     return { salesChannelColumnFound: false, salesChannelColumnIndex: -1 };
   }
   const headerRow = (data[HEADER_ROW] ?? []) as Row;
-  const idx = findCol(headerRow, "stock_sales_channel");
+  const idx = headerRow.findIndex((h) => String(h ?? "").trim() === "판매 채널");
   return { salesChannelColumnFound: idx >= 0, salesChannelColumnIndex: idx };
 }
 
@@ -942,7 +957,7 @@ export function parseExcelFromBuffer(
   const sheetNames = wb.SheetNames ?? [];
 
   const hasSheet = (name: string) =>
-    sheetNames.some((s) => norm(s) === norm(name) || norm(s).includes(norm(name)));
+    sheetNames.some((s) => norm(s) === norm(name));
 
   const missing: string[] = [];
   for (const name of ["입고", "출고", "재고"]) {
@@ -958,7 +973,7 @@ export function parseExcelFromBuffer(
 
   const getSheetData = (name: string): unknown[][] => {
     const found = sheetNames.find(
-      (s) => norm(s) === norm(name) || norm(s).includes(norm(name))
+      (s) => norm(s) === norm(name)
     );
     if (!found || !wb.Sheets[found]) return [];
     const sheet = wb.Sheets[found];
@@ -971,44 +986,49 @@ export function parseExcelFromBuffer(
   const findRawdataSheet = (): string | null => {
     const candidates = ["rawdata", "제품현황_일반", "제품현황_상세", "제품현황", "품절관리_일반", "품절관리"];
     for (const want of candidates) {
-      const found = sheetNames.find(
-        (s) => norm(s).includes(norm(want)) || (want === "rawdata" && norm(s).includes("raw") && norm(s).includes("data"))
-      );
+      const found = sheetNames.find((s) => norm(s) === norm(want));
       if (found) return found;
     }
     return null;
   };
 
-  const inboundData = getSheetData("입고");
-  const outboundData = getSheetData("출고");
-  const stockData = getSheetData("재고");
+  try {
+    const inboundData = getSheetData("입고");
+    const outboundData = getSheetData("출고");
+    const stockData = getSheetData("재고");
 
-  const inbound = parseInboundSheet(inboundData, filename);
-  const { rows: outbound, dateDiagnostics: outboundDateDiagnostics } = parseOutboundSheet(outboundData, filename);
-  const { rows: stock, dateDiagnostics: stockDateDiagnostics } = parseStockSheet(stockData, filename);
-  const stockSheetDiagnostics = inspectStockSheetHeaders(stockData);
-  const outboundRawRowCount = Math.max(0, outboundData.length - DATA_START_ROW);
+    const inbound = parseInboundSheet(inboundData, filename);
+    const { rows: outbound, dateDiagnostics: outboundDateDiagnostics } = parseOutboundSheet(outboundData, filename);
+    const { rows: stock, dateDiagnostics: stockDateDiagnostics } = parseStockSheet(stockData, filename);
+    const stockSheetDiagnostics = inspectStockSheetHeaders(stockData);
+    const outboundRawRowCount = Math.max(0, outboundData.length - DATA_START_ROW);
 
-  let rawdata: RawdataRow[] = [];
-  const rawdataSheetName = findRawdataSheet();
-  if (rawdataSheetName && wb.Sheets[rawdataSheetName]) {
-    const rawdataData = XLSX.utils.sheet_to_json(wb.Sheets[rawdataSheetName], {
-      header: 1,
-      defval: "",
-    }) as unknown[][];
-    rawdata = parseRawdataSheet(rawdataData ?? [], filename);
+    let rawdata: RawdataRow[] = [];
+    const rawdataSheetName = findRawdataSheet();
+    if (rawdataSheetName && wb.Sheets[rawdataSheetName]) {
+      const rawdataData = XLSX.utils.sheet_to_json(wb.Sheets[rawdataSheetName], {
+        header: 1,
+        defval: "",
+      }) as unknown[][];
+      rawdata = parseRawdataSheet(rawdataData ?? [], filename);
+    }
+
+    return {
+      ok: true,
+      inbound,
+      outbound,
+      stock,
+      rawdata,
+      sheetNames,
+      outboundRawRowCount,
+      stockSheetDiagnostics,
+      stockDateDiagnostics,
+      outboundDateDiagnostics,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+    };
   }
-
-  return {
-    ok: true,
-    inbound,
-    outbound,
-    stock,
-    rawdata,
-    sheetNames,
-    outboundRawRowCount,
-    stockSheetDiagnostics,
-    stockDateDiagnostics,
-    outboundDateDiagnostics,
-  };
 }

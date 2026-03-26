@@ -69,7 +69,6 @@ export interface CategoryTrendData {
   monthlyTotals?: Record<string, {
     outbound: number;
     inbound: number;
-    outboundValue?: number;
     inboundValue?: number;
     outboundValueCoupang?: number;
     outboundValueGeneral?: number;
@@ -124,6 +123,19 @@ export function CategoryTrendChart() {
   const [showMovingAvg, setShowMovingAvg] = useState(false);
   const [showNaverSearch, setShowNaverSearch] = useState(true);
   const [focusedActionCategory, setFocusedActionCategory] = useState<string | null>(null);
+  const safeNumber = (value: unknown): number => Number(value ?? 0) || 0;
+  const renderData = {
+    contextCategoryTrend,
+    categoryForecastThisMonth,
+    inventoryProducts,
+    inventoryOutbound,
+    stockByProduct,
+    dailyVelocityByProduct,
+    safetyStockByProduct,
+    isSupabaseLoading,
+    categoryTrendLoaded,
+  };
+  console.log("RENDER STEP", renderData);
 
   useEffect(() => {
     if (contextCategoryTrend) {
@@ -168,12 +180,14 @@ export function CategoryTrendChart() {
   };
 
   const filteredMonths = useMemo(() => {
+    console.log("MEMO DATA", data);
     if (!data?.months) return [];
     if (yearFilter === "all") return data.months;
     return data.months.filter((m) => m.startsWith(yearFilter));
   }, [data?.months, yearFilter]);
 
   const yearOptions = useMemo(() => {
+    console.log("MEMO DATA", data);
     const ys = new Set<string>();
     for (const m of data?.months ?? []) {
       const y = String(m).slice(0, 4);
@@ -188,6 +202,7 @@ export function CategoryTrendChart() {
    * (API `data`는 불변이라 `data.push` 금지).
    */
   const channelSalesBarData = useMemo((): ChannelSalesBarRow[] => {
+    console.log("MEMO DATA", data);
     if (!data?.monthlyTotals) return [];
     const monthsToUse =
       yearFilter === "all"
@@ -213,10 +228,11 @@ export function CategoryTrendChart() {
   }, [data?.monthlyTotals, data?.months, yearFilter]);
 
   const channelSalesKpis = useMemo(() => {
+    console.log("MEMO DATA", data);
     const totalSales = channelSalesBarData.reduce((s, r) => s + r.total, 0);
     const coupangTotal = channelSalesBarData.reduce((s, r) => s + r.쿠팡, 0);
     const generalTotal = channelSalesBarData.reduce((s, r) => s + r.일반, 0);
-    const cnt = channelSalesBarData.length || 1;
+    const cnt = (channelSalesBarData ?? []).length || 1;
     return {
       totalSales,
       coupangTotal,
@@ -225,7 +241,7 @@ export function CategoryTrendChart() {
       generalAvg: Math.round(generalTotal / cnt),
       coupangShare: totalSales > 0 ? Math.round((coupangTotal / totalSales) * 100) : 0,
       generalShare: totalSales > 0 ? Math.round((generalTotal / totalSales) * 100) : 0,
-      monthCount: channelSalesBarData.length,
+      monthCount: (channelSalesBarData ?? []).length,
     };
   }, [channelSalesBarData]);
 
@@ -250,7 +266,7 @@ export function CategoryTrendChart() {
       nonZeroMonths: nonZeroMonths.slice(-10),
       sampleMonthlyTotals: nonZeroMonths.slice(-3).map((m) => ({
         month: m,
-        outboundValue: data.monthlyTotals?.[m]?.outboundValue ?? 0,
+        outboundValue: (data.monthlyTotals?.[m]?.outboundValueCoupang ?? 0) + (data.monthlyTotals?.[m]?.outboundValueGeneral ?? 0),
         outboundValueCoupang: data.monthlyTotals?.[m]?.outboundValueCoupang ?? 0,
         outboundValueGeneral: data.monthlyTotals?.[m]?.outboundValueGeneral ?? 0,
       })),
@@ -261,15 +277,16 @@ export function CategoryTrendChart() {
 
   /** AI 예측보고 당월 예측을 반영한 chartData (다른 데이터 건드리지 않음) */
   const effectiveChartData = useMemo(() => {
+    console.log("MEMO DATA", data);
     if (!data?.chartData?.length) return data?.chartData ?? [];
     const cf = categoryForecastThisMonth;
-    if (!cf) return data.chartData;
+    if (!cf) return data?.chartData ?? [];
     const lastRow = data.chartData[data.chartData.length - 1] as Record<string, string | number>;
     const lastMonth = String(lastRow?.month ?? "");
-    if (lastMonth !== cf.thisMonthKey) return data.chartData;
-    const merged = data.chartData.slice(0, -1).map((r) => ({ ...r }));
+    if (lastMonth !== cf.thisMonthKey) return data?.chartData ?? [];
+    const merged = (data?.chartData ?? []).slice(0, -1).map((r) => ({ ...r }));
     const newLast = { ...lastRow };
-    for (const [cat, val] of Object.entries(cf.byCategory)) {
+    for (const [cat, val] of Object.entries(cf?.byCategory ?? {})) {
       newLast[cat] = val;
     }
     merged.push(newLast);
@@ -277,6 +294,7 @@ export function CategoryTrendChart() {
   }, [data?.chartData, categoryForecastThisMonth]);
 
   const filteredChartData = useMemo(() => {
+    console.log("MEMO DATA", data);
     if (!effectiveChartData?.length) return [];
     let rows = effectiveChartData;
     if (yearFilter !== "all") {
@@ -339,6 +357,7 @@ export function CategoryTrendChart() {
   }, [effectiveChartData, selectedCategories, yearFilter]);
 
   const filteredMomTable = useMemo(() => {
+    console.log("MEMO DATA", data);
     if (!data?.momRates) return [];
     const cats = data.categories.filter((c) => selectedCategories.has(c));
     const ratesFiltered = (rates: Record<string, number | null>) => {
@@ -355,6 +374,7 @@ export function CategoryTrendChart() {
 
   const HIGH_VOLUME_THRESHOLD = 1_000_000;
   const { highVolCats, lowVolCats, chartDataHigh, chartDataLow } = useMemo(() => {
+    console.log("MEMO DATA", data);
     if (!effectiveChartData?.length || selectedCategories.size === 0) {
       return { highVolCats: [] as string[], lowVolCats: [] as string[], chartDataHigh: [], chartDataLow: [] };
     }
@@ -449,25 +469,25 @@ export function CategoryTrendChart() {
     return min === max ? [Math.max(0, min - 5), Math.min(100, max + 5)] : [domainMin, domainMax];
   };
 
-  const naverDomainHigh = useMemo(
-    () => computeNaverDomain(chartDataHigh, highVolCats.filter((c) => NAVER_CATEGORIES.includes(c))),
-    [chartDataHigh, highVolCats]
-  );
-  const naverDomainLow = useMemo(
-    () => computeNaverDomain(chartDataLow, lowVolCats.filter((c) => NAVER_CATEGORIES.includes(c))),
-    [chartDataLow, lowVolCats]
-  );
-  const naverDomainSingle = useMemo(
-    () =>
-      computeNaverDomain(
-        filteredChartData,
-        Array.from(selectedCategories).filter((c) => NAVER_CATEGORIES.includes(c))
-      ),
-    [filteredChartData, selectedCategories]
-  );
+  const naverDomainHigh = useMemo(() => {
+    console.log("MEMO DATA", data);
+    return computeNaverDomain(chartDataHigh, highVolCats.filter((c) => NAVER_CATEGORIES.includes(c)));
+  }, [chartDataHigh, highVolCats, data]);
+  const naverDomainLow = useMemo(() => {
+    console.log("MEMO DATA", data);
+    return computeNaverDomain(chartDataLow, lowVolCats.filter((c) => NAVER_CATEGORIES.includes(c)));
+  }, [chartDataLow, lowVolCats, data]);
+  const naverDomainSingle = useMemo(() => {
+    console.log("MEMO DATA", data);
+    return computeNaverDomain(
+      filteredChartData,
+      Array.from(selectedCategories).filter((c) => NAVER_CATEGORIES.includes(c))
+    );
+  }, [filteredChartData, selectedCategories, data]);
 
   /** 검색어-판매량 상관계수 + 액션플랜 (월별 데이터 1:1 매칭) */
   const correlationAnalysis = useMemo(() => {
+    console.log("MEMO DATA", data);
     if (!effectiveChartData?.length || selectedCategories.size === 0) return [];
     const naverCats = NAVER_CATEGORIES.filter((c) => selectedCategories.has(c));
     if (naverCats.length === 0) return [];
@@ -570,9 +590,10 @@ export function CategoryTrendChart() {
 
   /** 카테고리별 재고 부족 분석 (보유 일수 기준: 품절임박 ≤3일, 부족 <14일) */
   const shortageByCategory = useMemo(() => {
+    console.log("MEMO DATA", data);
     const out: Record<string, { low: number; out: number }> = {};
     for (const cat of NAVER_CATEGORIES) out[cat] = { low: 0, out: 0 };
-    if (inventoryProducts.length === 0 || Object.keys(stockByProduct).length === 0) return out;
+    if ((inventoryProducts ?? []).length === 0 || Object.keys(stockByProduct ?? {}).length === 0) return out;
     for (const p of inventoryProducts) {
       const raw = String(p.category ?? p.group_name ?? "").trim();
       const pCat = normalizeCategory(raw) || raw;
@@ -588,19 +609,20 @@ export function CategoryTrendChart() {
   }, [inventoryProducts, stockByProduct, dailyVelocityByProduct]);
 
   /** 품목별 누적 출고 기반 일평균 (최근 30일) → 3일 판매량 산출용 */
-  const dailyVelFromOutbound = useMemo(
-    () => computeAvgNDayOutboundByProduct(inventoryOutbound, 30),
-    [inventoryOutbound]
-  );
+  const dailyVelFromOutbound = useMemo(() => {
+    console.log("MEMO DATA", data);
+    return computeAvgNDayOutboundByProduct(inventoryOutbound, 30);
+  }, [inventoryOutbound, data]);
 
   /** 카테고리별 재고 부족으로 인한 판매 손실 (누적 출고 기반 3일 판매량, 품절임박 3일 이하만) */
   const MAX_SHORTAGE_SKUS = 8;
   const DAYS_FOR_LOSS = 3;
   const shortageLostByCategory = useMemo(() => {
+    console.log("MEMO DATA", data);
     type SkuRow = { label: string; code: string; pack_size?: number; lost: number; actual: number; potential: number };
     const out: Record<string, { pct: number; totalLost: number; skus: SkuRow[] }> = {};
     for (const cat of NAVER_CATEGORIES) out[cat] = { pct: 0, totalLost: 0, skus: [] };
-    if (!effectiveChartData?.length || inventoryProducts.length === 0) return out;
+    if (!effectiveChartData?.length || (inventoryProducts ?? []).length === 0) return out;
     const lastRow = effectiveChartData[effectiveChartData.length - 1] as Record<string, string | number>;
     const lastMonth = String(lastRow?.month ?? "");
     if (!lastMonth) return out;
@@ -636,13 +658,14 @@ export function CategoryTrendChart() {
 
   /** 네이버 검색 지수 변화율 기반 액션플랜 (전월 대비 MoM + 작년 동월 대비 YoY) */
   const naverIndexActionPlans = useMemo(() => {
+    console.log("MEMO DATA", data);
     if (!effectiveChartData?.length || selectedCategories.size === 0) return [];
     const naverCats = NAVER_CATEGORIES.filter((c) => selectedCategories.has(c));
     if (naverCats.length === 0) return [];
 
     let rows = effectiveChartData;
     if (yearFilter !== "all") rows = rows.filter((r) => String(r.month ?? "").startsWith(yearFilter));
-    if (rows.length < 2) return [];
+    if ((rows ?? []).length < 2) return [];
 
     const lastRow = rows[rows.length - 1] as Record<string, string | number>;
     const prevRow = rows[rows.length - 2] as Record<string, string | number>;
@@ -725,7 +748,7 @@ export function CategoryTrendChart() {
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center">
+      <div className="mt-8 rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center md:mt-10">
         <p className="text-zinc-500">카테고리별 판매 동향을 불러오는 중…</p>
         <p className="mt-2 text-xs text-zinc-600">15초 이상 걸리면 새로고침 후 다시 시도하세요.</p>
       </div>
@@ -734,7 +757,7 @@ export function CategoryTrendChart() {
 
   if (error || !data) {
     return (
-      <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-6 text-center">
+      <div className="mt-8 rounded-2xl border border-red-500/40 bg-red-500/10 p-6 text-center md:mt-10">
         <p className="text-red-400">{error ?? "데이터를 불러올 수 없습니다."}</p>
         <button
           type="button"
@@ -755,7 +778,7 @@ export function CategoryTrendChart() {
 
   if (tablesAllEmpty) {
     return (
-      <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center text-zinc-500">
+      <div className="mt-8 rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center text-zinc-500 md:mt-10">
         출고·입고·재고 원본 데이터가 없어 차트를 표시할 수 없습니다.
       </div>
     );
@@ -763,7 +786,7 @@ export function CategoryTrendChart() {
 
   if (!hasMonths) {
     return (
-      <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-8 text-center text-amber-200/90">
+      <div className="mt-8 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-8 text-center text-amber-200/90 md:mt-10">
         원본 행은 있으나 유효한 월 축을 만들 수 없습니다. 날짜 컬럼 형식을 확인하세요.
       </div>
     );
@@ -772,7 +795,7 @@ export function CategoryTrendChart() {
   const mom = data.momIndicators;
 
   return (
-        <div className="min-w-0 space-y-6 overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 md:p-6">
+        <div className="mt-8 min-w-0 space-y-6 overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 md:mt-10 md:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-bold text-white md:text-xl">
           카테고리별 월별 판매 동향
@@ -822,7 +845,7 @@ export function CategoryTrendChart() {
               </div>
               <div className="text-xs text-zinc-400">
                 월 평균: <span className={avgDelta >= 0 ? "font-semibold text-emerald-400" : "font-semibold text-rose-400"}>
-                  {avgDelta >= 0 ? "+" : ""}{avgDelta.toLocaleString()}EA
+                  {avgDelta >= 0 ? "+" : ""}{safeNumber(avgDelta).toLocaleString()}EA
                 </span>
               </div>
             </div>
@@ -831,7 +854,7 @@ export function CategoryTrendChart() {
                 <BarChart data={invChangeData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                   <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} />
-                  <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
+                  <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => safeNumber(v).toLocaleString()} />
                   <Tooltip
                     contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px" }}
                     formatter={(value) => (value != null ? Number(value).toLocaleString() : "")}
@@ -842,10 +865,10 @@ export function CategoryTrendChart() {
                       return (
                         <div className="rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-xs">
                           <div className="font-medium text-cyan-400">{label}</div>
-                          <div>입고: {p.입고.toLocaleString()}EA</div>
-                          <div>출고: {p.출고.toLocaleString()}EA</div>
+                          <div>입고: {safeNumber(p?.입고).toLocaleString()}EA</div>
+                          <div>출고: {safeNumber(p?.출고).toLocaleString()}EA</div>
                           <div className={p.delta >= 0 ? "text-emerald-400" : "text-rose-400"}>
-                            증감: {p.delta >= 0 ? "+" : ""}{p.delta.toLocaleString()}EA
+                            증감: {safeNumber(p?.delta) >= 0 ? "+" : ""}{safeNumber(p?.delta).toLocaleString()}EA
                           </div>
                         </div>
                       );
@@ -889,16 +912,16 @@ export function CategoryTrendChart() {
             <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div className="rounded-lg border border-zinc-600 bg-zinc-900/80 px-3 py-2">
                 <div className="text-[10px] text-zinc-500">총 매출</div>
-                <div className="text-sm font-bold tabular-nums text-white">₩{totalSales.toLocaleString()}</div>
+                <div className="text-sm font-bold tabular-nums text-white">₩{safeNumber(totalSales).toLocaleString()}</div>
               </div>
               <div className="rounded-lg border border-zinc-600 bg-zinc-900/80 px-3 py-2">
                 <div className="text-[10px] text-zinc-500">쿠팡 월평균</div>
-                <div className="text-sm font-bold tabular-nums" style={{ color: COUPANG_COLOR }}>₩{coupangAvg.toLocaleString()}</div>
+                <div className="text-sm font-bold tabular-nums" style={{ color: COUPANG_COLOR }}>₩{safeNumber(coupangAvg).toLocaleString()}</div>
                 <div className="text-[10px] text-zinc-500">{coupangShare}% 비중</div>
               </div>
               <div className="rounded-lg border border-zinc-600 bg-zinc-900/80 px-3 py-2">
                 <div className="text-[10px] text-zinc-500">일반 월평균</div>
-                <div className="text-sm font-bold tabular-nums" style={{ color: GENERAL_COLOR }}>₩{generalAvg.toLocaleString()}</div>
+                <div className="text-sm font-bold tabular-nums" style={{ color: GENERAL_COLOR }}>₩{safeNumber(generalAvg).toLocaleString()}</div>
                 <div className="text-[10px] text-zinc-500">{generalShare}% 비중</div>
               </div>
               <div className="rounded-lg border border-zinc-600 bg-zinc-900/80 px-3 py-2">
@@ -922,14 +945,14 @@ export function CategoryTrendChart() {
                       return (
                         <div className="rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-xs min-w-[180px]">
                           <div className="font-medium text-cyan-400">{label}</div>
-                          <div className="mt-1 font-semibold text-white">총 ₩{(p.total ?? 0).toLocaleString()}</div>
+                          <div className="mt-1 font-semibold text-white">총 ₩{safeNumber(p?.total).toLocaleString()}</div>
                           <div className="mt-1 flex justify-between gap-4">
                             <span style={{ color: COUPANG_COLOR }}>쿠팡</span>
-                            <span>₩{(p.쿠팡 ?? 0).toLocaleString()} ({p.coupangPct ?? 0}%)</span>
+                            <span>₩{safeNumber(p?.쿠팡).toLocaleString()} ({safeNumber(p?.coupangPct)}%)</span>
                           </div>
                           <div className="flex justify-between gap-4">
                             <span style={{ color: GENERAL_COLOR }}>일반</span>
-                            <span>₩{(p.일반 ?? 0).toLocaleString()} ({p.generalPct ?? 0}%)</span>
+                            <span>₩{safeNumber(p?.일반).toLocaleString()} ({safeNumber(p?.generalPct)}%)</span>
                           </div>
                         </div>
                       );
@@ -982,15 +1005,15 @@ export function CategoryTrendChart() {
                     content={({ active, payload, label }) => {
                       if (!active || !payload?.length) return null;
                       const p = payload[0]?.payload as Record<string, string | number>;
-                      const cats = data.categories.filter((c) => (p[c] as number) > 0);
+                      const cats = (data?.categories ?? []).filter((c) => (safeNumber(p?.[c])) > 0);
                       return (
                         <div className="rounded-lg border border-zinc-600 bg-zinc-900 px-3 py-2 text-xs">
                           <div className="font-medium text-cyan-400">{label}</div>
-                          <div className="mt-1 font-semibold text-white">총 ₩{(p.total as number)?.toLocaleString()}</div>
+                          <div className="mt-1 font-semibold text-white">총 ₩{safeNumber(p?.total).toLocaleString()}</div>
                           {cats.map((cat) => (
                             <div key={cat} className="flex justify-between gap-4">
-                              <span style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>{shortCategoryLabel(cat)}</span>
-                              <span>₩{((p[cat] as number) ?? 0).toLocaleString()}</span>
+                              <span style={{ color: getColorForCategory(cat, (data?.categories ?? []).indexOf(cat)) }}>{shortCategoryLabel(cat)}</span>
+                              <span>₩{safeNumber(p?.[cat]).toLocaleString()}</span>
                             </div>
                           ))}
                         </div>
@@ -998,8 +1021,8 @@ export function CategoryTrendChart() {
                     }}
                   />
                   <Legend formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{shortCategoryLabel(value)}</span>} />
-                  {data.categories.map((cat, idx) => (
-                    <Bar key={cat} dataKey={cat} stackId="value" fill={getColorForCategory(cat, idx)} radius={idx === data.categories.length - 1 ? [4, 4, 0, 0] : 0} />
+                  {(data?.categories ?? []).map((cat, idx) => (
+                    <Bar key={cat} dataKey={cat} stackId="value" fill={getColorForCategory(cat, idx)} radius={idx === (data?.categories ?? []).length - 1 ? [4, 4, 0, 0] : 0} />
                   ))}
                 </BarChart>
               </ResponsiveContainer>
@@ -1026,11 +1049,11 @@ export function CategoryTrendChart() {
             <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">이번 달 총 판매</div>
             <div className="mt-1 flex flex-wrap items-baseline gap-2">
               <span className="text-xl font-bold tabular-nums text-white md:text-2xl">
-                {mom.thisMonthOutbound.toLocaleString()}EA
+                {safeNumber(mom?.thisMonthOutbound).toLocaleString()}EA
               </span>
-              {(mom.thisMonthOutboundValue ?? 0) > 0 && (
+              {safeNumber(mom?.thisMonthOutboundValue) > 0 && (
                 <span className="text-sm text-cyan-400">
-                  ₩{(mom.thisMonthOutboundValue ?? 0).toLocaleString()}
+                  ₩{safeNumber(mom?.thisMonthOutboundValue).toLocaleString()}
                 </span>
               )}
               {mom.outbound != null && (
@@ -1040,8 +1063,8 @@ export function CategoryTrendChart() {
               )}
             </div>
             <div className="mt-1 flex flex-wrap gap-x-4 text-[11px] text-zinc-400">
-              <span>쿠팡: {(mom.thisMonthOutboundCoupang ?? 0).toLocaleString()}EA</span>
-              <span>일반: {(mom.thisMonthOutboundGeneral ?? 0).toLocaleString()}EA</span>
+              <span>쿠팡: {safeNumber(mom?.thisMonthOutboundCoupang).toLocaleString()}EA</span>
+              <span>일반: {safeNumber(mom?.thisMonthOutboundGeneral).toLocaleString()}EA</span>
             </div>
             <div className="mt-0.5 text-[10px] text-zinc-500">1일~오늘 누적 · 전월 대비</div>
           </div>
@@ -1049,11 +1072,11 @@ export function CategoryTrendChart() {
             <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">이번 달 총 입고</div>
             <div className="mt-1 flex flex-wrap items-baseline gap-2">
               <span className="text-xl font-bold tabular-nums text-white md:text-2xl">
-                {mom.thisMonthInbound.toLocaleString()}EA
+                {safeNumber(mom?.thisMonthInbound).toLocaleString()}EA
               </span>
-              {(mom.thisMonthInboundValue ?? 0) > 0 && (
+              {safeNumber(mom?.thisMonthInboundValue) > 0 && (
                 <span className="text-sm text-cyan-400">
-                  ₩{(mom.thisMonthInboundValue ?? 0).toLocaleString()}
+                  ₩{safeNumber(mom?.thisMonthInboundValue).toLocaleString()}
                 </span>
               )}
               {mom.inbound != null && (
@@ -1063,11 +1086,11 @@ export function CategoryTrendChart() {
               )}
             </div>
             <div className="mt-1 flex flex-wrap gap-x-4 text-[11px] text-zinc-400">
-              {Object.entries(mom.thisMonthInboundByChannel ?? mom.thisMonthInboundByWarehouse ?? {}).length > 0
-                ? Object.entries(mom.thisMonthInboundByChannel ?? mom.thisMonthInboundByWarehouse ?? {})
+              {Object.entries(mom?.thisMonthInboundByChannel ?? mom?.thisMonthInboundByWarehouse ?? {}).length > 0
+                ? Object.entries(mom?.thisMonthInboundByChannel ?? mom?.thisMonthInboundByWarehouse ?? {})
                     .sort(([, a], [, b]) => b - a)
                     .map(([ch, qty]) => (
-                      <span key={ch}>{ch}: {qty.toLocaleString()}EA</span>
+                      <span key={ch}>{ch}: {safeNumber(qty).toLocaleString()}EA</span>
                     ))
                 : <span>채널별 데이터 없음</span>}
             </div>
@@ -1137,7 +1160,7 @@ export function CategoryTrendChart() {
           </label>
         </div>
         <div className="flex overflow-x-auto gap-2 pb-1 -mx-1 px-1 md:overflow-visible md:mx-0 md:px-0 touch-pan-x">
-          {data.categories.map((cat, idx) => (
+          {(data?.categories ?? []).map((cat, idx) => (
             <label
               key={cat}
               className="flex shrink-0 max-w-[7rem] cursor-pointer items-center gap-2 truncate rounded-xl border border-zinc-600 bg-zinc-800/80 px-2.5 py-1.5 transition-colors hover:bg-zinc-700/80"
@@ -1169,7 +1192,7 @@ export function CategoryTrendChart() {
                 <ComposedChart data={chartDataHigh} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                   <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} interval={0} />
-                  <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
+                  <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => safeNumber(v).toLocaleString()} />
                   <YAxis yAxisId="search" orientation="right" stroke="#94a3b8" tick={{ fill: "#94a3b8", fontSize: 10 }} domain={naverDomainHigh} allowDataOverflow name="월간평균" />
                   <Tooltip
                     contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px", minWidth: 240 }}
@@ -1187,7 +1210,7 @@ export function CategoryTrendChart() {
                               {outboundCats.map((cat) => (
                                 <div key={cat} className="flex justify-between gap-6 text-sm" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
                                   <span>{shortCategoryLabel(cat)}</span>
-                                  <span className="tabular-nums font-semibold text-white">{(p[cat] as number)?.toLocaleString() ?? "-"} EA</span>
+                                  <span className="tabular-nums font-semibold text-white">{safeNumber(p?.[cat]).toLocaleString()} EA</span>
                                 </div>
                               ))}
                             </div>
@@ -1212,7 +1235,7 @@ export function CategoryTrendChart() {
                       );
                     }}
                   />
-                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${value.replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
+                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${String(value ?? "").replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
                   <Bar dataKey="outboundTotal" fill="#52525b" fillOpacity={0.35} radius={[4, 4, 0, 0]} name="출고량" />
                   {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="추세선" />}
                   {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#64748b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="3M평균" />}
@@ -1232,7 +1255,7 @@ export function CategoryTrendChart() {
                 <ComposedChart data={chartDataLow} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                   <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} interval={0} />
-                  <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
+                  <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => safeNumber(v).toLocaleString()} />
                   <YAxis yAxisId="search" orientation="right" stroke="#94a3b8" tick={{ fill: "#94a3b8", fontSize: 10 }} domain={naverDomainLow} allowDataOverflow name="월간평균" />
                   <Tooltip
                     contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px", minWidth: 240 }}
@@ -1250,7 +1273,7 @@ export function CategoryTrendChart() {
                               {outboundCats.map((cat) => (
                                 <div key={cat} className="flex justify-between gap-6 text-sm" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
                                   <span>{shortCategoryLabel(cat)}</span>
-                                  <span className="tabular-nums font-semibold text-white">{(p[cat] as number)?.toLocaleString() ?? "-"} EA</span>
+                                  <span className="tabular-nums font-semibold text-white">{safeNumber(p?.[cat]).toLocaleString()} EA</span>
                                 </div>
                               ))}
                             </div>
@@ -1275,7 +1298,7 @@ export function CategoryTrendChart() {
                       );
                     }}
                   />
-                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${value.replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
+                  <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${String(value ?? "").replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
                   <Bar dataKey="outboundTotal" fill="#52525b" fillOpacity={0.35} radius={[4, 4, 0, 0]} name="출고량" />
                   {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="추세선" />}
                   {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#64748b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="3M평균" />}
@@ -1295,7 +1318,7 @@ export function CategoryTrendChart() {
           <ComposedChart data={filteredChartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
             <XAxis dataKey="month" stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => (v ? String(v).slice(2) : "")} interval={0} />
-            <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => v.toLocaleString()} />
+            <YAxis stroke="#71717a" tick={{ fill: "#a1a1aa", fontSize: 11 }} tickFormatter={(v) => safeNumber(v).toLocaleString()} />
             <YAxis yAxisId="search" orientation="right" stroke="#94a3b8" tick={{ fill: "#94a3b8", fontSize: 10 }} domain={naverDomainSingle} allowDataOverflow name="월간평균" />
             <Tooltip
               contentStyle={{ backgroundColor: "#18181b", border: "1px solid #3f3f46", borderRadius: "8px", minWidth: 240 }}
@@ -1313,7 +1336,7 @@ export function CategoryTrendChart() {
                         {outboundCats.map((cat) => (
                           <div key={cat} className="flex justify-between gap-6 text-sm" style={{ color: getColorForCategory(cat, data.categories.indexOf(cat)) }}>
                             <span>{shortCategoryLabel(cat)}</span>
-                            <span className="tabular-nums font-semibold text-white">{(p[cat] as number)?.toLocaleString() ?? "-"} EA</span>
+                            <span className="tabular-nums font-semibold text-white">{safeNumber(p?.[cat]).toLocaleString()} EA</span>
                           </div>
                         ))}
                       </div>
@@ -1338,7 +1361,7 @@ export function CategoryTrendChart() {
                 );
               }}
             />
-            <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${String(value).replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
+            <Legend wrapperStyle={{ paddingTop: 8 }} formatter={(value) => <span className="text-sm text-zinc-300" title={value}>{String(value).startsWith("naver_") ? `네이버 ${String(value ?? "").replace("naver_", "")}` : value === "outboundTotal" ? "출고량" : shortCategoryLabel(value)}</span>} />
             <Bar dataKey="outboundTotal" fill="#52525b" fillOpacity={0.35} radius={[4, 4, 0, 0]} name="출고량" />
             {showTrendLine && <Line type="monotone" dataKey="trend" stroke="#f59e0b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="추세선" connectNulls />}
             {showMovingAvg && <Line type="monotone" dataKey="ma3" stroke="#64748b" strokeWidth={1} strokeDasharray="4 4" dot={false} name="3개월 이동평균" connectNulls />}
@@ -1398,7 +1421,7 @@ export function CategoryTrendChart() {
 
       {/* 결품으로 인한 판매 손실 */}
       {(() => {
-        const catsWithSkus = Object.entries(shortageLostByCategory).filter(
+        const catsWithSkus = Object.entries(shortageLostByCategory ?? {}).filter(
           ([_, v]) => v?.skus && v.skus.length > 0
         );
         if (catsWithSkus.length === 0) return null;
@@ -1441,13 +1464,13 @@ export function CategoryTrendChart() {
                         {simplifyProductName(s.label, s.pack_size) || s.code}
                       </td>
                       <td className="border border-zinc-700 px-3 py-2 text-right tabular-nums text-amber-400">
-                        {Math.round(s.lost).toLocaleString()}
+                        {safeNumber(Math.round(s.lost)).toLocaleString()}
                       </td>
                       <td className="border border-zinc-700 px-3 py-2 text-right tabular-nums text-zinc-400">
-                        {Math.round(s.actual).toLocaleString()}
+                        {safeNumber(Math.round(s.actual)).toLocaleString()}
                       </td>
                       <td className="border border-zinc-700 px-3 py-2 text-right tabular-nums text-zinc-400">
-                        {Math.round(s.potential).toLocaleString()}
+                        {safeNumber(Math.round(s.potential)).toLocaleString()}
                       </td>
                     </tr>
                   ))

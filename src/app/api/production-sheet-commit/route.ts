@@ -162,19 +162,17 @@ async function runPostUploadDashboardValidation(supabase: any, filename: string)
       });
     }
 
-    // 4) month별 sales_channel별 amount (chosenOutboundAmount + outbound_total_amount)
-    //    - chosenOutboundAmount: 기준 C (둘 다 계산하고 선택된 값은 chosen)
-    //    - outbound_total_amount: raw 값도 함께 로깅
+    // 4) month별 sales_channel별 amount (chosenOutboundAmount 단일 기준)
     const salesAmountByMonthChannel: Record<
       string,
-      Record<"쿠팡" | "일반", { chosen_amount: number; outbound_total_amount_sum: number; row_count: number }>
+      Record<"쿠팡" | "일반", { chosen_amount: number; row_count: number }>
     > = {};
 
     const initChannel = (month: string) => {
       if (!salesAmountByMonthChannel[month]) {
         salesAmountByMonthChannel[month] = {
-          "쿠팡": { chosen_amount: 0, outbound_total_amount_sum: 0, row_count: 0 },
-          "일반": { chosen_amount: 0, outbound_total_amount_sum: 0, row_count: 0 },
+          "쿠팡": { chosen_amount: 0, row_count: 0 },
+          "일반": { chosen_amount: 0, row_count: 0 },
         };
       }
     };
@@ -222,9 +220,7 @@ async function runPostUploadDashboardValidation(supabase: any, filename: string)
           codeToCost
         );
 
-        const rawOutboundTotal = parseMoney(r.outbound_total_amount);
         salesAmountByMonthChannel[monthKey][sc].chosen_amount += chosen.amount;
-        salesAmountByMonthChannel[monthKey][sc].outbound_total_amount_sum += rawOutboundTotal;
         salesAmountByMonthChannel[monthKey][sc].row_count += 1;
       }
 
@@ -297,12 +293,12 @@ async function runPostUploadDashboardValidation(supabase: any, filename: string)
       }
     }
 
-    // month별 sales_channel별 amount (chosen + raw outbound_total_amount)
+    // month별 sales_channel별 amount (chosen only)
     const monthChannelAmountLog = monthStarts.map((mStart) => {
       const monthKey = mStart.slice(0, 7);
       const v = salesAmountByMonthChannel[monthKey] ?? {
-        "쿠팡": { chosen_amount: 0, outbound_total_amount_sum: 0, row_count: 0 },
-        "일반": { chosen_amount: 0, outbound_total_amount_sum: 0, row_count: 0 },
+        "쿠팡": { chosen_amount: 0, row_count: 0 },
+        "일반": { chosen_amount: 0, row_count: 0 },
       };
       return {
         month: monthKey,
@@ -310,7 +306,7 @@ async function runPostUploadDashboardValidation(supabase: any, filename: string)
         general: v["일반"],
       };
     });
-    console.log("[post-upload validation] month sales_channel amounts (chosen + raw)", {
+    console.log("[post-upload validation] month sales_channel amounts (chosen only)", {
       filename,
       monthChannelAmountLog,
     });

@@ -17,9 +17,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
 import { normalizeCode } from "@/lib/inventoryApi";
 import {
-  normalizeSalesChannelKr,
-  outboundChannelKrFromRow,
   WAREHOUSE_COUPANG,
+  WAREHOUSE_GENERAL,
 } from "@/lib/inventoryChannels";
 import { fetchOutboundRowsUnified } from "@/lib/outboundQuery";
 import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
@@ -35,7 +34,7 @@ const emptyResponse = {
   chartData: [] as Record<string, string | number>[],
   naverSearchTrend: {} as Record<string, Record<string, number>>,
   momRates: {} as Record<string, Record<string, number | null>>,
-  monthlyTotals: {} as Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundByChannel: Record<string, number> }>,
+  monthlyTotals: {} as Record<string, { outbound: number; inbound: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundByChannel: Record<string, number> }>,
   momIndicators: {
     outbound: null as number | null,
     inbound: null as number | null,
@@ -76,7 +75,7 @@ function jwtPayload(token: string): Record<string, unknown> | null {
   try {
     const p = token.split(".")[1];
     if (!p) return null;
-    const norm = p.replace(/-/g, "+").replace(/_/g, "/");
+    const norm = String(p ?? "").replace(/-/g, "+").replace(/_/g, "/");
     const json = Buffer.from(norm, "base64").toString("utf8");
     return JSON.parse(json) as Record<string, unknown>;
   } catch {
@@ -129,6 +128,7 @@ async function fetchAllRows<T>(
   const maxPages = 1000;
   while (true) {
     if (pageIndex >= maxPages) {
+      console.error(`[fetchAllRows] max pages reached table=${table} pageIndex=${pageIndex}, partialRows=${all.length}`);
       onPageDebug?.({
         table,
         pageIndex,
@@ -140,7 +140,7 @@ async function fetchAllRows<T>(
         breakReason: "max_pages_guard",
         error: null,
       });
-      throw new Error(`[fetchAllRows] max pages reached table=${table} pageIndex=${pageIndex}`);
+      break;
     }
     const rangeStart = offset;
     const rangeEnd = offset + PAGE_SIZE - 1;
@@ -156,6 +156,9 @@ async function fetchAllRows<T>(
     }
     const { data, error } = await q.range(rangeStart, rangeEnd);
     if (error) {
+      console.error(
+        `[fetchAllRows] query failed table=${table} page=${pageIndex} range=${rangeStart}-${rangeEnd} error=${error.message}`
+      );
       onPageDebug?.({
         table,
         pageIndex,
@@ -167,9 +170,7 @@ async function fetchAllRows<T>(
         breakReason: "error",
         error: error.message,
       });
-      throw new Error(
-        `[fetchAllRows] query failed table=${table} page=${pageIndex} range=${rangeStart}-${rangeEnd} error=${error.message}`
-      );
+      break;
     }
     const rows = (data ?? []) as T[];
     all.push(...rows);
@@ -242,7 +243,8 @@ async function fetchOutboundRows(
       .select("id,total_price,unit_price,outbound_total_amount")
       .in("id", batch);
     if (error) {
-      throw new Error(`[fetchOutboundRows:enrich] ${error.message}`);
+      console.error(`[fetchOutboundRows:enrich] batch failed, using rows without price enrich: ${error.message}`);
+      continue;
     }
     for (const row of data ?? []) {
       const id = Number((row as { id?: number }).id ?? 0);
@@ -361,6 +363,23 @@ export async function GET(request: Request) {
     // month 쿼리 기반 필터링/슬라이싱/최근 N개월 제한 로직은 제거하고,
     // DB에서 조회된 모든 month를 합집합으로 그대로 반환한다.
     const rangeStart = await minDateAcrossInventoryTables(supabase);
+
+    // 백필/복구로 생길 수 있는 “invalid source trace” outbound row는 category-trend 집계 대상에서 제외한다.
+    const invalidOutboundIdSet = new Set<number>();
+    const INVALID_TABLE = "inventory_outbound_sales_channel_invalid";
+    try {
+      const { data: invalidRows } = await supabase
+        .from(INVALID_TABLE)
+        .select("id")
+        .gte("outbound_date", rangeStart);
+      for (const r of invalidRows ?? []) {
+        if (typeof (r as any).id === "number") invalidOutboundIdSet.add((r as any).id);
+      }
+    } catch {
+      /* invalid table 미존재 등은 무시 */
+    }
+    const isInvalidOutbound = (id: unknown): boolean =>
+      typeof id === "number" && invalidOutboundIdSet.has(id);
     const jwt = jwtPayload(key);
     const jwtRole = String(jwt?.role ?? "");
     const authContext = {
@@ -496,6 +515,7 @@ export async function GET(request: Request) {
 
     // 그래프·전월대비: 아웃바운드(실제 출고)만 사용. 마스터 5개 카테고리만 표시
     for (const o of outbound) {
+      if (isInvalidOutbound((o as any)?.id)) continue;
       const m = monthKeyFromAnyDate(o.outbound_date);
       if (!m) continue;
       if (!byMonthCategory[m]) byMonthCategory[m] = {};
@@ -551,8 +571,8 @@ export async function GET(request: Request) {
       return row;
     });
 
-    const monthlyTotals: Record<string, { outbound: number; inbound: number; outboundValue: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundByChannel: Record<string, number> }> = {};
-    for (const m of months) monthlyTotals[m] = { outbound: 0, inbound: 0, outboundValue: 0, inboundValue: 0, outboundCoupang: 0, outboundGeneral: 0, outboundValueCoupang: 0, outboundValueGeneral: 0, inboundByChannel: {} };
+    const monthlyTotals: Record<string, { outbound: number; inbound: number; inboundValue: number; outboundCoupang: number; outboundGeneral: number; outboundValueCoupang: number; outboundValueGeneral: number; inboundByChannel: Record<string, number> }> = {};
+    for (const m of months) monthlyTotals[m] = { outbound: 0, inbound: 0, inboundValue: 0, outboundCoupang: 0, outboundGeneral: 0, outboundValueCoupang: 0, outboundValueGeneral: 0, inboundByChannel: {} };
 
     const outboundDebugSamples: Array<{
       monthKey: string;
@@ -574,27 +594,60 @@ export async function GET(request: Request) {
       unit_price_raw: unknown;
     }> = [];
 
+    const salesChannelSamplesForMonthlyTotals: string[] = [];
+    const invalidSalesChannelRows: Array<{
+      id: number | null;
+      product_code: string;
+      outbound_date: string;
+      sales_channel: unknown;
+    }> = [];
+    const pushInvalidSalesChannelRow = (row: any) => {
+      if (invalidSalesChannelRows.length >= 50) return;
+      invalidSalesChannelRows.push({
+        id: typeof row?.id === "number" ? row.id : null,
+        product_code: String(row?.product_code ?? ""),
+        outbound_date: String(row?.outbound_date ?? row?.inbound_date ?? "").slice(0, 10),
+        sales_channel: row?.sales_channel,
+      });
+    };
+
+    const monthlyChannelAgg: Record<
+      string,
+      { coupangQty: number; generalQty: number; coupangValue: number; generalValue: number }
+    > = {};
+    for (const m of months) {
+      monthlyChannelAgg[m] = { coupangQty: 0, generalQty: 0, coupangValue: 0, generalValue: 0 };
+    }
+
     for (const o of outbound) {
+      if (isInvalidOutbound((o as any)?.id)) continue;
       const m = monthKeyFromAnyDate(o.outbound_date);
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
-      const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
-      const val = chosen.amount;
-      const channelKr = outboundChannelKrFromRow(o as Record<string, unknown>);
-      const isCoupang = channelKr === WAREHOUSE_COUPANG;
+      const channelVal = parseMoney(o.outbound_total_amount);
+      const sc = String(o.sales_channel ?? "");
+      const scTrim = sc.trim();
 
-      monthlyTotals[m].outbound += qty;
-      monthlyTotals[m].outboundValue += val;
-      if (isCoupang) {
-        monthlyTotals[m].outboundCoupang += qty;
-        monthlyTotals[m].outboundValueCoupang += val;
+      if (salesChannelSamplesForMonthlyTotals.length < 20) {
+        salesChannelSamplesForMonthlyTotals.push(sc);
+        // 분기 전에 샘플 확인용 로그(쿠팡/일반 키 mismatch 방지)
+        console.log("[category-trend:monthlyTotals] row.sales_channel sample", sc);
+      }
+
+      if (scTrim === "coupang") {
+        monthlyChannelAgg[m].coupangQty += qty;
+        monthlyChannelAgg[m].coupangValue += channelVal;
+      } else if (scTrim === "general") {
+        monthlyChannelAgg[m].generalQty += qty;
+        monthlyChannelAgg[m].generalValue += channelVal;
       } else {
-        monthlyTotals[m].outboundGeneral += qty;
-        monthlyTotals[m].outboundValueGeneral += val;
+        pushInvalidSalesChannelRow(o);
+        continue; // invalid/empty sales_channel row 제외
       }
 
       if (debug && outboundDebugSamples.length < 20) {
+        const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
         outboundDebugSamples.push({
           monthKey: m,
           sales_channel: String(o.sales_channel ?? ""),
@@ -602,23 +655,36 @@ export async function GET(request: Request) {
           total_price_raw: o.total_price,
           outbound_total_amount_raw: o.outbound_total_amount,
           unit_price_raw: o.unit_price,
-          chosen_amount: val,
+          chosen_amount: chosen.amount,
           chosenOutboundAmountSource: chosen.source,
-          channel_kr: channelKr,
+          channel_kr: scTrim === "coupang" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL,
         });
       }
-      if (debug && chosen.suspectedUnitPrice) {
-        suspectedUnitPriceRows += 1;
-        if (suspectedUnitPriceSamples.length < 20) {
-          suspectedUnitPriceSamples.push({
-            monthKey: m,
-            sales_channel: String(o.sales_channel ?? ""),
-            quantity: qty,
-            total_price_raw: o.total_price,
-            unit_price_raw: o.unit_price,
-          });
+      if (debug) {
+        const chosen = chosenOutboundAmount(o, codeKey, codeToCost);
+        if (chosen.suspectedUnitPrice) {
+          suspectedUnitPriceRows += 1;
+          if (suspectedUnitPriceSamples.length < 20) {
+            suspectedUnitPriceSamples.push({
+              monthKey: m,
+              sales_channel: String(o.sales_channel ?? ""),
+              quantity: qty,
+              total_price_raw: o.total_price,
+              unit_price_raw: o.unit_price,
+            });
+          }
         }
       }
+    }
+    for (const m of months) {
+      const g = monthlyChannelAgg[m];
+      if (!g || !monthlyTotals[m]) continue;
+      monthlyTotals[m].outboundCoupang = g.coupangQty;
+      monthlyTotals[m].outboundGeneral = g.generalQty;
+      monthlyTotals[m].outboundValueCoupang = g.coupangValue;
+      monthlyTotals[m].outboundValueGeneral = g.generalValue;
+      // monthlyTotals의 출고 총합은 채널 group 결과만으로 계산
+      monthlyTotals[m].outbound = g.coupangQty + g.generalQty;
     }
 
     if (debug && outboundDebugSamples.length > 0) {
@@ -633,10 +699,22 @@ export async function GET(request: Request) {
       const qty = Number(i.quantity ?? 0);
       const codeKey = normalizeCode(i.product_code) || String(i.product_code).trim();
       const cost = codeToCost.get(codeKey) ?? 0;
+      const scRaw = String(i.sales_channel ?? "");
+      const scTrim = scRaw.trim();
+      if (scTrim !== "coupang" && scTrim !== "general") {
+        pushInvalidSalesChannelRow(i);
+        continue;
+      }
+      const ch = scTrim === "coupang" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL;
       monthlyTotals[m].inbound += qty;
       monthlyTotals[m].inboundValue += qty * cost;
-      const ch = outboundChannelKrFromRow(i as Record<string, unknown>);
       monthlyTotals[m].inboundByChannel[ch] = (monthlyTotals[m].inboundByChannel[ch] ?? 0) + qty;
+    }
+    if (invalidSalesChannelRows.length > 0) {
+      console.warn(
+        "[category-trend] invalid/empty sales_channel rows excluded from aggregation (<=50)",
+        invalidSalesChannelRows
+      );
     }
 
     const byMonthCategoryInboundValue: Record<string, Record<string, number>> = {};
@@ -650,6 +728,7 @@ export async function GET(request: Request) {
       }
     }
     for (const o of outbound) {
+      if (isInvalidOutbound((o as any)?.id)) continue;
       const m = monthKeyFromAnyDate(o.outbound_date);
       if (!byMonthCategoryOutboundValue[m]) continue;
       const rowCat = (o.category ?? "").trim();
@@ -761,10 +840,11 @@ export async function GET(request: Request) {
     });
 
     const monthlySalesByChannel: Record<string, { 일반: number; 쿠팡: number }> = {};
+    const monthlySalesConsistency: Record<string, { total: number; byChannelSum: number; diff: number }> = {};
     const monthlyOutboundDebug: Array<{
       month: string;
       outboundRowCount: number;
-      sumOutboundTotalAmount: number;
+      sumChosenAmount: number;
       sumUnitPriceXQty: number;
       chosenSourceCounts: Record<ChosenAmountSource, number>;
       chosenSourceAmountSums: Record<ChosenAmountSource, number>;
@@ -773,6 +853,7 @@ export async function GET(request: Request) {
     const outboundRowsByMonthCount: Record<string, number> = {};
     const outboundMonthsSet = new Set<string>();
     for (const o of outbound) {
+      if (isInvalidOutbound((o as any)?.id)) continue;
       const mk = monthKeyFromAnyDate(o.outbound_date);
       if (!mk) continue;
       outboundMonthsSet.add(mk);
@@ -784,7 +865,17 @@ export async function GET(request: Request) {
         일반: t?.outboundValueGeneral ?? 0,
         쿠팡: t?.outboundValueCoupang ?? 0,
       };
-      const monthRows = outbound.filter((o) => monthKeyFromAnyDate(o.outbound_date) === mk);
+      const byChannelSum = (t?.outboundValueGeneral ?? 0) + (t?.outboundValueCoupang ?? 0);
+      const total = byChannelSum;
+      monthlySalesConsistency[mk] = {
+        total,
+        byChannelSum,
+        diff: total - byChannelSum,
+      };
+      const monthRows = outbound.filter((o) => {
+        if (isInvalidOutbound((o as any)?.id)) return false;
+        return monthKeyFromAnyDate(o.outbound_date) === mk;
+      });
       const chosenSourceCounts: Record<ChosenAmountSource, number> = {
         outbound_total_amount: 0,
         total_price: 0,
@@ -799,7 +890,7 @@ export async function GET(request: Request) {
         master_unit_cost_x_qty: 0,
         fallback_0: 0,
       };
-      let sumOutboundTotalAmount = 0;
+      let sumChosenAmount = 0;
       let sumUnitPriceXQty = 0;
       for (const row of monthRows) {
         const qty = Number(row.quantity ?? 0);
@@ -807,19 +898,19 @@ export async function GET(request: Request) {
         const chosen = chosenOutboundAmount(row, codeKey, codeToCost);
         chosenSourceCounts[chosen.source] += 1;
         chosenSourceAmountSums[chosen.source] += chosen.amount;
-        sumOutboundTotalAmount += parseMoney(row.outbound_total_amount);
+        sumChosenAmount += chosen.amount;
         sumUnitPriceXQty += parseMoney(row.unit_price) * qty;
       }
       monthlyOutboundDebug.push({
         month: mk,
         outboundRowCount: outboundRowsByMonthCount[mk] ?? 0,
-        sumOutboundTotalAmount: Math.round(sumOutboundTotalAmount),
+        sumChosenAmount: Math.round(sumChosenAmount),
         sumUnitPriceXQty: Math.round(sumUnitPriceXQty),
         chosenSourceCounts,
         chosenSourceAmountSums: Object.fromEntries(
           Object.entries(chosenSourceAmountSums).map(([k, v]) => [k, Math.round(v)])
         ) as Record<ChosenAmountSource, number>,
-        finalOutboundValue: Math.round(t?.outboundValue ?? 0),
+        finalOutboundValue: Math.round((t?.outboundValueGeneral ?? 0) + (t?.outboundValueCoupang ?? 0)),
       });
     }
     if (debug) {
@@ -839,12 +930,12 @@ export async function GET(request: Request) {
       monthlyOutboundDebug,
       monthlySeriesBeforeFilter: months.map((m) => ({
         month: m,
-        outboundValue: monthlyTotals[m]?.outboundValue ?? 0,
+        outboundValue: (monthlyTotals[m]?.outboundValueCoupang ?? 0) + (monthlyTotals[m]?.outboundValueGeneral ?? 0),
         outboundQty: monthlyTotals[m]?.outbound ?? 0,
       })),
       monthlySeriesAfterFilter: months.map((m) => ({
         month: m,
-        outboundValue: monthlyTotals[m]?.outboundValue ?? 0,
+        outboundValue: (monthlyTotals[m]?.outboundValueCoupang ?? 0) + (monthlyTotals[m]?.outboundValueGeneral ?? 0),
         outboundQty: monthlyTotals[m]?.outbound ?? 0,
       })),
       momIndicators: {
@@ -853,7 +944,9 @@ export async function GET(request: Request) {
         thisMonthOutbound: thisOut,
         thisMonthInbound: thisIn,
         /** 출고 금액: chosenOutboundAmount 합 (total_price 우선) — DB SUM(total_price)와 동일 기준 */
-        thisMonthOutboundValue: kpiMonth ? monthlyTotals[kpiMonth]?.outboundValue ?? 0 : 0,
+        thisMonthOutboundValue: kpiMonth
+          ? (monthlyTotals[kpiMonth]?.outboundValueCoupang ?? 0) + (monthlyTotals[kpiMonth]?.outboundValueGeneral ?? 0)
+          : 0,
         thisMonthInboundValue: kpiMonth ? monthlyTotals[kpiMonth]?.inboundValue ?? 0 : 0,
         thisMonthOutboundCoupang: kpiMonth ? monthlyTotals[kpiMonth]?.outboundCoupang ?? 0 : 0,
         thisMonthOutboundGeneral: kpiMonth ? monthlyTotals[kpiMonth]?.outboundGeneral ?? 0 : 0,
@@ -895,8 +988,6 @@ export async function GET(request: Request) {
         fallback_0: { row_cnt: 0, amount_sum: 0 },
       };
       const monthSalesChannelNullishRows: Array<{ product_code: string; outbound_date: string; sales_channel_raw: string }> = [];
-      let queriedMonthSumTotalPriceRaw = 0;
-      let queriedMonthSumOutboundTotalAmount = 0;
       let queriedMonthSumUnitPriceXQty = 0;
       let queriedMonthSumMasterUnitCostXQty = 0;
       let sumChosenAmountDirect = 0;
@@ -910,8 +1001,8 @@ export async function GET(request: Request) {
       const rawAmountSamples: Array<{
         id: number | null;
         outbound_date: string;
-        outbound_total_amount: number;
-        total_price: number;
+        selectedAmount: number;
+        selectedSource: ChosenAmountSource;
         unit_price: number;
         qty: number;
         sales_channel: string;
@@ -921,8 +1012,6 @@ export async function GET(request: Request) {
         outbound_date: string;
         selectedSource: ChosenAmountSource;
         selectedAmount: number;
-        outbound_total_amount: number;
-        total_price: number;
         unit_price: number;
         qty: number;
       }> = [];
@@ -979,7 +1068,18 @@ export async function GET(request: Request) {
         sumChosenAmountDirect += amount;
         const qtyXUnit = parseMoney(o.unit_price) * qty;
         const qtyXMaster = (codeToCost.get(codeKey) ?? 0) * qty;
-        const normalizedKr = outboundChannelKrFromRow(o as Record<string, unknown>);
+        const sc = String(o.sales_channel ?? "");
+        const scTrim = sc.trim();
+        const normalizedKr =
+          scTrim === "coupang"
+            ? WAREHOUSE_COUPANG
+            : scTrim === "general"
+              ? WAREHOUSE_GENERAL
+              : null;
+        if (!normalizedKr) {
+          pushInvalidSalesChannelRow(o);
+          continue;
+        }
         monthSalesChannelNormalizedCounts[normalizedKr] = (monthSalesChannelNormalizedCounts[normalizedKr] ?? 0) + 1;
         chosenAmountDistributionBySource[chosen.source].row_cnt += 1;
         chosenAmountDistributionBySource[chosen.source].amount_sum += amount;
@@ -992,16 +1092,14 @@ export async function GET(request: Request) {
             });
           }
         }
-        queriedMonthSumTotalPriceRaw += parseMoney(o.total_price);
-        queriedMonthSumOutboundTotalAmount += parseMoney(o.outbound_total_amount);
         queriedMonthSumUnitPriceXQty += qtyXUnit;
         queriedMonthSumMasterUnitCostXQty += qtyXMaster;
         if (rawAmountSamples.length < 50) {
           rawAmountSamples.push({
             id: typeof o.id === "number" ? o.id : null,
             outbound_date: String(o.outbound_date ?? "").slice(0, 10),
-            outbound_total_amount: parseMoney(o.outbound_total_amount),
-            total_price: parseMoney(o.total_price),
+            selectedAmount: amount,
+            selectedSource: chosen.source,
             unit_price: parseMoney(o.unit_price),
             qty,
             sales_channel: String(o.sales_channel ?? ""),
@@ -1013,8 +1111,6 @@ export async function GET(request: Request) {
             outbound_date: String(o.outbound_date ?? "").slice(0, 10),
             selectedSource: chosen.source,
             selectedAmount: amount,
-            outbound_total_amount: parseMoney(o.outbound_total_amount),
-            total_price: parseMoney(o.total_price),
             unit_price: parseMoney(o.unit_price),
             qty,
           });
@@ -1044,7 +1140,7 @@ export async function GET(request: Request) {
       })();
       payload.outboundValueDebug = {
         rule:
-          "amount: total_price>0 ? total_price : (unit_price>0 && qty>0 ? unit_price*qty : master unit_cost*qty); channel: normalizeSalesChannelKr(sales_channel)",
+          "amount = chosenOutboundAmount(row).amount; channel split uses only sales_channel normalization",
         sourceDbHost,
         sourceDebug: {
           databaseHost: sourceDbHost,
@@ -1100,12 +1196,8 @@ export async function GET(request: Request) {
             .sort();
           return dates.length > 0 ? dates[dates.length - 1] : null;
         })(),
-        queriedMonthSumTotalPriceRaw,
-        queriedMonthSumOutboundTotalAmount,
         queriedMonthSumUnitPriceXQty,
         queriedMonthSumMasterUnitCostXQty,
-        sumOutboundTotalAmountDirect: queriedMonthSumOutboundTotalAmount,
-        sumTotalPriceDirect: queriedMonthSumTotalPriceRaw,
         sumUnitPriceQtyDirect: queriedMonthSumUnitPriceXQty,
         sumChosenAmountDirect,
         chosenAmountDistributionBySource,
@@ -1130,6 +1222,7 @@ export async function GET(request: Request) {
         suspectedUnitPriceSamples,
         samples: outboundDebugSamples,
         monthlySalesByChannel,
+        monthlySalesConsistency,
         monthKeyDebug,
         fetchPageDebug,
         outboundDateRawSamples,
@@ -1152,7 +1245,10 @@ export async function GET(request: Request) {
             : null,
         fetchedOutboundIdsSampleForDrillMonth: fetchedOutboundIdsForDrillMonth.slice(0, 20),
         grandTotalOutboundValue: Math.round(
-          Object.values(monthlyTotals).reduce((s, v) => s + Number(v.outboundValue ?? 0), 0)
+          Object.values(monthlyTotals).reduce(
+            (s, v) => s + Number(v.outboundValueCoupang ?? 0) + Number(v.outboundValueGeneral ?? 0),
+            0
+          )
         ),
       };
     }

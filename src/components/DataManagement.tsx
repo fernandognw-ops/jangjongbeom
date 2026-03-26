@@ -63,7 +63,7 @@ function draftsToTransactions(
 }
 
 function normalizeProductKey(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
+  return String(s ?? "").replace(/\s+/g, " ").trim();
 }
 
 export function DataManagement() {

@@ -89,13 +89,26 @@ export function AIForecastReport() {
         const json = await res.json().catch(() => null);
         if (!res.ok) {
           const msg = (json?.error as string) || res.statusText || "서버 오류";
-          throw new Error(msg);
+          console.error("[AIForecastReport]", msg);
+          if (!cancelled) {
+            setError(msg);
+            setData(null);
+          }
+          return null;
         }
-        if (json?.error) throw new Error(String(json.error));
+        if (json?.error) {
+          const msg = String(json.error);
+          console.error("[AIForecastReport]", msg);
+          if (!cancelled) {
+            setError(msg);
+            setData(null);
+          }
+          return null;
+        }
         return json as ForecastResponse;
       })
       .then((json) => {
-        if (!cancelled) setData(json);
+        if (!cancelled && json) setData(json);
       })
       .catch((e) => {
         if (!cancelled) {
@@ -126,7 +139,7 @@ export function AIForecastReport() {
 
   if (loading) {
     return (
-      <div className="rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center">
+      <div className="mt-8 rounded-2xl border border-zinc-700 bg-zinc-900/50 p-8 text-center md:mt-10">
         <p className="text-zinc-500">AI 예측 분석 중…</p>
         <p className="mt-2 text-xs text-zinc-600">
           Run-rate 당월 + 3개월평균·추세 기반 수요 예측.
@@ -137,7 +150,7 @@ export function AIForecastReport() {
 
   if (error || !data) {
     return (
-      <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-6 text-center">
+      <div className="mt-8 rounded-2xl border border-red-500/40 bg-red-500/10 p-6 text-center md:mt-10">
         <p className="text-red-400">{error ?? "데이터를 불러올 수 없습니다."}</p>
         <button
           type="button"
@@ -173,10 +186,10 @@ export function AIForecastReport() {
   const topProducts = (data.product_forecasts ?? []).slice(0, 15);
 
   return (
-    <div className="min-w-0 space-y-6 overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 md:p-6">
+    <div className="mt-8 min-w-0 space-y-6 overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900/80 p-4 md:mt-10 md:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-lg font-bold text-white md:text-xl">
-          AI 예측 보고
+          AI 예측보고
         </h2>
         <button
           type="button"

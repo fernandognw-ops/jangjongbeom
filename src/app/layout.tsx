@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { InventoryProvider } from "@/context/InventoryContext";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -29,9 +28,7 @@ export default function RootLayout({
   return (
     <html lang="ko" suppressHydrationWarning>
       <body className="font-sans min-h-screen bg-[#E0E7FF] text-slate-800 antialiased">
-        <ErrorBoundary>
-          <InventoryProvider>{children}</InventoryProvider>
-        </ErrorBoundary>
+        <InventoryProvider>{children}</InventoryProvider>
       </body>
     </html>
   );
