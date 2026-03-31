@@ -9,7 +9,8 @@
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
  * - 월 범위: (요청 month 없음) 세 테이블 최소 일자 중 가장 이른 날부터 전량 로드. 월 축 = 입고·출고·스냅샷에 나타난 월의 합집합(교집합 아님), 테이블별 없는 월은 0
  * - momIndicators: 출고 카드 = **출고>0 인 가장 최근 달**, 입고 카드 = **입고>0 인 가장 최근 달**(서로 달 수 있음). 전월대비도 각각 해당 KPI 월의 전월과 비교.
- * - chartData 카테고리 막대: 마스터 5개 + (필요 시) **출고_미분류** = monthlyTotals.outbound − 마스터 5 합 → 스택 합이 월별 DB 출고 총량과 일치
+ * - 출고 수량 차트: inventory_outbound만, 월=outbound_date→YYYY-MM(`monthKeyFromOutboundDate`), 수량=quantity 합, 제외=isInvalidOutbound만. 행은 마스터 5 또는 **출고_미분류** 중 하나에만 합산(스택합=월 총출고=monthlyTotals.outbound).
+ * - `?verifyOutboundMonth=YYYY-MM`: 해당 월 DB 재집계 vs 차트·카드·monthlyTotals 비교 테이블 + 미분류 SKU(매핑 누락) 목록
  * - 월별 재고 자산: 해당 월 **마지막 snapshot_date** 1일만 카테고리별 total_price 합산
  * - ?debug=1: 출고 금액 샘플 20건 + 월별 채널 금액 집계 메타
  */
@@ -357,14 +358,63 @@ function normalizeCategoryName(cat: string): string {
 }
 
 /** 마스터 코드 5개만. 대시보드에 이 외 카테고리 표시 금지 */
-const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"];
+const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"] as const;
 /** 마스터 5 외·기타·비매핑 출고를 담아 chartData 스택 합 = monthlyTotals.outbound 와 맞춤 */
 const UNCATEGORIZED_OUTBOUND_LABEL = "출고_미분류";
+
+const OUTBOUND_CHART_CATEGORY_KEYS = [...CATEGORY_ORDER, UNCATEGORIZED_OUTBOUND_LABEL] as const;
+
+/**
+ * inventory_outbound 집계 전용: outbound_date → YYYY-MM (DB `to_char(outbound_date,'YYYY-MM')`와 동일한 달력일 기준 —
+ * 문자열이면 앞 10자리 YYYY-MM-DD 파싱 후 월만 사용).
+ */
+function monthKeyFromOutboundDate(value: unknown): string {
+  const ymd = dateToYmdRawFirst(value);
+  if (ymd) return monthKeyFromYmd(ymd);
+  const raw = String(value ?? "").trim();
+  const m1 = raw.match(/^(\d{4})-(\d{2})-\d{2}/);
+  if (m1?.[1] && m1[2]) return `${m1[1]}-${m1[2]}`;
+  const m2 = raw.match(/^(\d{4})-(\d{2})(?![0-9])/);
+  if (m2?.[1] && m2[2]) return `${m2[1]}-${m2[2]}`;
+  const m3 = raw.match(/^(\d{4})[\/](\d{1,2})/);
+  if (m3?.[1] && m3[2]) return `${m3[1]}-${String(m3[2]).padStart(2, "0")}`;
+  return "";
+}
+
+function initOutboundChartBucketsForMonth(row: Record<string, number>) {
+  for (const c of CATEGORY_ORDER) {
+    if (row[c] === undefined) row[c] = 0;
+  }
+  row[UNCATEGORIZED_OUTBOUND_LABEL] = row[UNCATEGORIZED_OUTBOUND_LABEL] ?? 0;
+}
+
+/**
+ * 출고 행 1건 → 차트 스택 버킷(마스터 5 또는 미분류). outbound 행으로 codeToCategory를 바꾸지 않음(순서 비의존).
+ */
+function resolveOutboundStackBucket(
+  o: { product_code: string; category?: string },
+  codeToCategory: Map<string, string>
+): (typeof CATEGORY_ORDER)[number] | typeof UNCATEGORIZED_OUTBOUND_LABEL {
+  const rowCat = String(o.category ?? "").trim();
+  const raw =
+    rowCat && rowCat !== "기타"
+      ? rowCat
+      : (codeToCategory.get(normalizeCode(o.product_code) || "") ??
+        codeToCategory.get(String(o.product_code).trim()) ??
+        "");
+  if (!raw || raw === "기타") return UNCATEGORIZED_OUTBOUND_LABEL;
+  const cat = normalizeCategoryName(raw);
+  if (!cat || cat === "기타") return UNCATEGORIZED_OUTBOUND_LABEL;
+  if ((CATEGORY_ORDER as readonly string[]).includes(cat)) return cat as (typeof CATEGORY_ORDER)[number];
+  return UNCATEGORIZED_OUTBOUND_LABEL;
+}
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const debug = searchParams.get("debug") === "1";
+    const verifyOutboundMonthRaw = (searchParams.get("verifyOutboundMonth") ?? "").trim();
+    const verifyOutboundMonth = /^\d{4}-\d{2}$/.test(verifyOutboundMonthRaw) ? verifyOutboundMonthRaw : "";
 
     const serverInfo = {
       marker: CATEGORY_TREND_SERVER_MARKER,
@@ -458,7 +508,7 @@ export async function GET(request: Request) {
 
     const monthKeysFromData = new Set<string>();
     for (const o of outbound) {
-      const m = monthKeyFromAnyDate(o.outbound_date);
+      const m = monthKeyFromOutboundDate(o.outbound_date);
       if (m) monthKeysFromData.add(m);
     }
     for (const i of inbound) {
@@ -533,37 +583,7 @@ export async function GET(request: Request) {
         codeToCost.set(String(p.product_code).trim(), c);
       }
     }
-    const byMonthCategory: Record<string, Record<string, number>> = {};
-
-    /** invalid outbound 제외·월키 성공 행 기준 DB 출고 총량(byMonthCategory·monthlyTotals.outbound 와 동일 원천) */
-    const fullOutboundByMonth: Record<string, number> = {};
-    for (const o of outbound) {
-      if (isInvalidOutbound((o as any)?.id)) continue;
-      const m = monthKeyFromAnyDate(o.outbound_date);
-      if (!m) continue;
-      fullOutboundByMonth[m] = (fullOutboundByMonth[m] ?? 0) + Number(o.quantity ?? 0);
-    }
-
-    // 그래프·전월대비: 아웃바운드(실제 출고)만 사용. 마스터 5개 카테고리만 표시
-    for (const o of outbound) {
-      if (isInvalidOutbound((o as any)?.id)) continue;
-      const m = monthKeyFromAnyDate(o.outbound_date);
-      if (!m) continue;
-      if (!byMonthCategory[m]) byMonthCategory[m] = {};
-      const rowCat = (o.category ?? "").trim();
-      let cat =
-        (rowCat && rowCat !== "기타") ? rowCat :
-        codeToCategory.get(normalizeCode(o.product_code) || "") ||
-        codeToCategory.get(String(o.product_code).trim()) ||
-        "";
-      if (cat === "기타") continue;
-      cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타") continue;
-      categoriesSet.add(cat);
-      byMonthCategory[m][cat] = (byMonthCategory[m][cat] ?? 0) + Number(o.quantity ?? 0);
-      const code = normalizeCode(o.product_code) || String(o.product_code ?? "").trim();
-      if (code && cat && cat !== "기타" && !codeToCategory.has(code)) codeToCategory.set(code, cat);
-    }
+    /** 입고·제품 기준 codeToCategory만 사용해 출고 행 버킷을 정함(출고 루프에서 codeToCategory 변경 금지) */
     for (const i of inbound) {
       const rowCat = (i.category ?? "").trim();
       const cat = normalizeCategoryName(rowCat || "");
@@ -574,24 +594,48 @@ export async function GET(request: Request) {
       categoriesSet.add(cat);
     }
 
-    const ordered = [...categoriesSet];
-    const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
+    const byMonthCategory: Record<string, Record<string, number>> = {};
+    /** outbound_date 파싱 실패로 월 미배정된 수량(검증용) */
+    let outboundQtySkippedUnparseableMonth = 0;
+    /** verifyOutboundMonth 행의 미분류 SKU (product_code → 누적 수량·대표 행 category) */
+    const uncatSkuForVerifyMonth = new Map<string, { qty: number; rowCategory: string }>();
+
+    for (const o of outbound) {
+      if (isInvalidOutbound((o as any)?.id)) continue;
+      const m = monthKeyFromOutboundDate(o.outbound_date);
+      const qty = Number(o.quantity ?? 0);
+      if (!m) {
+        outboundQtySkippedUnparseableMonth += qty;
+        continue;
+      }
+      if (!byMonthCategory[m]) {
+        byMonthCategory[m] = {};
+        initOutboundChartBucketsForMonth(byMonthCategory[m]);
+      }
+      const bucket = resolveOutboundStackBucket(o, codeToCategory);
+      byMonthCategory[m][bucket] = (byMonthCategory[m][bucket] ?? 0) + qty;
+      if (verifyOutboundMonth === m && bucket === UNCATEGORIZED_OUTBOUND_LABEL) {
+        const code = normalizeCode(o.product_code) || String(o.product_code ?? "").trim() || "(빈코드)";
+        const rowCat = String(o.category ?? "").trim() || "(행 category 없음)";
+        const prev = uncatSkuForVerifyMonth.get(code);
+        if (prev) uncatSkuForVerifyMonth.set(code, { qty: prev.qty + qty, rowCategory: prev.rowCategory });
+        else uncatSkuForVerifyMonth.set(code, { qty, rowCategory: rowCat });
+      }
+    }
 
     for (const m of months) {
-      if (!byMonthCategory[m]) byMonthCategory[m] = {};
-      let sumMaster = 0;
-      for (const c of finalCategories) {
-        sumMaster += byMonthCategory[m][c] ?? 0;
+      if (!byMonthCategory[m]) {
+        byMonthCategory[m] = {};
+        initOutboundChartBucketsForMonth(byMonthCategory[m]);
+      } else {
+        initOutboundChartBucketsForMonth(byMonthCategory[m]);
       }
-      const full = fullOutboundByMonth[m] ?? 0;
-      byMonthCategory[m][UNCATEGORIZED_OUTBOUND_LABEL] = Math.max(0, full - sumMaster);
     }
-    const hasUncategorizedOutbound = months.some(
-      (m) => (byMonthCategory[m]?.[UNCATEGORIZED_OUTBOUND_LABEL] ?? 0) > 0
-    );
-    const chartCategories = hasUncategorizedOutbound
-      ? [...finalCategories, UNCATEGORIZED_OUTBOUND_LABEL]
-      : [...finalCategories];
+
+    const ordered = [...categoriesSet];
+    const finalCategories: string[] = CATEGORY_ORDER.filter((c) => ordered.includes(c));
+
+    const chartCategories: string[] = [...OUTBOUND_CHART_CATEGORY_KEYS];
 
     /** 월간 평균 검색 지수 (월별 출고량과 1:1 대응) */
     const naverByMonth: Record<string, Record<string, number>> = {};
@@ -668,7 +712,7 @@ export async function GET(request: Request) {
 
     for (const o of outbound) {
       if (isInvalidOutbound((o as any)?.id)) continue;
-      const m = monthKeyFromAnyDate(o.outbound_date);
+      const m = monthKeyFromOutboundDate(o.outbound_date);
       if (!monthlyTotals[m]) continue;
       const qty = Number(o.quantity ?? 0);
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
@@ -731,6 +775,20 @@ export async function GET(request: Request) {
       monthlyTotals[m].outbound = g.coupangQty + g.generalQty;
     }
 
+    for (const m of months) {
+      const stackSum =
+        CATEGORY_ORDER.reduce((s, c) => s + (byMonthCategory[m]?.[c] ?? 0), 0) +
+        (byMonthCategory[m]?.[UNCATEGORIZED_OUTBOUND_LABEL] ?? 0);
+      const tot = monthlyTotals[m]?.outbound ?? 0;
+      if (Math.abs(stackSum - tot) > 1e-6) {
+        console.error("[category-trend] outbound qty reconcile mismatch", {
+          month: m,
+          chartStackSum: stackSum,
+          monthlyTotalsOutbound: tot,
+        });
+      }
+    }
+
     if (debug && outboundDebugSamples.length > 0) {
       console.log(
         "[category-trend:debug] outbound amount samples (20)",
@@ -762,21 +820,20 @@ export async function GET(request: Request) {
       byMonthCategoryOutboundValue[m] = {};
       for (const c of finalCategories) {
         byMonthCategoryInboundValue[m][c] = 0;
+      }
+      for (const c of CATEGORY_ORDER) {
         byMonthCategoryOutboundValue[m][c] = 0;
       }
     }
     for (const o of outbound) {
       if (isInvalidOutbound((o as any)?.id)) continue;
-      const m = monthKeyFromAnyDate(o.outbound_date);
+      const m = monthKeyFromOutboundDate(o.outbound_date);
       if (!byMonthCategoryOutboundValue[m]) continue;
-      const rowCat = (o.category ?? "").trim();
-      let cat = (rowCat && rowCat !== "기타") ? rowCat : codeToCategory.get(normalizeCode(o.product_code) || "") || codeToCategory.get(String(o.product_code).trim()) || "";
-      if (cat === "기타") continue;
-      cat = normalizeCategoryName(cat) || "기타";
-      if (cat === "기타" || !finalCategories.includes(cat)) continue;
+      const bucket = resolveOutboundStackBucket(o, codeToCategory);
+      if (bucket === UNCATEGORIZED_OUTBOUND_LABEL) continue;
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
       const val = chosenOutboundAmount(o, codeKey, codeToCost).amount;
-      byMonthCategoryOutboundValue[m][cat] = (byMonthCategoryOutboundValue[m][cat] ?? 0) + val;
+      byMonthCategoryOutboundValue[m][bucket] = (byMonthCategoryOutboundValue[m][bucket] ?? 0) + val;
     }
     for (const i of inbound) {
       const m = monthKeyFromAnyDate(i.inbound_date);
@@ -906,7 +963,7 @@ export async function GET(request: Request) {
     const outboundMonthsSet = new Set<string>();
     for (const o of outbound) {
       if (isInvalidOutbound((o as any)?.id)) continue;
-      const mk = monthKeyFromAnyDate(o.outbound_date);
+      const mk = monthKeyFromOutboundDate(o.outbound_date);
       if (!mk) continue;
       outboundMonthsSet.add(mk);
       outboundRowsByMonthCount[mk] = (outboundRowsByMonthCount[mk] ?? 0) + 1;
@@ -926,7 +983,7 @@ export async function GET(request: Request) {
       };
       const monthRows = outbound.filter((o) => {
         if (isInvalidOutbound((o as any)?.id)) return false;
-        return monthKeyFromAnyDate(o.outbound_date) === mk;
+        return monthKeyFromOutboundDate(o.outbound_date) === mk;
       });
       const chosenSourceCounts: Record<ChosenAmountSource, number> = {
         outbound_total_amount: 0,
@@ -969,11 +1026,69 @@ export async function GET(request: Request) {
       console.log("[category-trend:monthly-outbound-debug]", JSON.stringify(monthlyOutboundDebug));
     }
 
+    const outboundReconcileVerify = verifyOutboundMonth
+      ? (() => {
+          let dbSourceTotalQty = 0;
+          for (const o of outbound) {
+            if (isInvalidOutbound((o as any)?.id)) continue;
+            if (monthKeyFromOutboundDate(o.outbound_date) !== verifyOutboundMonth) continue;
+            dbSourceTotalQty += Number(o.quantity ?? 0);
+          }
+          const sumMasterCategories = CATEGORY_ORDER.reduce(
+            (s, c) => s + (byMonthCategory[verifyOutboundMonth]?.[c] ?? 0),
+            0
+          );
+          const uncategorizedQty =
+            byMonthCategory[verifyOutboundMonth]?.[UNCATEGORIZED_OUTBOUND_LABEL] ?? 0;
+          const chartStackSum = sumMasterCategories + uncategorizedQty;
+          const monthlyTotalsOutbound = monthlyTotals[verifyOutboundMonth]?.outbound ?? 0;
+          const dashboardCardOutboundWhenKpiMonthMatches =
+            kpiMonthOutbound === verifyOutboundMonth ? thisOut : null;
+          const uncategorizedSkuRows = [...uncatSkuForVerifyMonth.entries()]
+            .map(([product_code, v]) => ({
+              product_code,
+              qty: v.qty,
+              sample_row_category: v.rowCategory,
+            }))
+            .sort((a, b) => b.qty - a.qty);
+          return {
+            verifyMonth: verifyOutboundMonth,
+            rules: {
+              sourceTable: "inventory_outbound",
+              monthKey: "outbound_date → YYYY-MM (monthKeyFromOutboundDate)",
+              quantity: "SUM(quantity) per row",
+              excluded: "isInvalidOutbound(id) only; no other outbound filters",
+              stackBuckets: "CATEGORY_ORDER | 출고_미분류; codeToCategory frozen before outbound (no row-order side effects)",
+            },
+            table: {
+              "1_dbSourceTotalQty": dbSourceTotalQty,
+              "2_sumMasterCategories": sumMasterCategories,
+              "3_uncategorizedQty": uncategorizedQty,
+              "4_sumMasterPlusUncategorized": chartStackSum,
+              "5_monthlyTotalsOutbound": monthlyTotalsOutbound,
+              "6_dashboardCardOutboundWhenKpiIsVerifyMonth": dashboardCardOutboundWhenKpiMonthMatches,
+            },
+            kpiMonthOutbound,
+            deltas: {
+              db_minus_monthlyTotals: dbSourceTotalQty - monthlyTotalsOutbound,
+              db_minus_chartStack: dbSourceTotalQty - chartStackSum,
+              stack_minus_monthlyTotals: chartStackSum - monthlyTotalsOutbound,
+            },
+            outboundQtySkippedUnparseableMonth_global: outboundQtySkippedUnparseableMonth,
+            allNumericDeltasZero:
+              dbSourceTotalQty === monthlyTotalsOutbound &&
+              dbSourceTotalQty === chartStackSum &&
+              chartStackSum === monthlyTotalsOutbound,
+            uncategorizedSkuBreakdown_qtySorted: uncategorizedSkuRows,
+          };
+        })()
+      : null;
+
     const payload: Record<string, unknown> = {
       months,
       categories: chartCategories,
       chartCategoriesMaster: finalCategories,
-      chartUncategorizedOutboundLabel: hasUncategorizedOutbound ? UNCATEGORIZED_OUTBOUND_LABEL : null,
+      chartUncategorizedOutboundLabel: UNCATEGORIZED_OUTBOUND_LABEL,
       chartData,
       naverSearchTrend,
       momRates,
@@ -1020,6 +1135,7 @@ export async function GET(request: Request) {
       },
       rowCounts: rowCountsMeta,
       sourceTablesEmpty: false,
+      ...(outboundReconcileVerify ? { outboundReconcileVerify } : {}),
     };
 
     if (debug) {
@@ -1030,7 +1146,7 @@ export async function GET(request: Request) {
         snapshot: buildMonthDebugRows(snapRows, (r) => String(r.snapshot_date ?? "")),
       };
       const monthOutboundRows = drillMonth
-        ? outbound.filter((o) => monthKeyFromAnyDate(o.outbound_date) === drillMonth)
+        ? outbound.filter((o) => monthKeyFromOutboundDate(o.outbound_date) === drillMonth)
         : [];
       const monthStockRows = drillMonth
         ? snapRows.filter((s) => (s.snapshot_date ?? "").slice(0, 7) === drillMonth)
@@ -1082,7 +1198,7 @@ export async function GET(request: Request) {
         .sort((a, b) => a - b);
       const fetchedOutboundIdsForDrillMonth = drillMonth
         ? outbound
-            .filter((o) => monthKeyFromAnyDate(o.outbound_date) === drillMonth)
+            .filter((o) => monthKeyFromOutboundDate(o.outbound_date) === drillMonth)
             .map((o) => (typeof o.id === "number" ? o.id : null))
             .filter((v): v is number => v != null)
             .sort((a, b) => a - b)
