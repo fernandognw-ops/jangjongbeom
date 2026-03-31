@@ -290,6 +290,9 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [categoryForecastThisMonth, setCategoryForecastThisMonth] = useState<{ thisMonthKey: string; byCategory: Record<string, number> } | undefined>(undefined);
   /** refresh 1단계 quick 응답의 channelTotals — 2단계 snapshot 덮어쓰기 시 비교용 */
   const quickChannelTotalsRef = useRef<Record<string, number> | null>(null);
+  /** 동시 refresh 시 늦게 도착한 응답이 최신 상태를 덮어쓰지 않도록 */
+  const refreshGenerationRef = useRef(0);
+  const refreshAbortRef = useRef<AbortController | null>(null);
   const [supabaseSummary, setSupabaseSummary] = useState<{
     stockByProduct: Record<string, number>;
     stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
@@ -309,6 +312,13 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   const [products, setProductsState] = useState<ProductMasterRow[]>([]);
 
   const refresh = useCallback(async () => {
+    refreshGenerationRef.current += 1;
+    const generation = refreshGenerationRef.current;
+    refreshAbortRef.current?.abort();
+    const ac = new AbortController();
+    refreshAbortRef.current = ac;
+    setIsSupabaseLoading(true);
+
     const delayNull = (ms: number) =>
       new Promise<null>((r) => setTimeout(() => r(null), ms));
 
@@ -378,9 +388,14 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const cacheBust = `_t=${Date.now()}`;
-      const opts = { cache: "no-store" as RequestCache, headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" } };
+      const opts = {
+        cache: "no-store" as RequestCache,
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+        signal: ac.signal,
+      };
       const unifiedRes = await Promise.race([
         fetch(`/api/inventory/dashboard-aggregate?${cacheBust}`, opts).catch((e) => {
+          if (e instanceof Error && e.name === "AbortError") return null;
           console.error("[InventoryContext] dashboard-aggregate fetch failed", e);
           return null;
         }),
@@ -620,9 +635,17 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
         }
       }
     } catch (e) {
+      if (e instanceof Error && e.name === "AbortError") {
+        if (generation === refreshGenerationRef.current) setIsSupabaseLoading(false);
+        return;
+      }
       console.error("[InventoryContext] refresh unexpected", e);
       const errMsg = e instanceof Error ? e.message : String(e);
       applyResult = baseApply("fetch_error", errMsg || "알 수 없는 오류로 대시보드를 불러오지 못했습니다.");
+    }
+
+    if (generation !== refreshGenerationRef.current) {
+      return;
     }
 
     console.log("SET STATE", setStateSnapshot, setStateSummary);
