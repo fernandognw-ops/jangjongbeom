@@ -77,6 +77,9 @@ export interface CategoryTrendData {
   momIndicators?: {
     outbound: number | null;
     inbound: number | null;
+    /** category-trend 집계 기준월 YYYY-MM (대시보드 카드와 업로드 월 대조용) */
+    kpiMonthKey?: string | null;
+    prevKpiMonthKey?: string | null;
     thisMonthOutbound: number;
     thisMonthInbound: number;
     thisMonthOutboundValue?: number;

@@ -809,7 +809,33 @@ export async function GET(request: Request) {
       }
     }
 
-    const kpiMonth = months.length > 0 ? months[months.length - 1]! : "";
+    /**
+     * 대시보드 '당월' KPI: 월 축은 입·출고·스냅샷 일자 합집합이라, 말월이 입·출고 0인 '빈 달'
+     * (스냅샷만 다른 월 키로 잡히는 경우 등)이면 월간 출고 카드가 업로드 월(예: 2026-03)과 어긋난다.
+     * → 뒤에서부터 출고가 있는 달을 우선, 없으면 입고가 있는 달, 그다음 말월.
+     */
+    let kpiMonth = "";
+    if (months.length > 0) {
+      for (let i = months.length - 1; i >= 0; i--) {
+        const m = months[i]!;
+        const mt = monthlyTotals[m];
+        if ((mt?.outbound ?? 0) > 0) {
+          kpiMonth = m;
+          break;
+        }
+      }
+      if (!kpiMonth) {
+        for (let i = months.length - 1; i >= 0; i--) {
+          const m = months[i]!;
+          const mt = monthlyTotals[m];
+          if ((mt?.inbound ?? 0) > 0) {
+            kpiMonth = m;
+            break;
+          }
+        }
+      }
+      if (!kpiMonth) kpiMonth = months[months.length - 1]!;
+    }
     const prevKpiMonth = kpiMonth ? prevCalendarMonthKey(kpiMonth) : "";
     const thisOut = kpiMonth ? monthlyTotals[kpiMonth]?.outbound ?? 0 : 0;
     const thisIn = kpiMonth ? monthlyTotals[kpiMonth]?.inbound ?? 0 : 0;

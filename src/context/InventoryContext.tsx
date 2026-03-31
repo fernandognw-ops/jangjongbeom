@@ -214,6 +214,8 @@ interface InventoryContextValue {
     momIndicators?: {
       outbound: number | null;
       inbound: number | null;
+      kpiMonthKey?: string | null;
+      prevKpiMonthKey?: string | null;
       thisMonthOutbound: number;
       thisMonthInbound: number;
       thisMonthOutboundValue?: number;
@@ -248,6 +250,8 @@ const EMPTY_CATEGORY_TREND: NonNullable<InventoryContextValue["categoryTrendData
   momIndicators: {
     outbound: null,
     inbound: null,
+    kpiMonthKey: null,
+    prevKpiMonthKey: null,
     thisMonthOutbound: 0,
     thisMonthInbound: 0,
     thisMonthOutboundValue: 0,

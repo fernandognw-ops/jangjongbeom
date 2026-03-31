@@ -134,9 +134,13 @@ export function ProductionSheetUploader() {
         setValidateWarnings(Array.isArray(json.warnings) ? json.warnings : []);
         setStatus("success");
         const ac = json.autoCommit;
+        const v = json.validation;
         if (ac?.executed && ac?.result) {
           setMessage(
-            `자동 반영 완료. 입고 ${ac.result.inboundInserted}건, 출고 ${ac.result.outboundInserted}건, 재고 ${ac.result.stockSnapshotCount}건`
+            [
+              `DB 반영(삽입·갱신): 입고 ${ac.result.inboundInserted}건 · 출고 ${ac.result.outboundInserted}건 · 재고 ${ac.result.stockSnapshotCount}건`,
+              `엑셀 파싱 행수: 입고 ${v.inboundCount} · 출고 ${v.outboundCount} · 재고 ${v.stockCount} (source_row_key·동일월 치환 시 DB 건수와 다를 수 있음)`,
+            ].join("\n")
           );
         } else {
           setMessage("검증은 완료되었지만 자동 반영 결과를 확인하지 못했습니다.");
@@ -263,7 +267,7 @@ export function ProductionSheetUploader() {
             status === "error"
               ? "border border-red-200 bg-red-50 text-red-700"
               : status === "success"
-                ? "border border-emerald-200 bg-emerald-50 text-emerald-800"
+                ? "border border-emerald-200 bg-emerald-50 text-emerald-800 whitespace-pre-line"
                 : "border border-slate-200 bg-slate-50 text-slate-700"
           }`}
           role="alert"
@@ -284,14 +288,15 @@ export function ProductionSheetUploader() {
           <p className="mt-0.5 text-[10px] text-slate-500">
             {status === "error"
               ? "반영 차단 — 아래 차단 사유·금액·행 수를 확인하세요."
-              : "위 초록 상자가 실제 DB 반영(삽입) 결과입니다. 아래 숫자는 파일에서 읽은 행·금액이며, 삽입 건수와 다를 수 있습니다(동일 월 재업로드 시 치환·중복 제거 등)."}
+              : "초록 상자 첫 줄은 DB 반영 건수, 둘째 줄은 엑셀에서 읽은 행 수입니다. 아래 표는 항목 옆 숫자가 한 쌍(라벨→값)입니다. (예전 3열 그리드는 라벨과 값이 열에서 어긋나 입고/출고가 뒤바뀐 것처럼 보일 수 있었습니다.)"}
           </p>
-          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm md:grid-cols-3">
+          <dl className="mt-2 text-sm">
+            <div className="grid max-w-3xl grid-cols-1 gap-y-1.5 sm:grid-cols-[minmax(11rem,auto)_1fr] sm:gap-x-4">
             <dt className="text-slate-500">rawdata 건수</dt>
             <dd className="font-mono">{validation.rawdataCount}건</dd>
-            <dt className="text-slate-500">입고 건수</dt>
+            <dt className="text-slate-500">입고 건수 (파싱)</dt>
             <dd className="font-mono">{validation.inboundCount}건</dd>
-            <dt className="text-slate-500">출고 건수</dt>
+            <dt className="text-slate-500">출고 건수 (파싱)</dt>
             <dd className="font-mono">
               {validation.outboundTrace && (validation.outboundTrace.filteredOut ?? 0) > 0 ? (
                 <>
@@ -301,7 +306,7 @@ export function ProductionSheetUploader() {
                 `${validation.outboundCount}건`
               )}
             </dd>
-            <dt className="text-slate-500">재고 건수</dt>
+            <dt className="text-slate-500">재고 건수 (파싱)</dt>
             <dd className="font-mono">{validation.stockCount}건</dd>
             <dt className="text-slate-500">재고 총 금액</dt>
             <dd className="font-mono">{(validation.totalStockValue ?? 0).toLocaleString()}원</dd>
@@ -311,8 +316,8 @@ export function ProductionSheetUploader() {
             </dd>
             {validation.destWarehouseBySource && (
               <>
-                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs">센터 분포 상세 (채널 아님)</dt>
-                <dd className="col-span-2 md:col-span-3 text-xs text-slate-600">
+                <dt className="text-slate-500 text-xs sm:col-span-1">센터 분포 상세 (채널 아님)</dt>
+                <dd className="text-xs text-slate-600 sm:col-span-1">
                   입고: 일반 {(validation.destWarehouseBySource.inbound?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.inbound?.["쿠팡"] ?? 0)} · 
                   재고: 일반 {(validation.destWarehouseBySource.stock?.["일반"] ?? 0)} / 쿠팡 {(validation.destWarehouseBySource.stock?.["쿠팡"] ?? 0)}
                 </dd>
@@ -355,9 +360,10 @@ export function ProductionSheetUploader() {
             )}
             {validation.autoValidation?.sums && (
               <>
-                <dt className="text-slate-500 col-span-2 md:col-span-3 text-xs font-medium text-slate-600">
-                  자동 검증 합계 (동일 금액 선택 규칙)
+                <dt className="text-slate-500 sm:col-span-2 text-xs font-medium text-slate-600 pt-2 mt-2 border-t border-slate-200">
+                  자동 검증 합계
                 </dt>
+                <dd className="text-[10px] text-slate-400 sm:col-span-2">행별 금액 선택 규칙과 동일</dd>
                 <dt className="text-slate-500">합계(outbound_total/total)</dt>
                 <dd className="font-mono text-xs">
                   {validation.autoValidation.sums.sumOutboundTotalAmountField.toLocaleString()}원
@@ -367,18 +373,18 @@ export function ProductionSheetUploader() {
                 <dt className="text-slate-500">SUM(unit×qty)</dt>
                 <dd className="font-mono text-xs">{validation.autoValidation.sums.sumUnitPriceXQty.toLocaleString()}원</dd>
                 <dt className="text-slate-500">채널별 금액(추정)</dt>
-                <dd className="font-mono text-xs col-span-1 md:col-span-2">
+                <dd className="font-mono text-xs">
                   일반 {(validation.autoValidation.channelAmountsKrw?.["일반"] ?? 0).toLocaleString()}원 · 쿠팡{" "}
                   {(validation.autoValidation.channelAmountsKrw?.["쿠팡"] ?? 0).toLocaleString()}원
                 </dd>
                 <dt className="text-slate-500">월별 행 수 (입고/출고/재고)</dt>
-                <dd className="col-span-1 md:col-span-2 font-mono text-[11px] text-slate-700">
+                <dd className="font-mono text-[11px] text-slate-700">
                   입고 {JSON.stringify(validation.autoValidation.monthRowCounts?.inbound ?? {})} · 출고{" "}
                   {JSON.stringify(validation.autoValidation.monthRowCounts?.outbound ?? {})} · 스냅{" "}
                   {JSON.stringify(validation.autoValidation.monthRowCounts?.snapshot ?? {})}
                 </dd>
                 <dt className="text-slate-500">source 분포 (행 수)</dt>
-                <dd className="col-span-1 md:col-span-2 font-mono text-[11px]">
+                <dd className="font-mono text-[11px]">
                   {JSON.stringify(validation.autoValidation.sourceSelection?.rowCounts ?? {})}
                   {validation.autoValidation.sourceSelection?.outboundTotalAmountVsTotalPriceRatio != null && (
                     <span className="ml-2 text-slate-500">
@@ -392,13 +398,15 @@ export function ProductionSheetUploader() {
                 </dd>
               </>
             )}
+            </div>
+          </dl>
             {validation.outboundTotalAmountColumnFound === false && (
-              <p className="col-span-2 md:col-span-3 text-xs font-medium text-red-600">
+              <p className="mt-2 text-xs font-medium text-red-600">
                 합계금액 열 미탐지 — 반영 차단 대상입니다.
               </p>
             )}
             {!!validation.autoValidation?.blockReasons?.length && (
-              <div className="col-span-2 md:col-span-3 mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+              <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
                 <p className="text-xs font-semibold text-red-800">차단 사유</p>
                 <ul className="mt-1 list-inside list-disc text-xs text-red-900">
                   {validation.autoValidation.blockReasons.map((b, i) => (
@@ -407,7 +415,6 @@ export function ProductionSheetUploader() {
                 </ul>
               </div>
             )}
-          </dl>
           {validateWarnings.length > 0 && (
             <ul className="mt-2 list-inside list-disc rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
               {validateWarnings.map((w, i) => (
