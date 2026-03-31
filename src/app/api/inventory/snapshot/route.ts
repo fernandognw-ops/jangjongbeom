@@ -39,6 +39,7 @@ async function fetchAllOutbound(
       .select("product_code,quantity,sales_channel")
       .gte("outbound_date", dateFrom)
       .order("outbound_date", { ascending: true })
+      .order("id", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
     if (error) break;
     const rows = (data ?? []) as { product_code: string; quantity: unknown; sales_channel?: string }[];

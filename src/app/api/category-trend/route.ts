@@ -19,6 +19,8 @@ import { normalizeCode } from "@/lib/inventoryApi";
 import {
   WAREHOUSE_COUPANG,
   WAREHOUSE_GENERAL,
+  normalizeSalesChannelKr,
+  outboundChannelKrFromRow,
 } from "@/lib/inventoryChannels";
 import { fetchOutboundRowsUnified } from "@/lib/outboundQuery";
 import { fetchNaverSearchTrendMonthly, NAVER_CATEGORIES } from "@/lib/naverSearchTrend";
@@ -627,7 +629,7 @@ export async function GET(request: Request) {
       const codeKey = normalizeCode(o.product_code) || String(o.product_code).trim();
       const channelVal = parseMoney(o.outbound_total_amount);
       const sc = String(o.sales_channel ?? "");
-      const scTrim = sc.trim();
+      const channelKr = outboundChannelKrFromRow(o as Record<string, unknown>);
 
       if (salesChannelSamplesForMonthlyTotals.length < 20) {
         salesChannelSamplesForMonthlyTotals.push(sc);
@@ -635,15 +637,12 @@ export async function GET(request: Request) {
         console.log("[category-trend:monthlyTotals] row.sales_channel sample", sc);
       }
 
-      if (scTrim === "coupang") {
+      if (channelKr === WAREHOUSE_COUPANG) {
         monthlyChannelAgg[m].coupangQty += qty;
         monthlyChannelAgg[m].coupangValue += channelVal;
-      } else if (scTrim === "general") {
+      } else {
         monthlyChannelAgg[m].generalQty += qty;
         monthlyChannelAgg[m].generalValue += channelVal;
-      } else {
-        pushInvalidSalesChannelRow(o);
-        continue; // invalid/empty sales_channel row 제외
       }
 
       if (debug && outboundDebugSamples.length < 20) {
@@ -657,7 +656,7 @@ export async function GET(request: Request) {
           unit_price_raw: o.unit_price,
           chosen_amount: chosen.amount,
           chosenOutboundAmountSource: chosen.source,
-          channel_kr: scTrim === "coupang" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL,
+          channel_kr: channelKr,
         });
       }
       if (debug) {
@@ -699,13 +698,7 @@ export async function GET(request: Request) {
       const qty = Number(i.quantity ?? 0);
       const codeKey = normalizeCode(i.product_code) || String(i.product_code).trim();
       const cost = codeToCost.get(codeKey) ?? 0;
-      const scRaw = String(i.sales_channel ?? "");
-      const scTrim = scRaw.trim();
-      if (scTrim !== "coupang" && scTrim !== "general") {
-        pushInvalidSalesChannelRow(i);
-        continue;
-      }
-      const ch = scTrim === "coupang" ? WAREHOUSE_COUPANG : WAREHOUSE_GENERAL;
+      const ch = normalizeSalesChannelKr(i.sales_channel, { lenient: true });
       monthlyTotals[m].inbound += qty;
       monthlyTotals[m].inboundValue += qty * cost;
       monthlyTotals[m].inboundByChannel[ch] = (monthlyTotals[m].inboundByChannel[ch] ?? 0) + qty;
