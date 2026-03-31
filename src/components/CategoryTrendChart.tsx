@@ -83,6 +83,8 @@ export interface CategoryTrendData {
     inbound: number | null;
     /** category-trend 집계 기준월 YYYY-MM (대시보드 카드와 업로드 월 대조용) */
     kpiMonthKey?: string | null;
+    kpiMonthKeyOutbound?: string | null;
+    kpiMonthKeyInbound?: string | null;
     prevKpiMonthKey?: string | null;
     thisMonthOutbound: number;
     thisMonthInbound: number;
@@ -1055,8 +1057,10 @@ export function CategoryTrendChart() {
           <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
             <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">
               이번 달 총 판매
-              {mom?.kpiMonthKey ? (
-                <span className="ml-1.5 font-normal normal-case text-zinc-500">({mom.kpiMonthKey})</span>
+              {mom?.kpiMonthKeyOutbound ?? mom?.kpiMonthKey ? (
+                <span className="ml-1.5 font-normal normal-case text-zinc-500">
+                  ({mom.kpiMonthKeyOutbound ?? mom.kpiMonthKey})
+                </span>
               ) : null}
             </div>
             <div className="mt-1 flex flex-wrap items-baseline gap-2">
@@ -1085,8 +1089,10 @@ export function CategoryTrendChart() {
           <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
             <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">
               이번 달 총 입고
-              {mom?.kpiMonthKey ? (
-                <span className="ml-1.5 font-normal normal-case text-zinc-500">({mom.kpiMonthKey})</span>
+              {mom?.kpiMonthKeyInbound ?? mom?.kpiMonthKey ? (
+                <span className="ml-1.5 font-normal normal-case text-zinc-500">
+                  ({mom.kpiMonthKeyInbound ?? mom.kpiMonthKey})
+                </span>
               ) : null}
             </div>
             <div className="mt-1 flex flex-wrap items-baseline gap-2">

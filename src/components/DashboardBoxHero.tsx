@@ -599,8 +599,10 @@ export function DashboardBoxHero() {
             <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-5 shadow-card">
               <div className="text-xs font-medium uppercase tracking-wider text-indigo-600">
                 이번 달 총 판매량
-                {momIndicators.kpiMonthKey ? (
-                  <span className="ml-1.5 font-normal normal-case text-slate-500">({momIndicators.kpiMonthKey})</span>
+                {momIndicators.kpiMonthKeyOutbound ?? momIndicators.kpiMonthKey ? (
+                  <span className="ml-1.5 font-normal normal-case text-slate-500">
+                    ({momIndicators.kpiMonthKeyOutbound ?? momIndicators.kpiMonthKey})
+                  </span>
                 ) : null}
               </div>
               <div className="mt-2 flex items-baseline gap-2">
@@ -622,8 +624,10 @@ export function DashboardBoxHero() {
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-5 shadow-card">
               <div className="text-xs font-medium uppercase tracking-wider text-sky-600">
                 이번 달 총 입고량
-                {momIndicators.kpiMonthKey ? (
-                  <span className="ml-1.5 font-normal normal-case text-slate-500">({momIndicators.kpiMonthKey})</span>
+                {momIndicators.kpiMonthKeyInbound ?? momIndicators.kpiMonthKey ? (
+                  <span className="ml-1.5 font-normal normal-case text-slate-500">
+                    ({momIndicators.kpiMonthKeyInbound ?? momIndicators.kpiMonthKey})
+                  </span>
                 ) : null}
               </div>
               <div className="mt-2 flex items-baseline gap-2">

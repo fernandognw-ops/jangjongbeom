@@ -218,6 +218,8 @@ interface InventoryContextValue {
       outbound: number | null;
       inbound: number | null;
       kpiMonthKey?: string | null;
+      kpiMonthKeyOutbound?: string | null;
+      kpiMonthKeyInbound?: string | null;
       prevKpiMonthKey?: string | null;
       thisMonthOutbound: number;
       thisMonthInbound: number;
@@ -254,6 +256,8 @@ const EMPTY_CATEGORY_TREND: NonNullable<InventoryContextValue["categoryTrendData
     outbound: null,
     inbound: null,
     kpiMonthKey: null,
+    kpiMonthKeyOutbound: null,
+    kpiMonthKeyInbound: null,
     prevKpiMonthKey: null,
     thisMonthOutbound: 0,
     thisMonthInbound: 0,

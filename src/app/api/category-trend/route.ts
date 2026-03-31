@@ -8,7 +8,7 @@
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
  * - 월 범위: (요청 month 없음) 세 테이블 최소 일자 중 가장 이른 날부터 전량 로드. 월 축 = 입고·출고·스냅샷에 나타난 월의 합집합(교집합 아님), 테이블별 없는 월은 0
- * - momIndicators(당월 KPI): kpiMonthKey = 월 축 말단부터 스캔해 **출고 또는 입고 수량이 있는 가장 최근 달**(스냅샷만 있는 빈 말월 제외). thisMonth* == monthlyTotals[kpiMonthKey]와 동일(원본 배열·필터 동일).
+ * - momIndicators: 출고 카드 = **출고>0 인 가장 최근 달**, 입고 카드 = **입고>0 인 가장 최근 달**(서로 달 수 있음). 전월대비도 각각 해당 KPI 월의 전월과 비교.
  * - chartData 카테고리 막대: 마스터 5개 + (필요 시) **출고_미분류** = monthlyTotals.outbound − 마스터 5 합 → 스택 합이 월별 DB 출고 총량과 일치
  * - 월별 재고 자산: 해당 월 **마지막 snapshot_date** 1일만 카테고리별 total_price 합산
  * - ?debug=1: 출고 금액 샘플 20건 + 월별 채널 금액 집계 메타
@@ -50,6 +50,8 @@ const emptyResponse = {
     thisMonthOutboundGeneral: 0,
     thisMonthInboundByChannel: {} as Record<string, number>,
     kpiMonthKey: null as string | null,
+    kpiMonthKeyOutbound: null as string | null,
+    kpiMonthKeyInbound: null as string | null,
     prevKpiMonthKey: null as string | null,
   },
   sourceTablesEmpty: true as boolean,
@@ -115,6 +117,20 @@ function prevCalendarMonthKey(ym: string): string {
   const m = Number(mStr);
   if (m <= 1) return `${y - 1}-12`;
   return `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
+/** 월 축(오름차순) 말단부터 field 양수인 달 — 출고·입고 KPI 월 분리용 */
+function lastMonthWithPositiveQty(
+  monthsSorted: string[],
+  monthlyTotals: Record<string, { outbound?: number; inbound?: number }>,
+  field: "outbound" | "inbound"
+): string {
+  for (let i = monthsSorted.length - 1; i >= 0; i--) {
+    const m = monthsSorted[i]!;
+    const v = field === "outbound" ? (monthlyTotals[m]?.outbound ?? 0) : (monthlyTotals[m]?.inbound ?? 0);
+    if (v > 0) return m;
+  }
+  return "";
 }
 
 async function fetchAllRows<T>(
@@ -839,26 +855,25 @@ export async function GET(request: Request) {
     }
 
     /**
-     * 대시보드 '당월' KPI: 월 축은 입·출고·스냅샷 일자 합집합이라 말월이 스냅샷만 있고 입·출고 0인 경우가 있다.
-     * → 말단부터 **출고 또는 입고** 수량이 있는 가장 최근 달을 kpiMonth로 사용 (monthlyTotals·원본 배열과 동일 집계).
+     * 대시보드 KPI: 말단 달에 출고만 있고 입고는 다음 달 파일에만 있는 경우 등 → 출고/입고 **각각** 최근 실적월 사용.
      */
-    let kpiMonth = "";
-    if (months.length > 0) {
-      for (let i = months.length - 1; i >= 0; i--) {
-        const m = months[i]!;
-        const mt = monthlyTotals[m];
-        if ((mt?.outbound ?? 0) > 0 || (mt?.inbound ?? 0) > 0) {
-          kpiMonth = m;
-          break;
-        }
-      }
-      if (!kpiMonth) kpiMonth = months[months.length - 1]!;
-    }
-    const prevKpiMonth = kpiMonth ? prevCalendarMonthKey(kpiMonth) : "";
-    const thisOut = kpiMonth ? monthlyTotals[kpiMonth]?.outbound ?? 0 : 0;
-    const thisIn = kpiMonth ? monthlyTotals[kpiMonth]?.inbound ?? 0 : 0;
-    const prevOut = prevKpiMonth ? monthlyTotals[prevKpiMonth]?.outbound ?? 0 : 0;
-    const prevIn = prevKpiMonth ? monthlyTotals[prevKpiMonth]?.inbound ?? 0 : 0;
+    const tailMonth = months.length > 0 ? months[months.length - 1]! : "";
+    let kpiMonthOutbound = lastMonthWithPositiveQty(months, monthlyTotals, "outbound");
+    let kpiMonthInbound = lastMonthWithPositiveQty(months, monthlyTotals, "inbound");
+    if (!kpiMonthOutbound && tailMonth) kpiMonthOutbound = tailMonth;
+    if (!kpiMonthInbound && tailMonth) kpiMonthInbound = tailMonth;
+
+    const prevKpiOutboundMonth = kpiMonthOutbound ? prevCalendarMonthKey(kpiMonthOutbound) : "";
+    const prevKpiInboundMonth = kpiMonthInbound ? prevCalendarMonthKey(kpiMonthInbound) : "";
+
+    const thisOut = kpiMonthOutbound ? monthlyTotals[kpiMonthOutbound]?.outbound ?? 0 : 0;
+    const thisIn = kpiMonthInbound ? monthlyTotals[kpiMonthInbound]?.inbound ?? 0 : 0;
+    const prevOut = prevKpiOutboundMonth ? monthlyTotals[prevKpiOutboundMonth]?.outbound ?? 0 : 0;
+    const prevIn = prevKpiInboundMonth ? monthlyTotals[prevKpiInboundMonth]?.inbound ?? 0 : 0;
+
+    /** 하위호환: 기존 단일 키는 출고 KPI 월 */
+    const kpiMonth = kpiMonthOutbound;
+    const prevKpiMonth = prevKpiOutboundMonth;
 
     const naverSearchTrend: Record<string, Record<string, number>> = {};
     for (const [kw, data] of Object.entries(naverMonthly ?? {})) {
@@ -983,17 +998,24 @@ export async function GET(request: Request) {
         thisMonthOutbound: thisOut,
         thisMonthInbound: thisIn,
         /** 출고 금액: chosenOutboundAmount 합 (total_price 우선) — DB SUM(total_price)와 동일 기준 */
-        thisMonthOutboundValue: kpiMonth
-          ? (monthlyTotals[kpiMonth]?.outboundValueCoupang ?? 0) + (monthlyTotals[kpiMonth]?.outboundValueGeneral ?? 0)
+        thisMonthOutboundValue: kpiMonthOutbound
+          ? (monthlyTotals[kpiMonthOutbound]?.outboundValueCoupang ?? 0) +
+            (monthlyTotals[kpiMonthOutbound]?.outboundValueGeneral ?? 0)
           : 0,
-        thisMonthInboundValue: kpiMonth ? monthlyTotals[kpiMonth]?.inboundValue ?? 0 : 0,
-        thisMonthOutboundCoupang: kpiMonth ? monthlyTotals[kpiMonth]?.outboundCoupang ?? 0 : 0,
-        thisMonthOutboundGeneral: kpiMonth ? monthlyTotals[kpiMonth]?.outboundGeneral ?? 0 : 0,
-        thisMonthInboundByChannel: kpiMonth ? monthlyTotals[kpiMonth]?.inboundByChannel ?? {} : {},
+        thisMonthInboundValue: kpiMonthInbound ? monthlyTotals[kpiMonthInbound]?.inboundValue ?? 0 : 0,
+        thisMonthOutboundCoupang: kpiMonthOutbound ? monthlyTotals[kpiMonthOutbound]?.outboundCoupang ?? 0 : 0,
+        thisMonthOutboundGeneral: kpiMonthOutbound ? monthlyTotals[kpiMonthOutbound]?.outboundGeneral ?? 0 : 0,
+        thisMonthInboundByChannel: kpiMonthInbound ? monthlyTotals[kpiMonthInbound]?.inboundByChannel ?? {} : {},
         /** 채널별 출고 금액(동일 월·동일 규칙) — 그래프 막대 비율 검증용 */
-        thisMonthOutboundValueCoupang: kpiMonth ? monthlyTotals[kpiMonth]?.outboundValueCoupang ?? 0 : 0,
-        thisMonthOutboundValueGeneral: kpiMonth ? monthlyTotals[kpiMonth]?.outboundValueGeneral ?? 0 : 0,
+        thisMonthOutboundValueCoupang: kpiMonthOutbound
+          ? monthlyTotals[kpiMonthOutbound]?.outboundValueCoupang ?? 0
+          : 0,
+        thisMonthOutboundValueGeneral: kpiMonthOutbound
+          ? monthlyTotals[kpiMonthOutbound]?.outboundValueGeneral ?? 0
+          : 0,
         kpiMonthKey: kpiMonth || null,
+        kpiMonthKeyOutbound: kpiMonthOutbound || null,
+        kpiMonthKeyInbound: kpiMonthInbound || null,
         prevKpiMonthKey: prevKpiMonth || null,
       },
       rowCounts: rowCountsMeta,
