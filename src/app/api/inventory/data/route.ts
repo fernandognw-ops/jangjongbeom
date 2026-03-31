@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { normalizeCode } from "@/lib/inventoryApi";
-import { fetchOutboundRowsUnified, monthRange } from "@/lib/outboundQuery";
+import { fetchInboundRowsUnified, fetchOutboundRowsUnified, monthRange } from "@/lib/outboundQuery";
 import { createHash } from "node:crypto";
 
 type MonthDebugRow = {
@@ -109,10 +109,17 @@ export async function GET(request: Request) {
       sinceParam && /^\d{4}-\d{2}-\d{2}$/.test(sinceParam) ? sinceParam : dateFromBase;
     const dateTo = monthWindow?.end;
 
-    const [productsRes, snapshotRes, inboundRes, outboundFetch] = await Promise.all([
+    const [productsRes, snapshotRes, inboundFetch, outboundFetch] = await Promise.all([
       supabase.from("inventory_products").select("*").order("product_code").limit(5000),
       supabase.from("inventory_stock_snapshot").select("product_code,quantity,snapshot_date,sales_channel").limit(20000),
-      supabase.from("inventory_inbound").select("id,product_code,quantity,inbound_date,sales_channel").gte("inbound_date", dateFrom).limit(10000),
+      fetchInboundRowsUnified<{ id?: number; product_code?: string; quantity?: number; inbound_date?: string; sales_channel?: string }>(
+        supabase,
+        {
+          selectedColumns: "id,product_code,quantity,inbound_date,sales_channel",
+          startDate: dateFrom,
+          endDate: dateTo,
+        }
+      ),
       fetchOutboundRowsUnified<{ id?: number; product_code?: string; quantity?: number; outbound_date?: string; sales_channel?: string }>(
         supabase,
         {
@@ -131,7 +138,7 @@ export async function GET(request: Request) {
     }
 
     const products = (productsRes.data ?? []) as Array<{ product_code: string; unit_cost?: number; [k: string]: unknown }>;
-    const inbound = inboundRes.data ?? [];
+    const inbound = inboundFetch.rows ?? [];
     const outbound = outboundFetch.rows ?? [];
     const snapshotRows = (snapshotRes.data ?? []) as Array<{ product_code?: unknown; quantity?: unknown; snapshot_date?: string }>;
 

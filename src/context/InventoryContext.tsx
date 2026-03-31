@@ -42,6 +42,95 @@ import {
   type StockSnapshotRow,
 } from "@/lib/inventoryApi";
 
+/** `/api/inventory/summary` → dashboard-aggregate에서 내려오는 요약(오늘 수불 등) */
+type SupabaseSummaryState = {
+  stockByProduct: Record<string, number>;
+  stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
+  safetyStockByProduct: Record<string, number>;
+  todayInOutCount: { inbound: number; outbound: number };
+  recommendedOrderByProduct: Record<string, number>;
+  totalValue: number;
+  avg60DayOutbound?: Record<string, number>;
+};
+
+function asRecord(obj: unknown): Record<string, unknown> | null {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  return obj as Record<string, unknown>;
+}
+
+function summaryFromDashboardApi(raw: unknown): SupabaseSummaryState | null {
+  const s = asRecord(raw);
+  if (!s) return null;
+  if (typeof s.error === "string" && s.error.length > 0) return null;
+  const tio = asRecord(s.todayInOutCount);
+  const sp = asRecord(s.stockByProduct);
+  const ss = asRecord(s.safetyStockByProduct);
+  const ro = asRecord(s.recommendedOrderByProduct);
+  const ch = asRecord(s.stockByProductByChannel);
+  const avg = asRecord(s.avg60DayOutbound ?? s.avg30DayOutbound);
+
+  const coupang = asRecord(ch?.coupang);
+  const general = asRecord(ch?.general);
+
+  const todayInOutCount = {
+    inbound: Math.max(0, Math.trunc(Number(tio?.inbound) || 0)),
+    outbound: Math.max(0, Math.trunc(Number(tio?.outbound) || 0)),
+  };
+
+  const stockByProduct: Record<string, number> = {};
+  if (sp) {
+    for (const [k, v] of Object.entries(sp)) {
+      stockByProduct[k] = Number(v) || 0;
+    }
+  }
+
+  const safetyStockByProduct: Record<string, number> = {};
+  if (ss) {
+    for (const [k, v] of Object.entries(ss)) {
+      safetyStockByProduct[k] = Number(v) || 0;
+    }
+  }
+
+  const recommendedOrderByProduct: Record<string, number> = {};
+  if (ro) {
+    for (const [k, v] of Object.entries(ro)) {
+      recommendedOrderByProduct[k] = Number(v) || 0;
+    }
+  }
+
+  const avg60DayOutbound: Record<string, number> = {};
+  if (avg) {
+    for (const [k, v] of Object.entries(avg)) {
+      avg60DayOutbound[k] = Number(v) || 0;
+    }
+  }
+
+  let stockByProductByChannel: SupabaseSummaryState["stockByProductByChannel"];
+  if (coupang || general) {
+    stockByProductByChannel = { coupang: {}, general: {} };
+    if (coupang) {
+      for (const [k, v] of Object.entries(coupang)) {
+        stockByProductByChannel.coupang[k] = Number(v) || 0;
+      }
+    }
+    if (general) {
+      for (const [k, v] of Object.entries(general)) {
+        stockByProductByChannel.general[k] = Number(v) || 0;
+      }
+    }
+  }
+
+  return {
+    stockByProduct,
+    ...(stockByProductByChannel ? { stockByProductByChannel } : {}),
+    safetyStockByProduct,
+    todayInOutCount,
+    recommendedOrderByProduct,
+    totalValue: Math.max(0, Number(s.totalValue) || 0),
+    ...(Object.keys(avg60DayOutbound).length > 0 ? { avg60DayOutbound } : {}),
+  };
+}
+
 export type SupabaseFetchStatus =
   | "idle"
   | "ok"
@@ -293,15 +382,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
   /** 동시 refresh 시 늦게 도착한 응답이 최신 상태를 덮어쓰지 않도록 */
   const refreshGenerationRef = useRef(0);
   const refreshAbortRef = useRef<AbortController | null>(null);
-  const [supabaseSummary, setSupabaseSummary] = useState<{
-    stockByProduct: Record<string, number>;
-    stockByProductByChannel?: { coupang: Record<string, number>; general: Record<string, number> };
-    safetyStockByProduct: Record<string, number>;
-    todayInOutCount: { inbound: number; outbound: number };
-    recommendedOrderByProduct: Record<string, number>;
-    totalValue: number;
-    avg60DayOutbound?: Record<string, number>;
-  } | null>(null);
+  const [supabaseSummary, setSupabaseSummary] = useState<SupabaseSummaryState | null>(null);
 
   const [baseStock, setBaseStockState] = useState<StockMap>(() => DEFAULT_STOCK);
   const [baseStockByProduct, setBaseStockByProductState] = useState<Record<string, number>>(
@@ -343,7 +424,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       stockByChannelFromApi: { coupang: Record<string, number>; general: Record<string, number> };
       channelTotals: Record<string, number>;
       kpiData: { productCount: number; totalValue: number; totalQuantity: number; totalSku: number };
-      supabaseSummary: null;
+      supabaseSummary: SupabaseSummaryState | null;
       categoryTrendData: NonNullable<InventoryContextValue["categoryTrendData"]>;
       categoryTrendLoaded: boolean;
       aiForecastByProduct: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }>;
@@ -574,6 +655,21 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
               category: o.category != null ? String(o.category) : null,
             };
           });
+          const mappedInbound: InventoryInbound[] = inventoryDataSafe.inbound.map((row: unknown) => {
+            const r = row as Record<string, unknown>;
+            return {
+              id: String(r.id ?? ""),
+              product_code: String(r.product_code ?? ""),
+              quantity: Number(r.quantity) || 0,
+              sales_channel: String(r.sales_channel ?? "general"),
+              inbound_date: String(r.inbound_date ?? "").slice(0, 10),
+              source_warehouse: r.source_warehouse != null ? String(r.source_warehouse) : null,
+              dest_warehouse: r.dest_warehouse != null ? String(r.dest_warehouse) : null,
+              note: null,
+              category: r.category != null ? String(r.category) : null,
+            };
+          });
+          const parsedSummary = summaryFromDashboardApi(unified?.summary);
 
           let forecastMap: Record<string, { forecast_month1: number; forecast_month2: number; forecast_month3: number }> = {};
           let categoryForecast: { thisMonthKey: string; byCategory: Record<string, number> } | undefined;
@@ -614,7 +710,9 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
             supabaseNonBlockingError: nonBlockingErrors.length > 0 ? nonBlockingErrors.join(" | ") : undefined,
             supabaseProducts: products,
             supabaseStockSnapshot: summaryStockSnapshot,
+            supabaseInbound: mappedInbound,
             supabaseOutbound: mappedOutbound,
+            supabaseSummary: parsedSummary,
             dailyVelocityByProduct: (snapshot.dailyVelocityByProduct as Record<string, number>) ?? {},
             dailyVelocityByProductCoupang: (snapshot.dailyVelocityByProductCoupang as Record<string, number>) ?? {},
             dailyVelocityByProductGeneral: (snapshot.dailyVelocityByProductGeneral as Record<string, number>) ?? {},
@@ -872,7 +970,10 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
       : hasSnapshot
         ? { coupang: {} as Record<string, number>, general: { ...stockByProduct } }
         : { coupang: {} as Record<string, number>, general: {} as Record<string, number> };
-    const todayInOutCount = getTodayInOutCount(supabaseInbound, supabaseOutbound);
+    const todayInOutCount =
+      supabaseSummary != null
+        ? supabaseSummary.todayInOutCount
+        : getTodayInOutCount(supabaseInbound, supabaseOutbound);
     const avg14DayOutbound = computeAvgNDayOutboundByProduct(supabaseOutbound, 14);
     const recommendedOrderByProduct = computeRecommendedOrderByProduct(
       stockByProduct,
@@ -906,6 +1007,7 @@ export function InventoryProvider({ children }: { children: React.ReactNode }) {
     supabaseOutbound,
     supabaseStockSnapshot,
     stockByChannelFromApi,
+    supabaseSummary,
   ]);
 
   // localStorage 사용 시: 기존 로직

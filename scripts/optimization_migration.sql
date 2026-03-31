@@ -152,7 +152,7 @@ AS $$
   ORDER BY 1;
 $$;
 
--- 6. 오늘 입고/출고 건수
+-- 6. 오늘 입고/출고 건수 (한국 날짜 기준 — Supabase DB가 UTC여도 달력이 어긋나지 않게)
 CREATE OR REPLACE FUNCTION get_today_inout_count()
 RETURNS TABLE (
   inbound_count BIGINT,
@@ -163,6 +163,10 @@ STABLE
 SECURITY DEFINER
 AS $$
   SELECT 
-    (SELECT COUNT(*) FROM inventory_inbound WHERE inbound_date::DATE = CURRENT_DATE)::BIGINT,
-    (SELECT COUNT(*) FROM inventory_outbound WHERE outbound_date::DATE = CURRENT_DATE)::BIGINT;
+    (SELECT COUNT(*)::BIGINT FROM inventory_inbound
+     WHERE inbound_date IS NOT NULL
+       AND inbound_date::date = (current_timestamp AT TIME ZONE 'Asia/Seoul')::date),
+    (SELECT COUNT(*)::BIGINT FROM inventory_outbound
+     WHERE outbound_date IS NOT NULL
+       AND outbound_date::date = (current_timestamp AT TIME ZONE 'Asia/Seoul')::date);
 $$;

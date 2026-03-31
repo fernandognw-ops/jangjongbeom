@@ -125,3 +125,41 @@ export async function fetchOutboundRowsUnified<T>(
     },
   };
 }
+
+/** 입고도 출고와 동일하게 기간 내 전 행을 페이지로 가져옴 (단일 limit로 최신 누락 방지) */
+export async function fetchInboundRowsUnified<T>(
+  supabase: SupabaseClient,
+  opts: {
+    selectedColumns: string;
+    startDate: string;
+    endDate?: string;
+    pageSize?: number;
+    maxPages?: number;
+  }
+): Promise<{ rows: T[] }> {
+  const pageSize = opts.pageSize ?? 2000;
+  const maxPages = opts.maxPages ?? 500;
+  const rows: T[] = [];
+  let offset = 0;
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+    let q = supabase
+      .from("inventory_inbound")
+      .select(opts.selectedColumns)
+      .gte("inbound_date", opts.startDate)
+      .order("inbound_date", { ascending: true })
+      .order("id", { ascending: true });
+    if (opts.endDate) q = q.lt("inbound_date", opts.endDate);
+    const { data, error } = await q.range(offset, offset + pageSize - 1);
+    if (error) {
+      console.error(
+        `[fetchInboundRowsUnified] query failed page=${pageIndex} offset=${offset} error=${error.message}`
+      );
+      break;
+    }
+    const fetched = (data ?? []) as T[];
+    rows.push(...fetched);
+    if (fetched.length < pageSize) break;
+    offset += pageSize;
+  }
+  return { rows };
+}

@@ -654,20 +654,51 @@ export function computeStockByProductByChannel(
   return { coupang, general };
 }
 
-/** 전체 기간 입고/출고 건수 (데이터가 있는 전체 기간 합산) */
+/** 서울(Asia/Seoul) 달력 기준 오늘 YYYY-MM-DD — 수불·대시보드 날짜 기준 통일 */
+export function getCalendarYmdSeoul(d = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const pick = (t: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === t)?.value ?? "";
+  const y = pick("year");
+  const m = pick("month");
+  const day = pick("day");
+  if (/^\d{4}$/.test(y) && /^\d{2}$/.test(m) && /^\d{2}$/.test(day)) {
+    return `${y}-${m}-${day}`;
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+/** 서울 달력 기준 `ymd` 일자의 입고·출고 건수(행 수, 수량>0) */
+export function getInOutCountForYmd(
+  inbound: InventoryInbound[],
+  outbound: InventoryOutbound[],
+  ymd: string
+): { inbound: number; outbound: number } {
+  const key = ymd.slice(0, 10);
+  let inCount = 0;
+  let outCount = 0;
+  for (const i of inbound) {
+    if (toNumber(i.quantity) <= 0) continue;
+    if (String(i.inbound_date ?? "").slice(0, 10) === key) inCount += 1;
+  }
+  for (const o of outbound) {
+    if (toNumber(o.quantity) <= 0) continue;
+    if (String(o.outbound_date ?? "").slice(0, 10) === key) outCount += 1;
+  }
+  return { inbound: inCount, outbound: outCount };
+}
+
+/** 서울 달력 "오늘" 기준 입고·출고 건수(행 수, 수량>0) */
 export function getTodayInOutCount(
   inbound: InventoryInbound[],
   outbound: InventoryOutbound[]
 ): { inbound: number; outbound: number } {
-  let inCount = 0;
-  let outCount = 0;
-  for (const i of inbound) {
-    inCount += toNumber(i.quantity) > 0 ? 1 : 0;
-  }
-  for (const o of outbound) {
-    outCount += toNumber(o.quantity) > 0 ? 1 : 0;
-  }
-  return { inbound: inCount, outbound: outCount };
+  return getInOutCountForYmd(inbound, outbound, getCalendarYmdSeoul());
 }
 
 /**
