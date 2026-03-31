@@ -617,7 +617,7 @@ export function DashboardBoxHero() {
                 <span>쿠팡: {safeNumber(momIndicators?.thisMonthOutboundCoupang).toLocaleString()}EA</span>
                 <span>일반: {safeNumber(momIndicators?.thisMonthOutboundGeneral).toLocaleString()}EA</span>
               </div>
-              <div className="mt-0.5 text-[10px] text-slate-500">전월 대비</div>
+              <div className="mt-0.5 text-[10px] text-slate-500">달력 월 전체(DB 합) · 쿠팡+일반 · 전월 대비</div>
             </div>
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-5 shadow-card">
               <div className="text-xs font-medium uppercase tracking-wider text-sky-600">
@@ -653,7 +653,7 @@ export function DashboardBoxHero() {
                       ))
                   : <span>채널별 데이터 없음</span>}
               </div>
-              <div className="mt-0.5 text-[10px] text-slate-500">입고처 → 판매채널(쿠팡/일반) 기준 · 전월 대비</div>
+              <div className="mt-0.5 text-[10px] text-slate-500">달력 월 전체 · 상단=채널 합 · 판매채널(쿠팡/일반) · 전월 대비</div>
             </div>
           </>
         ) : (

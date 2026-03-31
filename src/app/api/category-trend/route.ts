@@ -8,6 +8,8 @@
  * - inventory_inbound quantity 합산 (입고량)
  * - 카테고리: inventory_stock_snapshot.category(품목구분) 기준, product_code별
  * - 월 범위: (요청 month 없음) 세 테이블 최소 일자 중 가장 이른 날부터 전량 로드. 월 축 = 입고·출고·스냅샷에 나타난 월의 합집합(교집합 아님), 테이블별 없는 월은 0
+ * - momIndicators(당월 KPI): kpiMonthKey = 월 축 말단부터 스캔해 **출고 또는 입고 수량이 있는 가장 최근 달**(스냅샷만 있는 빈 말월 제외). thisMonth* == monthlyTotals[kpiMonthKey]와 동일(원본 배열·필터 동일).
+ * - chartData 카테고리 막대: 마스터 5개 + (필요 시) **출고_미분류** = monthlyTotals.outbound − 마스터 5 합 → 스택 합이 월별 DB 출고 총량과 일치
  * - 월별 재고 자산: 해당 월 **마지막 snapshot_date** 1일만 카테고리별 total_price 합산
  * - ?debug=1: 출고 금액 샘플 20건 + 월별 채널 금액 집계 메타
  */
@@ -340,6 +342,8 @@ function normalizeCategoryName(cat: string): string {
 
 /** 마스터 코드 5개만. 대시보드에 이 외 카테고리 표시 금지 */
 const CATEGORY_ORDER = ["마스크", "캡슐세제", "섬유유연제", "액상세제", "생활용품"];
+/** 마스터 5 외·기타·비매핑 출고를 담아 chartData 스택 합 = monthlyTotals.outbound 와 맞춤 */
+const UNCATEGORIZED_OUTBOUND_LABEL = "출고_미분류";
 
 export async function GET(request: Request) {
   try {
@@ -515,6 +519,15 @@ export async function GET(request: Request) {
     }
     const byMonthCategory: Record<string, Record<string, number>> = {};
 
+    /** invalid outbound 제외·월키 성공 행 기준 DB 출고 총량(byMonthCategory·monthlyTotals.outbound 와 동일 원천) */
+    const fullOutboundByMonth: Record<string, number> = {};
+    for (const o of outbound) {
+      if (isInvalidOutbound((o as any)?.id)) continue;
+      const m = monthKeyFromAnyDate(o.outbound_date);
+      if (!m) continue;
+      fullOutboundByMonth[m] = (fullOutboundByMonth[m] ?? 0) + Number(o.quantity ?? 0);
+    }
+
     // 그래프·전월대비: 아웃바운드(실제 출고)만 사용. 마스터 5개 카테고리만 표시
     for (const o of outbound) {
       if (isInvalidOutbound((o as any)?.id)) continue;
@@ -548,6 +561,22 @@ export async function GET(request: Request) {
     const ordered = [...categoriesSet];
     const finalCategories = CATEGORY_ORDER.filter((c) => ordered.includes(c));
 
+    for (const m of months) {
+      if (!byMonthCategory[m]) byMonthCategory[m] = {};
+      let sumMaster = 0;
+      for (const c of finalCategories) {
+        sumMaster += byMonthCategory[m][c] ?? 0;
+      }
+      const full = fullOutboundByMonth[m] ?? 0;
+      byMonthCategory[m][UNCATEGORIZED_OUTBOUND_LABEL] = Math.max(0, full - sumMaster);
+    }
+    const hasUncategorizedOutbound = months.some(
+      (m) => (byMonthCategory[m]?.[UNCATEGORIZED_OUTBOUND_LABEL] ?? 0) > 0
+    );
+    const chartCategories = hasUncategorizedOutbound
+      ? [...finalCategories, UNCATEGORIZED_OUTBOUND_LABEL]
+      : [...finalCategories];
+
     /** 월간 평균 검색 지수 (월별 출고량과 1:1 대응) */
     const naverByMonth: Record<string, Record<string, number>> = {};
     for (const [kw, data] of Object.entries(naverMonthly ?? {})) {
@@ -563,10 +592,10 @@ export async function GET(request: Request) {
     const chartData = months.map((month) => {
       const row: Record<string, string | number> = { month };
       const cats = byMonthCategory[month] ?? {};
-      for (const c of finalCategories) row[c] = cats[c] ?? 0;
+      for (const c of chartCategories) row[c] = cats[c] ?? 0;
       const naverRow = naverByMonth[month] ?? {};
       for (const kw of NAVER_CATEGORIES) {
-        if (!finalCategories.includes(kw)) continue;
+        if (!chartCategories.includes(kw)) continue;
         const v = naverRow[`naver_${kw}`];
         row[`naver_${kw}`] = typeof v === "number" ? Math.min(100, Math.max(0, v)) : 0;
       }
@@ -796,7 +825,7 @@ export async function GET(request: Request) {
     }
 
     const momRates: Record<string, Record<string, number | null>> = {};
-    for (const cat of finalCategories) {
+    for (const cat of chartCategories) {
       momRates[cat] = {};
       for (let i = 0; i < months.length; i++) {
         const curr = (byMonthCategory[months[i]] ?? {})[cat] ?? 0;
@@ -810,28 +839,17 @@ export async function GET(request: Request) {
     }
 
     /**
-     * 대시보드 '당월' KPI: 월 축은 입·출고·스냅샷 일자 합집합이라, 말월이 입·출고 0인 '빈 달'
-     * (스냅샷만 다른 월 키로 잡히는 경우 등)이면 월간 출고 카드가 업로드 월(예: 2026-03)과 어긋난다.
-     * → 뒤에서부터 출고가 있는 달을 우선, 없으면 입고가 있는 달, 그다음 말월.
+     * 대시보드 '당월' KPI: 월 축은 입·출고·스냅샷 일자 합집합이라 말월이 스냅샷만 있고 입·출고 0인 경우가 있다.
+     * → 말단부터 **출고 또는 입고** 수량이 있는 가장 최근 달을 kpiMonth로 사용 (monthlyTotals·원본 배열과 동일 집계).
      */
     let kpiMonth = "";
     if (months.length > 0) {
       for (let i = months.length - 1; i >= 0; i--) {
         const m = months[i]!;
         const mt = monthlyTotals[m];
-        if ((mt?.outbound ?? 0) > 0) {
+        if ((mt?.outbound ?? 0) > 0 || (mt?.inbound ?? 0) > 0) {
           kpiMonth = m;
           break;
-        }
-      }
-      if (!kpiMonth) {
-        for (let i = months.length - 1; i >= 0; i--) {
-          const m = months[i]!;
-          const mt = monthlyTotals[m];
-          if ((mt?.inbound ?? 0) > 0) {
-            kpiMonth = m;
-            break;
-          }
         }
       }
       if (!kpiMonth) kpiMonth = months[months.length - 1]!;
@@ -938,7 +956,9 @@ export async function GET(request: Request) {
 
     const payload: Record<string, unknown> = {
       months,
-      categories: finalCategories,
+      categories: chartCategories,
+      chartCategoriesMaster: finalCategories,
+      chartUncategorizedOutboundLabel: hasUncategorizedOutbound ? UNCATEGORIZED_OUTBOUND_LABEL : null,
       chartData,
       naverSearchTrend,
       momRates,

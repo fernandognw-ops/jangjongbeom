@@ -27,6 +27,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   섬유유연제: "#f472b6",
   액상세제: "#34d399",
   생활용품: "#fbbf24",
+  출고_미분류: "#64748b",
 };
 
 function getColorForCategory(category: string, index: number): string {
@@ -52,6 +53,7 @@ const CATEGORY_SHORT: Record<string, string> = {
   섬유유연제: "섬유",
   액상세제: "액상",
   생활용품: "생활",
+  출고_미분류: "미분류",
   "3개월 이동평균": "3M평균",
 };
 function shortCategoryLabel(cat: string): string {
@@ -61,6 +63,8 @@ function shortCategoryLabel(cat: string): string {
 export interface CategoryTrendData {
   months: string[];
   categories: string[];
+  chartCategoriesMaster?: string[];
+  chartUncategorizedOutboundLabel?: string | null;
   chartData: Record<string, string | number>[];
   /** 세 테이블 모두 0건일 때만 true (API) */
   sourceTablesEmpty?: boolean;
@@ -1049,7 +1053,12 @@ export function CategoryTrendChart() {
           </div>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
-            <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">이번 달 총 판매</div>
+            <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+              이번 달 총 판매
+              {mom?.kpiMonthKey ? (
+                <span className="ml-1.5 font-normal normal-case text-zinc-500">({mom.kpiMonthKey})</span>
+              ) : null}
+            </div>
             <div className="mt-1 flex flex-wrap items-baseline gap-2">
               <span className="text-xl font-bold tabular-nums text-white md:text-2xl">
                 {safeNumber(mom?.thisMonthOutbound).toLocaleString()}EA
@@ -1069,10 +1078,17 @@ export function CategoryTrendChart() {
               <span>쿠팡: {safeNumber(mom?.thisMonthOutboundCoupang).toLocaleString()}EA</span>
               <span>일반: {safeNumber(mom?.thisMonthOutboundGeneral).toLocaleString()}EA</span>
             </div>
-            <div className="mt-0.5 text-[10px] text-zinc-500">1일~오늘 누적 · 전월 대비</div>
+            <div className="mt-0.5 text-[10px] text-zinc-500">
+              해당 달력 월 전체 합계(DB 행 수량 합) · 쿠팡+일반 · 전월 대비
+            </div>
           </div>
           <div className="rounded-xl border border-zinc-700 bg-zinc-800/80 p-4">
-            <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">이번 달 총 입고</div>
+            <div className="text-xs font-medium uppercase tracking-wider text-zinc-500">
+              이번 달 총 입고
+              {mom?.kpiMonthKey ? (
+                <span className="ml-1.5 font-normal normal-case text-zinc-500">({mom.kpiMonthKey})</span>
+              ) : null}
+            </div>
             <div className="mt-1 flex flex-wrap items-baseline gap-2">
               <span className="text-xl font-bold tabular-nums text-white md:text-2xl">
                 {safeNumber(mom?.thisMonthInbound).toLocaleString()}EA
@@ -1097,7 +1113,9 @@ export function CategoryTrendChart() {
                     ))
                 : <span>채널별 데이터 없음</span>}
             </div>
-            <div className="mt-0.5 text-[10px] text-zinc-500">입고처 → 판매채널(쿠팡/일반) 기준 · 1일~오늘 누적 · 전월 대비</div>
+            <div className="mt-0.5 text-[10px] text-zinc-500">
+              판매채널(쿠팡/일반) 기준 · 해당 달력 월 전체 합계 · 상단 숫자=채널 합 · 전월 대비
+            </div>
           </div>
         </div>
         </div>

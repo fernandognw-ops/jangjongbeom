@@ -205,6 +205,9 @@ interface InventoryContextValue {
   categoryTrendData?: {
     months: string[];
     categories: string[];
+    /** 마스터 5개(차트 축에 출고_미분류가 붙기 전) */
+    chartCategoriesMaster?: string[];
+    chartUncategorizedOutboundLabel?: string | null;
     chartData: Record<string, string | number>[];
     sourceTablesEmpty?: boolean;
     rowCounts?: { inbound: number; outbound: number; snapshot: number };
