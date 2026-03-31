@@ -128,24 +128,36 @@ export async function commitProductionSheet(
 
     const productRows = rawdata.map((r) => {
       const meta = productMetaByCode.get(r.product_code);
-      const categoryRaw = r.category != null ? String(r.category) : meta?.category ?? null;
-      const packSizeRaw = r.pack_size != null ? r.pack_size : meta?.pack_size ?? null;
+      let categoryStr =
+        r.category != null && String(r.category).trim() !== ""
+          ? String(r.category).trim()
+          : meta?.category != null && String(meta.category).trim() !== ""
+            ? String(meta.category).trim()
+            : "";
+      if (!categoryStr) {
+        console.warn(
+          `[commitProductionSheet] rawdata·DB 모두 category 비어 있음 → '기타' 적용. product_code=${r.product_code}`
+        );
+        categoryStr = "기타";
+      }
+      const packSizeFromRow = r.pack_size != null ? r.pack_size : meta?.pack_size ?? null;
       const productNameRaw = r.product_name;
 
-      if (categoryRaw == null || String(categoryRaw).trim() === "") {
-        throw new Error(`[commitProductionSheet] rawdata로는 category 기본값을 주입하지 않습니다. product_code=${r.product_code}`);
-      }
       if (!productNameRaw || String(productNameRaw).trim() === "") {
         throw new Error(`[commitProductionSheet] rawdata로는 product_name이 비어있는 값을 허용하지 않습니다. product_code=${r.product_code}`);
       }
       if (r.unit_cost == null || !Number.isFinite(Number(r.unit_cost)) || Number(r.unit_cost) < 0) {
         throw new Error(`[commitProductionSheet] rawdata로는 원가(unit_cost)가 비정상인 값을 허용하지 않습니다. product_code=${r.product_code}`);
       }
-      if (packSizeRaw == null || !Number.isFinite(Number(packSizeRaw))) {
-        throw new Error(`[commitProductionSheet] rawdata로는 pack_size 기본값을 주입하지 않습니다. product_code=${r.product_code}`);
+      let pack_sizeNum: number;
+      if (packSizeFromRow != null && Number.isFinite(Number(packSizeFromRow))) {
+        pack_sizeNum = Math.max(1, Number(packSizeFromRow));
+      } else {
+        console.warn(
+          `[commitProductionSheet] rawdata·DB 모두 pack_size 없음 → 1 적용. product_code=${r.product_code}`
+        );
+        pack_sizeNum = 1;
       }
-
-      const pack_sizeNum = Math.max(1, Number(packSizeRaw));
       if (!Number.isFinite(pack_sizeNum) || pack_sizeNum < 1) {
         throw new Error(`[commitProductionSheet] pack_size 값이 올바르지 않습니다. product_code=${r.product_code}`);
       }
@@ -154,7 +166,7 @@ export async function commitProductionSheet(
         product_code: r.product_code,
         product_name: String(productNameRaw).trim(),
         unit_cost: Number(r.unit_cost),
-        category: String(categoryRaw).trim(),
+        category: categoryStr,
         pack_size: pack_sizeNum,
       };
     });
